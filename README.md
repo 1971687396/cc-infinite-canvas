@@ -41,6 +41,7 @@
 - 顶部“添加生图节点”会创建统一图片节点，节点内可切换创建/编辑模式，并可选择 `gpt-image-2`、`grok-3-image` 或 `grok-image-image`
 - 选择 Grok 模型时会自动使用 Grok 专用 Key、Grok 默认参数和 Grok 尺寸列表；选择 `gpt-image-2` 时使用 GPT 专用 Key 或平台总 Key，并切回 GPT 尺寸列表
 - 提示词、模型、尺寸、质量、格式、接口路径、Base URL 和额外 JSON 参数都在每个节点内部编辑
+- 顶部“检查更新”会读取 GitHub Releases，比较当前版本和最新版本，并优先下载 Release 附件中的 `.exe`
 - 每个节点可以单独生成，顶部“生成全部”会并行启动所有可运行节点
 - 生成结果会自动拆成独立图片节点，以原始像素尺寸放在画布上
 - 图片节点默认以 50% 尺寸显示，选中后可以用右下角手柄自由缩放，也可以在工具条里输入缩放百分比
@@ -79,8 +80,18 @@ YUNWU_DEFAULT_MODEL=gpt-image-2
 YUNWU_MODEL_KEY_GPT_IMAGE_2=
 YUNWU_MODEL_KEY_GROK_IMAGE_IMAGE=
 CC_CANVAS_CACHE_DIR=D:\ccCanvasCache
+CC_CANVAS_UPDATE_REPO=1971687396/cc-infinite-canvas
 PORT=3000
 ```
+
+## 版本更新
+
+应用当前版本来自 `package.json`，默认检查 `1971687396/cc-infinite-canvas` 的 GitHub Releases。发布新版本时：
+
+- 更新 `package.json` 的 `version`
+- 创建对应 tag，例如 `v0.1.1`
+- 在 GitHub Release 中上传新的 `YunwuImageCanvasSetup.exe`
+- 用户点击“检查更新”后会看到最新版本并可下载安装包
 
 模型专用 Key 优先级高于平台总 Key；如果某个模型没有填写专用 Key，就会自动回退使用 `YUNWU_API_KEY`。
 

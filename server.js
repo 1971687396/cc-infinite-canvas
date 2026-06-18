@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const packageInfo = JSON.parse(readFileSync(path.join(__dirname, "package.json"), "utf8"));
 const publicDir = path.join(__dirname, "public");
 const outputDir = path.join(__dirname, "outputs");
 const cacheDir = path.join(__dirname, "cache");
@@ -20,6 +21,8 @@ loadEnvFile(envFile);
 
 const config = {
   port: Number(process.env.PORT || 3000),
+  version: packageInfo.version || "0.0.0",
+  updateRepo: process.env.CC_CANVAS_UPDATE_REPO || "1971687396/cc-infinite-canvas",
   apiKey: process.env.YUNWU_API_KEY || "",
   baseUrl: process.env.YUNWU_BASE_URL || "https://yunwu.ai",
   imageEndpoint: process.env.YUNWU_IMAGE_ENDPOINT || "/v1/images/generations",
@@ -59,6 +62,10 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/settings") {
       return await handleSaveSettings(req, res);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/update/check") {
+      return await handleUpdateCheck(res);
     }
 
     if (req.method === "GET" && url.pathname === "/api/projects") {
@@ -119,7 +126,9 @@ function publicSettings() {
     editEndpoint: config.editEndpoint,
     defaultModel: config.defaultModel,
     modelKeys: publicModelKeyStatus(),
-    cacheDir: config.cacheDir
+    cacheDir: config.cacheDir,
+    version: config.version,
+    updateRepo: config.updateRepo
   };
 }
 
@@ -189,6 +198,102 @@ function applyModelRequestDefaults(payload, mode = "create") {
 
 function missingKeyMessage(model) {
   return `API key is not configured for model ${model || config.defaultModel}. Set a platform key or a model-specific key in Settings.`;
+}
+
+async function handleUpdateCheck(res) {
+  const currentVersion = normalizeVersion(config.version);
+  const repo = sanitizeRepoName(config.updateRepo);
+  if (!repo) {
+    return sendJson(res, 500, { error: "Update repository is not configured." });
+  }
+
+  const apiUrl = `https://api.github.com/repos/${repo}/releases/latest`;
+  const response = await fetch(apiUrl, {
+    headers: {
+      Accept: "application/vnd.github+json",
+      "User-Agent": `cc-infinite-canvas/${config.version}`
+    }
+  });
+
+  if (response.status === 404) {
+    return sendJson(res, 200, {
+      repo,
+      currentVersion,
+      hasRelease: false,
+      hasUpdate: false,
+      message: "GitHub Releases 里还没有发布版本。"
+    });
+  }
+
+  const text = await response.text();
+  const release = tryParseJson(text);
+  if (!response.ok) {
+    return sendJson(res, response.status, {
+      error: readUpstreamError(release, text) || "GitHub update check failed.",
+      repo,
+      currentVersion
+    });
+  }
+
+  const latestVersion = normalizeVersion(release.tag_name || release.name || "");
+  const asset = selectReleaseAsset(release.assets || []);
+  sendJson(res, 200, {
+    repo,
+    currentVersion,
+    latestVersion,
+    hasRelease: true,
+    hasUpdate: compareVersions(latestVersion, currentVersion) > 0,
+    releaseName: release.name || release.tag_name || latestVersion,
+    releaseUrl: release.html_url || `https://github.com/${repo}/releases/latest`,
+    publishedAt: release.published_at || "",
+    body: release.body || "",
+    asset,
+    checkedAt: new Date().toISOString()
+  });
+}
+
+function sanitizeRepoName(value) {
+  const repo = String(value || "").trim();
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) ? repo : "";
+}
+
+function selectReleaseAsset(assets) {
+  const candidates = assets
+    .filter((asset) => asset?.browser_download_url && asset?.name)
+    .map((asset) => ({
+      name: asset.name,
+      size: asset.size || 0,
+      downloadUrl: asset.browser_download_url,
+      contentType: asset.content_type || ""
+    }));
+
+  return (
+    candidates.find((asset) => /\.exe$/i.test(asset.name)) ||
+    candidates.find((asset) => /\.zip$/i.test(asset.name)) ||
+    candidates[0] ||
+    null
+  );
+}
+
+function normalizeVersion(value) {
+  return String(value || "0.0.0").trim().replace(/^v/i, "") || "0.0.0";
+}
+
+function compareVersions(a, b) {
+  const left = versionParts(a);
+  const right = versionParts(b);
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const diff = (left[index] || 0) - (right[index] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+function versionParts(value) {
+  return normalizeVersion(value)
+    .split(/[.+-]/)
+    .map((part) => Number.parseInt(part, 10))
+    .filter((part) => Number.isFinite(part));
 }
 
 async function handleSaveSettings(req, res) {

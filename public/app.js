@@ -26,6 +26,7 @@ const resetViewButton = document.querySelector("#resetViewButton");
 const zoomInButton = document.querySelector("#zoomInButton");
 const zoomOutButton = document.querySelector("#zoomOutButton");
 const settingsButton = document.querySelector("#settingsButton");
+const checkUpdateButton = document.querySelector("#checkUpdateButton");
 const newProjectButton = document.querySelector("#newProjectButton");
 const saveProjectButton = document.querySelector("#saveProjectButton");
 const projectNameInput = document.querySelector("#projectNameInput");
@@ -57,6 +58,16 @@ const settingsEditEndpoint = document.querySelector("#settingsEditEndpoint");
 const settingsDefaultModel = document.querySelector("#settingsDefaultModel");
 const settingsCacheDir = document.querySelector("#settingsCacheDir");
 const settingsStatus = document.querySelector("#settingsStatus");
+const updateDialog = document.querySelector("#updateDialog");
+const closeUpdateButton = document.querySelector("#closeUpdateButton");
+const updateStatus = document.querySelector("#updateStatus");
+const currentVersionText = document.querySelector("#currentVersionText");
+const latestVersionText = document.querySelector("#latestVersionText");
+const updateAssetText = document.querySelector("#updateAssetText");
+const updateReleaseNotes = document.querySelector("#updateReleaseNotes");
+const updateRepoText = document.querySelector("#updateRepoText");
+const openReleaseButton = document.querySelector("#openReleaseButton");
+const downloadUpdateButton = document.querySelector("#downloadUpdateButton");
 
 const gptSizeOptions = [
   ["auto", "auto"],
@@ -146,6 +157,7 @@ let selectionBox = null;
 let minimapBounds = { x: -400, y: -300, width: 1200, height: 900 };
 let referencePickTargetNodeId = null;
 let editingNoteId = null;
+let latestUpdateInfo = null;
 let lastHistorySnapshot = "";
 let currentProjectId = "default";
 let currentProjectName = "未命名画布";
@@ -207,7 +219,16 @@ projectNameInput.addEventListener("keydown", (event) => {
   }
 });
 settingsButton.addEventListener("click", openSettingsDialog);
+checkUpdateButton?.addEventListener("click", checkForUpdates);
 closeSettingsButton.addEventListener("click", () => settingsDialog.close());
+closeUpdateButton?.addEventListener("click", () => updateDialog.close());
+openReleaseButton?.addEventListener("click", () => {
+  if (latestUpdateInfo?.releaseUrl) window.open(latestUpdateInfo.releaseUrl, "_blank", "noreferrer");
+});
+downloadUpdateButton?.addEventListener("click", () => {
+  const url = latestUpdateInfo?.asset?.downloadUrl || latestUpdateInfo?.releaseUrl;
+  if (url) window.open(url, "_blank", "noreferrer");
+});
 settingsForm.addEventListener("submit", saveSettings);
 applySelectionScaleButton.addEventListener("click", applySelectionScale);
 reusePromptButton.addEventListener("click", reusePromptFromSelection);
@@ -706,6 +727,76 @@ async function saveSettings(event) {
   } catch (error) {
     settingsStatus.textContent = error.message || "保存失败";
   }
+}
+
+async function checkForUpdates() {
+  if (!updateDialog) return;
+
+  latestUpdateInfo = null;
+  updateStatus.textContent = "正在检查 GitHub Releases...";
+  currentVersionText.textContent = config.version ? `v${config.version}` : "-";
+  latestVersionText.textContent = "-";
+  updateAssetText.textContent = "-";
+  updateReleaseNotes.textContent = "";
+  updateReleaseNotes.hidden = true;
+  updateRepoText.textContent = config.updateRepo || "";
+  openReleaseButton.disabled = true;
+  downloadUpdateButton.disabled = true;
+  checkUpdateButton.disabled = true;
+  updateDialog.showModal();
+
+  try {
+    const response = await fetch("/api/update/check");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "检查更新失败");
+
+    latestUpdateInfo = data;
+    config = {
+      ...config,
+      version: data.currentVersion || config.version,
+      updateRepo: data.repo || config.updateRepo
+    };
+
+    currentVersionText.textContent = data.currentVersion ? `v${data.currentVersion}` : "-";
+    latestVersionText.textContent = data.latestVersion ? `v${data.latestVersion}` : "-";
+    updateRepoText.textContent = data.repo ? `GitHub: ${data.repo}` : "";
+    updateAssetText.textContent = data.asset
+      ? `${data.asset.name} (${formatBytes(data.asset.size)})`
+      : "未找到 exe/zip 附件";
+    updateReleaseNotes.textContent = data.body || "";
+    updateReleaseNotes.hidden = !data.body;
+
+    if (!data.hasRelease) {
+      updateStatus.textContent = data.message || "还没有找到 GitHub Release。";
+      showToast("还没有找到 GitHub Release");
+      return;
+    }
+
+    openReleaseButton.disabled = !data.releaseUrl;
+    downloadUpdateButton.disabled = !(data.hasUpdate && data.asset?.downloadUrl);
+
+    if (data.hasUpdate) {
+      updateStatus.textContent = data.asset
+        ? `发现新版本 v${data.latestVersion}，可以下载更新。`
+        : `发现新版本 v${data.latestVersion}，但 Release 没有可下载附件。`;
+      showToast(`发现新版本 v${data.latestVersion}`);
+    } else {
+      updateStatus.textContent = "当前已经是最新版本。";
+      showToast("当前已经是最新版本");
+    }
+  } catch (error) {
+    updateStatus.textContent = error.message || "检查更新失败";
+    showToast(updateStatus.textContent);
+  } finally {
+    checkUpdateButton.disabled = false;
+  }
+}
+
+function formatBytes(bytes = 0) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function applySelectionScale() {

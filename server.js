@@ -208,12 +208,22 @@ async function handleUpdateCheck(res) {
   }
 
   const apiUrl = `https://api.github.com/repos/${repo}/releases/latest`;
-  const response = await fetch(apiUrl, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      "User-Agent": `cc-infinite-canvas/${config.version}`
-    }
-  });
+  let response;
+  try {
+    response = await fetch(apiUrl, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": `cc-infinite-canvas/${config.version}`
+      },
+      signal: AbortSignal.timeout(30000)
+    });
+  } catch (error) {
+    return sendJson(res, 502, {
+      error: `Unable to connect to GitHub Releases: ${error.message || error}`,
+      repo,
+      currentVersion
+    });
+  }
 
   if (response.status === 404) {
     return sendJson(res, 200, {

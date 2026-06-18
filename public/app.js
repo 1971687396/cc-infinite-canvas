@@ -190,9 +190,7 @@ async function init() {
   bindMinimapEvents();
 
   try {
-    const response = await fetch("/api/config");
-    config = await response.json();
-    setKeyStatus(config.hasAnyKey ?? config.hasApiKey);
+    await refreshRuntimeConfig();
   } catch (error) {
     showToast(error.message || "配置读取失败");
   }
@@ -244,6 +242,15 @@ downloadUpdateButton?.addEventListener("click", () => {
   const url = latestUpdateInfo?.asset?.downloadUrl || latestUpdateInfo?.releaseUrl;
   if (url) window.open(url, "_blank", "noreferrer");
 });
+
+async function refreshRuntimeConfig() {
+  const response = await fetch("/api/config");
+  const data = await readJsonResponse(response);
+  if (!response.ok || data.parseError) throw new Error(data.error || "配置读取失败");
+  config = data;
+  setKeyStatus(config.hasAnyKey ?? config.hasApiKey);
+  return config;
+}
 settingsForm.addEventListener("submit", saveSettings);
 applySelectionScaleButton.addEventListener("click", applySelectionScale);
 reusePromptButton.addEventListener("click", reusePromptFromSelection);
@@ -771,6 +778,14 @@ async function saveSettings(event) {
 async function checkForUpdates() {
   if (!updateDialog) return;
 
+  if (!config.version || !config.updateRepo) {
+    try {
+      await refreshRuntimeConfig();
+    } catch {
+      // The update check below will surface the actionable error.
+    }
+  }
+
   latestUpdateInfo = null;
   updateStatus.textContent = "正在检查 GitHub Releases...";
   currentVersionText.textContent = config.version ? `v${config.version}` : "-";
@@ -786,8 +801,8 @@ async function checkForUpdates() {
 
   try {
     const response = await fetch("/api/update/check");
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "检查更新失败");
+    const data = await readJsonResponse(response);
+    if (!response.ok || data.parseError) throw new Error(data.error || "检查更新失败");
 
     latestUpdateInfo = data;
     config = {
@@ -828,6 +843,25 @@ async function checkForUpdates() {
     showToast(updateStatus.textContent);
   } finally {
     checkUpdateButton.disabled = false;
+  }
+}
+
+async function readJsonResponse(response) {
+  const text = await response.text();
+  if (!text.trim()) return {};
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    const fallback = text.trim().slice(0, 300);
+    const message =
+      response.status === 404 && fallback === "Not found"
+        ? "本地更新接口未找到，请重启应用或重新安装最新版。"
+        : fallback || `HTTP ${response.status}`;
+    return {
+      parseError: true,
+      error: message
+    };
   }
 }
 

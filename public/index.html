@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>cc无限画布</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="workspace" aria-label="无限画布">
+        <div class="workspace-topbar">
+          <div class="brand-row">
+            <div>
+              <p class="eyebrow">Local Image Canvas</p>
+              <h1>cc无限画布</h1>
+            </div>
+            <span id="keyStatus" class="status-pill">检测中</span>
+          </div>
+
+          <div class="canvas-toolbar" aria-label="画布工具">
+            <span id="requestMeta" class="muted">等待添加节点</span>
+            <input id="projectNameInput" class="project-name-input" type="text" value="未命名画布" aria-label="画布名称" />
+            <select id="projectSelect" class="project-select" aria-label="切换画布"></select>
+            <button id="newProjectButton" type="button" class="secondary compact">新建画布</button>
+            <button id="saveProjectButton" type="button" class="secondary compact">保存画布</button>
+            <button id="addTaskButton" type="button" class="secondary compact">添加生图节点</button>
+            <button id="generateAllButton" type="button" class="secondary compact">生成全部</button>
+            <button id="addNoteButton" type="button" class="secondary compact">添加标注</button>
+            <button id="zoomOutButton" type="button" class="tool-button" title="缩小" aria-label="缩小">-</button>
+            <span id="zoomLevel" class="zoom-level">100%</span>
+            <button id="zoomInButton" type="button" class="tool-button" title="放大" aria-label="放大">+</button>
+            <button id="resetViewButton" type="button" class="secondary compact">复位</button>
+            <button id="clearCanvasButton" type="button" class="secondary compact">清空</button>
+            <button id="settingsButton" type="button" class="secondary compact">设置</button>
+          </div>
+        </div>
+
+        <div id="canvasViewport" class="canvas-viewport" tabindex="0">
+          <div id="canvasStage" class="canvas-stage"></div>
+          <div id="emptyState" class="empty-state">
+            <span class="empty-mark">IMG</span>
+          </div>
+          <div id="minimap" class="minimap" aria-label="小地图">
+            <div id="minimapWorld" class="minimap-world"></div>
+            <div id="minimapView" class="minimap-view"></div>
+          </div>
+        </div>
+
+        <details class="raw-panel">
+          <summary>原始响应</summary>
+          <pre id="rawResponse">{}</pre>
+        </details>
+      </section>
+    </main>
+
+    <div id="selectionToolbar" class="selection-toolbar" hidden>
+      <span id="selectionMeta">已选中 0 项</span>
+      <label>
+        <span>图片缩放</span>
+        <input id="selectionScaleInput" type="number" min="5" max="400" step="5" value="50" />
+      </label>
+      <button id="applySelectionScaleButton" type="button">应用</button>
+      <button id="reusePromptButton" type="button">复用提示词</button>
+    </div>
+
+    <dialog id="settingsDialog" class="settings-dialog">
+      <form id="settingsForm" method="dialog">
+        <div class="settings-head">
+          <div>
+            <p class="eyebrow">Settings</p>
+            <h2>设置</h2>
+          </div>
+          <button id="closeSettingsButton" type="button" class="secondary compact">关闭</button>
+        </div>
+
+        <label class="settings-field settings-field-full">
+          <span>平台总 Key</span>
+          <input id="settingsApiKey" type="password" autocomplete="off" placeholder="粘贴新的 API Key，留空则不修改" />
+        </label>
+
+        <label class="settings-field">
+          <span>gpt-image-2 专用 Key</span>
+          <input id="settingsGptImageKey" type="password" autocomplete="off" placeholder="留空则使用平台总 Key" />
+        </label>
+
+        <label class="settings-field">
+          <span>grok-image-image / grok-3-image 专用 Key</span>
+          <input id="settingsGrokImageKey" type="password" autocomplete="off" placeholder="留空则使用平台总 Key" />
+        </label>
+
+        <label class="settings-field settings-field-full">
+          <span>Base URL</span>
+          <input id="settingsBaseUrl" type="text" autocomplete="off" />
+        </label>
+
+        <label class="settings-field">
+          <span>生图接口</span>
+          <input id="settingsImageEndpoint" type="text" autocomplete="off" />
+        </label>
+
+        <label class="settings-field">
+          <span>编辑接口</span>
+          <input id="settingsEditEndpoint" type="text" autocomplete="off" />
+        </label>
+
+        <label class="settings-field settings-field-full">
+          <span>默认模型</span>
+          <input id="settingsDefaultModel" type="text" autocomplete="off" />
+        </label>
+
+        <label class="settings-field settings-field-full">
+          <span>文件缓存位置</span>
+          <input id="settingsCacheDir" type="text" autocomplete="off" placeholder="例如 D:\ccCanvasCache" />
+        </label>
+
+        <div class="settings-actions">
+          <span id="settingsStatus" class="muted"></span>
+          <button id="saveSettingsButton" type="submit">保存设置</button>
+        </div>
+      </form>
+    </dialog>
+
+    <datalist id="modelOptions">
+      <option value="gpt-image-2"></option>
+      <option value="grok-image-image"></option>
+      <option value="grok-3-image"></option>
+    </datalist>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

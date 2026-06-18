@@ -1,0 +1,13 @@
+{
+  "name": "yunwu-image-canvas",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "build:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-installer.ps1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

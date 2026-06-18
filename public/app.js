@@ -1,0 +1,3238 @@
+const storageKeyPrefix = "cc-infinite-canvas-project-v1";
+const currentProjectStorageKey = "cc-infinite-canvas-current-project";
+const storageKey = "yunwu-image-canvas-v2";
+const legacyStorageKey = "yunwu-image-canvas-v1";
+const minZoom = 0.25;
+const maxZoom = 2.5;
+const defaultTaskWidth = 460;
+const defaultImageScale = 0.5;
+const defaultNoteWidth = 300;
+const defaultNoteHeight = 64;
+const minNoteWidth = 96;
+const minNoteHeight = 44;
+const maxNoteWidth = 1600;
+const maxNoteHeight = 1400;
+const minNoteFontSize = 10;
+const maxNoteFontSize = 96;
+
+const addTaskButton = document.querySelector("#addTaskButton");
+const addEditTaskButton = document.querySelector("#addEditTaskButton");
+const addGrokTaskButton = document.querySelector("#addGrokTaskButton");
+const addGrokEditTaskButton = document.querySelector("#addGrokEditTaskButton");
+const clearCanvasButton = document.querySelector("#clearCanvasButton");
+const generateAllButton = document.querySelector("#generateAllButton");
+const addNoteButton = document.querySelector("#addNoteButton");
+const resetViewButton = document.querySelector("#resetViewButton");
+const zoomInButton = document.querySelector("#zoomInButton");
+const zoomOutButton = document.querySelector("#zoomOutButton");
+const settingsButton = document.querySelector("#settingsButton");
+const newProjectButton = document.querySelector("#newProjectButton");
+const saveProjectButton = document.querySelector("#saveProjectButton");
+const projectNameInput = document.querySelector("#projectNameInput");
+const projectSelect = document.querySelector("#projectSelect");
+const zoomLevel = document.querySelector("#zoomLevel");
+const keyStatus = document.querySelector("#keyStatus");
+const requestMeta = document.querySelector("#requestMeta");
+const emptyState = document.querySelector("#emptyState");
+const canvasViewport = document.querySelector("#canvasViewport");
+const canvasStage = document.querySelector("#canvasStage");
+const minimap = document.querySelector("#minimap");
+const minimapWorld = document.querySelector("#minimapWorld");
+const minimapView = document.querySelector("#minimapView");
+const rawResponse = document.querySelector("#rawResponse");
+const selectionToolbar = document.querySelector("#selectionToolbar");
+const selectionMeta = document.querySelector("#selectionMeta");
+const selectionScaleInput = document.querySelector("#selectionScaleInput");
+const applySelectionScaleButton = document.querySelector("#applySelectionScaleButton");
+const reusePromptButton = document.querySelector("#reusePromptButton");
+const settingsDialog = document.querySelector("#settingsDialog");
+const settingsForm = document.querySelector("#settingsForm");
+const closeSettingsButton = document.querySelector("#closeSettingsButton");
+const settingsApiKey = document.querySelector("#settingsApiKey");
+const settingsGptImageKey = document.querySelector("#settingsGptImageKey");
+const settingsGrokImageKey = document.querySelector("#settingsGrokImageKey");
+const settingsBaseUrl = document.querySelector("#settingsBaseUrl");
+const settingsImageEndpoint = document.querySelector("#settingsImageEndpoint");
+const settingsEditEndpoint = document.querySelector("#settingsEditEndpoint");
+const settingsDefaultModel = document.querySelector("#settingsDefaultModel");
+const settingsCacheDir = document.querySelector("#settingsCacheDir");
+const settingsStatus = document.querySelector("#settingsStatus");
+
+const gptSizeOptions = [
+  ["auto", "auto"],
+  ["1024x1024", "1024x1024 (1:1, 1K)"],
+  ["2048x2048", "2048x2048 (1:1, 2K)"],
+  ["2880x2880", "2880x2880 (1:1, 4K)"],
+  ["1280x720", "1280x720 (16:9, 1K)"],
+  ["2048x1152", "2048x1152 (16:9, 2K)"],
+  ["3840x2160", "3840x2160 (16:9, 4K)"],
+  ["720x1280", "720x1280 (9:16, 1K)"],
+  ["1152x2048", "1152x2048 (9:16, 2K)"],
+  ["2160x3840", "2160x3840 (9:16, 4K)"],
+  ["1152x864", "1152x864 (4:3, 1K)"],
+  ["2304x1728", "2304x1728 (4:3, 2K)"],
+  ["3264x2448", "3264x2448 (4:3, 4K)"],
+  ["864x1152", "864x1152 (3:4, 1K)"],
+  ["1728x2304", "1728x2304 (3:4, 2K)"],
+  ["2448x3264", "2448x3264 (3:4, 4K)"],
+  ["1456x624", "1456x624 (21:9, 1K)"],
+  ["2912x1248", "2912x1248 (21:9, 2K)"],
+  ["3840x1648", "3840x1648 (21:9, 4K)"],
+  ["624x1456", "624x1456 (9:21, 1K)"],
+  ["1248x2912", "1248x2912 (9:21, 2K)"],
+  ["1648x3840", "1648x3840 (9:21, 4K)"]
+];
+
+const grokSizeOptions = [
+  ["960x960", "960x960 (1:1)"],
+  ["720x1280", "720x1280 (9:16)"],
+  ["1280x720", "1280x720 (16:9)"],
+  ["1168x784", "1168x784 (3:2)"],
+  ["784x1168", "784x1168 (2:3)"]
+];
+
+const qualityOptions = [
+  ["", "不传"],
+  ["auto", "auto"],
+  ["low", "low"],
+  ["medium", "medium"],
+  ["high", "high"]
+];
+
+const formatOptions = [
+  ["png", "png"],
+  ["jpeg", "jpeg"],
+  ["webp", "webp"],
+  ["", "不传"]
+];
+
+const backgroundOptions = [
+  ["", "不传"],
+  ["auto", "auto"],
+  ["opaque", "opaque"],
+  ["transparent", "transparent"]
+];
+
+const moderationOptions = [
+  ["", "不传"],
+  ["auto", "auto"],
+  ["low", "low"]
+];
+
+const grokDefaultModel = "grok-3-image";
+const grokDefaultSize = "960x960";
+const grokModelOptions = [
+  ["grok-3-image", "grok-3-image"],
+  ["grok-image-image", "grok-image-image"]
+];
+const taskModelOptions = [
+  ["gpt-image-2", "gpt-image-2"],
+  ...grokModelOptions
+];
+
+const fileStore = new Map();
+const selectedNodeIds = new Set();
+const undoLimit = 80;
+const undoStack = [];
+
+let config = {};
+let saveTimer = 0;
+let isLoadingProject = true;
+let isRestoringHistory = false;
+let isSpacePressed = false;
+let createMenu = null;
+let pendingCreatePoint = null;
+let selectionBox = null;
+let minimapBounds = { x: -400, y: -300, width: 1200, height: 900 };
+let referencePickTargetNodeId = null;
+let editingNoteId = null;
+let lastHistorySnapshot = "";
+let currentProjectId = "default";
+let currentProjectName = "未命名画布";
+let projectList = [];
+let canvasState = {
+  nodes: [],
+  viewport: { x: 120, y: 90, zoom: 1 },
+  nextZ: 1
+};
+
+init();
+
+async function init() {
+  createContextMenu();
+  bindCanvasEvents();
+  bindMinimapEvents();
+
+  try {
+    const response = await fetch("/api/config");
+    config = await response.json();
+    setKeyStatus(config.hasAnyKey ?? config.hasApiKey);
+  } catch (error) {
+    showToast(error.message || "配置读取失败");
+  }
+
+  isLoadingProject = false;
+  await refreshProjectList();
+  const preferredProjectId = localStorage.getItem(currentProjectStorageKey) || projectList[0]?.id || "default";
+  await loadProjectById(preferredProjectId, { initial: true });
+}
+
+addTaskButton.addEventListener("click", () => addTaskNode("create"));
+addEditTaskButton?.addEventListener("click", () => addTaskNode("edit"));
+addGrokTaskButton?.addEventListener("click", () => addGrokTaskNode("create"));
+addGrokEditTaskButton?.addEventListener("click", () => addGrokTaskNode("edit"));
+
+generateAllButton.addEventListener("click", () => {
+  const runnable = canvasState.nodes.filter((node) => isRunnableTask(node));
+  if (!runnable.length) {
+    showToast("没有可生成的任务节点");
+    return;
+  }
+  runnable.forEach((node) => generateNode(node.id));
+});
+
+addNoteButton.addEventListener("click", addNoteNode);
+clearCanvasButton.addEventListener("click", clearCanvas);
+resetViewButton.addEventListener("click", resetViewport);
+zoomInButton.addEventListener("click", () => zoomAtCenter(canvasState.viewport.zoom * 1.2));
+zoomOutButton.addEventListener("click", () => zoomAtCenter(canvasState.viewport.zoom / 1.2));
+newProjectButton.addEventListener("click", () => createNewProject());
+saveProjectButton.addEventListener("click", () => saveProjectNow());
+projectSelect.addEventListener("change", () => switchProject(projectSelect.value));
+projectNameInput.addEventListener("change", () => renameCurrentProject(projectNameInput.value));
+projectNameInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    projectNameInput.blur();
+  }
+});
+settingsButton.addEventListener("click", openSettingsDialog);
+closeSettingsButton.addEventListener("click", () => settingsDialog.close());
+settingsForm.addEventListener("submit", saveSettings);
+applySelectionScaleButton.addEventListener("click", applySelectionScale);
+reusePromptButton.addEventListener("click", reusePromptFromSelection);
+selectionScaleInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    applySelectionScale();
+  }
+});
+
+function addTaskNode(mode = "create", point = null, options = {}) {
+  const center = point || getViewportCenterWorld();
+  const offset = point ? 0 : canvasState.nodes.length % 8;
+  const node = createDefaultTaskNode(mode);
+  if (options.preset === "grok") node.model = isGrokModelName(node.model) ? node.model : grokDefaultModel;
+  applyTaskModelDefaults(node, { force: options.preset === "grok" });
+  if (options.prompt) node.prompt = options.prompt;
+
+  node.x = Math.round(center.x - node.width / 2 + offset * 28);
+  node.y = Math.round(center.y - 210 + offset * 28);
+  node.z = ++canvasState.nextZ;
+
+  canvasState.nodes.push(node);
+  selectOnly(node.id, { revealControls: true });
+  saveCanvasState();
+  updateCanvasMeta();
+  return node;
+}
+
+function addGrokTaskNode(mode = "create", point = null) {
+  return addTaskNode(mode, point, { preset: "grok" });
+}
+
+function applyTaskNodePreset(node, preset) {
+  if (preset === "grok") {
+    node.model = isGrokModelName(node.model) ? node.model : grokDefaultModel;
+  }
+  applyTaskModelDefaults(node, { force: preset === "grok" });
+}
+
+function applyTaskModelDefaults(node, options = {}) {
+  const wasGrok = node.provider === "grok";
+  const isGrok = isGrokModelName(node.model);
+  node.provider = isGrok ? "grok" : "";
+
+  if (isGrok) {
+    node.model = isGrokModelName(node.model) ? node.model : grokDefaultModel;
+    if (node.mode === "edit") {
+      node.size = "";
+    } else if (!isSizeAllowedForModel(node.size, node.model)) {
+      node.size = defaultSizeForModel(node.model, node.mode);
+    }
+    node.quality = "";
+    node.format = "png";
+    node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
+    if (node.mode === "create") {
+      node.extraParams.response_format = node.extraParams.response_format || "url";
+    } else if (options.force || options.modeChanged || options.modelChanged) {
+      delete node.extraParams.response_format;
+    }
+  } else {
+    node.model = node.model || config.defaultModel || "gpt-image-2";
+    if (!isSizeAllowedForModel(node.size, node.model)) {
+      node.size = defaultSizeForModel(node.model, node.mode);
+    }
+    if (wasGrok || options.modelChanged) {
+      node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
+      delete node.extraParams.response_format;
+    }
+  }
+
+  node.extraParamsText = JSON.stringify(node.extraParams, null, 2);
+  node.debugOpen = true;
+}
+
+function isGrokModelName(model) {
+  return String(model || "").trim().toLowerCase().startsWith("grok-");
+}
+
+function sizeOptionsForModel(model) {
+  return isGrokModelName(model) ? grokSizeOptions : gptSizeOptions;
+}
+
+function defaultSizeForModel(model, mode = "create") {
+  if (isGrokModelName(model)) return mode === "create" ? grokDefaultSize : "";
+  return "auto";
+}
+
+function isSizeAllowedForModel(size, model) {
+  if (!size) return true;
+  return sizeOptionsForModel(model).some(([value]) => value === size);
+}
+
+function createDefaultTaskNode(mode = "create") {
+  const normalizedMode = mode === "edit" ? "edit" : "create";
+  return {
+    id: createId(),
+    type: "task",
+    provider: "",
+    prompt: "",
+    model: config.defaultModel || "gpt-image-2",
+    n: "1",
+    size: "auto",
+    quality: "",
+    format: "png",
+    baseUrl: config.baseUrl || "https://yunwu.ai",
+    endpointPath: defaultEndpointForMode(normalizedMode),
+    mode: normalizedMode,
+    background: "",
+    moderation: "",
+    extraParams: {},
+    extraParamsText: "{}",
+    cachedImages: [],
+    cachedMask: null,
+    cacheStatus: normalizedMode === "edit" ? "pending" : "none",
+    sessionFiles: [],
+    sessionMask: "",
+    images: [],
+    status: "idle",
+    error: "",
+    durationMs: null,
+    debugOpen: true,
+    width: defaultTaskWidth,
+    x: 0,
+    y: 0,
+    z: 1,
+    createdAt: new Date().toISOString()
+  };
+}
+
+function addNoteNode(point = null) {
+  const center = point || getViewportCenterWorld();
+  const offset = point ? 0 : canvasState.nodes.length % 8;
+  const node = {
+    id: createId(),
+    type: "note",
+    text: "",
+    fontSize: 22,
+    color: "#202124",
+    width: defaultNoteWidth,
+    height: defaultNoteHeight,
+    x: Math.round(center.x - defaultNoteWidth / 2 + offset * 22),
+    y: Math.round(center.y - 60 + offset * 22),
+    z: ++canvasState.nextZ,
+    createdAt: new Date().toISOString()
+  };
+
+  canvasState.nodes.push(node);
+  editingNoteId = node.id;
+  selectOnly(node.id, { focusSelector: ".note-editor" });
+  saveCanvasState();
+  updateCanvasMeta();
+}
+
+async function generateNode(nodeId) {
+  const node = canvasState.nodes.find((item) => item.id === nodeId);
+  if (!node || node.type !== "task" || node.status === "running") return;
+
+  if (!node.prompt.trim()) {
+    showToast("节点提示词不能为空");
+    return;
+  }
+
+  if (!syncNodeExtraParams(node)) return;
+
+  node.status = "running";
+  node.error = "";
+  node.debugOpen = false;
+  node.z = ++canvasState.nextZ;
+  selectedNodeIds.delete(node.id);
+  updateNode(node);
+  saveCanvasState({ history: false });
+  updateCanvasMeta();
+
+  try {
+    const response = await fetch("/api/generate", {
+      method: "POST",
+      ...buildNodeRequest(node)
+    });
+    const data = await response.json();
+    rawResponse.textContent = JSON.stringify(data.raw || data, null, 2);
+
+    if (!response.ok) {
+      throw new Error(data.error || "生成失败");
+    }
+
+    const incoming = (data.images || []).map((image) => normalizeNodeImage(image, node));
+    if (!incoming.length) {
+      throw new Error("接口已返回，但没有识别到图片字段");
+    }
+
+    const previousImages = node.images || [];
+    const previousKeys = new Set(previousImages.map(getImageKey).filter(Boolean));
+    const newImages = incoming.filter((image) => !previousKeys.has(getImageKey(image)));
+    node.images = dedupeNodeImages([...previousImages, ...incoming]);
+    createImageNodesForTask(node, newImages);
+    node.status = "done";
+    node.durationMs = data.durationMs;
+    node.error = "";
+  } catch (error) {
+    node.status = "error";
+    node.error = error.message || "生成失败";
+    showToast(node.error);
+  } finally {
+    renderCanvas();
+    saveCanvasState();
+    updateCanvasMeta();
+  }
+}
+
+function buildNodeRequest(node) {
+  if (node.mode === "edit") {
+    const storedFiles = fileStore.get(node.id);
+    const hasUploadedImages = Boolean(storedFiles?.images?.length);
+    const hasUploadedMask = Boolean(storedFiles?.mask);
+    if (hasUploadedImages || (hasUploadedMask && node.cachedImages?.length)) {
+      const formData = new FormData();
+      appendNodeFields(formData, node, { includeCachedAssets: true });
+      if (hasUploadedImages) storedFiles.images.forEach((file) => formData.append("image", file));
+      if (storedFiles.mask) formData.append("mask", storedFiles.mask);
+      return { body: formData };
+    }
+
+    if (node.cachedImages?.length) {
+      return {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildNodePayload(node))
+      };
+    }
+
+    throw new Error("编辑节点缺少参考图片，请在节点里选择图片");
+  }
+
+  return {
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(buildNodePayload(node))
+  };
+}
+
+function buildNodePayload(node) {
+  return {
+    projectId: currentProjectId,
+    mode: node.mode,
+    prompt: node.prompt.trim(),
+    model: node.model,
+    n: node.n,
+    size: node.size,
+    quality: node.quality,
+    format: node.format,
+    background: node.background,
+    moderation: node.moderation,
+    baseUrl: node.baseUrl,
+    endpointPath: node.endpointPath || defaultEndpointForMode(node.mode),
+    extraParams: node.extraParams || {},
+    cachedImages: node.cachedImages || [],
+    cachedMask: node.cachedMask ? [node.cachedMask] : []
+  };
+}
+
+function appendNodeFields(formData, node, options = {}) {
+  formData.append("projectId", currentProjectId);
+  formData.append("mode", node.mode);
+  formData.append("prompt", node.prompt.trim());
+  formData.append("model", node.model);
+  formData.append("n", node.n);
+  formData.append("size", node.size);
+  formData.append("quality", node.quality || "");
+  formData.append("format", node.format || "");
+  formData.append("background", node.background || "");
+  formData.append("moderation", node.moderation || "");
+  formData.append("baseUrl", node.baseUrl);
+  formData.append("endpointPath", node.endpointPath || defaultEndpointForMode(node.mode));
+  formData.append("extraParams", JSON.stringify(node.extraParams || {}));
+  if (options.includeCachedAssets && node.cachedImages?.length) {
+    formData.append("cachedImages", JSON.stringify(node.cachedImages));
+  }
+  if (options.includeCachedAssets && node.cachedMask) {
+    formData.append("cachedMask", JSON.stringify([node.cachedMask]));
+  }
+}
+
+function normalizeNodeImage(image, node) {
+  return {
+    id: createId(),
+    url: image.url,
+    filename: image.filename || "generated-image",
+    sourceUrl: image.sourceUrl || "",
+    prompt: node.prompt,
+    model: node.model,
+    size: node.size,
+    format: node.format || "",
+    createdAt: new Date().toISOString()
+  };
+}
+
+function dedupeNodeImages(images) {
+  const seen = new Set();
+  return images.filter((image) => {
+    const key = getImageKey(image);
+    if (!key) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function getImageKey(image) {
+  return image?.sourceUrl || image?.url || image?.filename || "";
+}
+
+function createImageNodesForTask(taskNode, images) {
+  if (!images.length) return;
+
+  const existingKeys = new Set(
+    canvasState.nodes
+      .filter((node) => node.type === "image")
+      .map((node) => node.sourceImageKey)
+      .filter(Boolean)
+  );
+
+  let cursorY = taskNode.y;
+  const x = taskNode.x + (taskNode.width || defaultTaskWidth) + 48;
+
+  for (const image of images) {
+    const key = getImageKey(image);
+    if (key && existingKeys.has(key)) continue;
+
+    const dimensions = parseImageSize(image.size || taskNode.size);
+    const node = {
+      id: createId(),
+      type: "image",
+      image,
+      sourceTaskId: taskNode.id,
+      sourceImageKey: key,
+      originalWidth: dimensions.width || 512,
+      originalHeight: dimensions.height || 512,
+      scale: defaultImageScale,
+      x,
+      y: cursorY,
+      z: ++canvasState.nextZ,
+      createdAt: new Date().toISOString()
+    };
+
+    canvasState.nodes.push(node);
+    existingKeys.add(key);
+    cursorY += node.originalHeight * node.scale + 32;
+  }
+}
+
+function parseImageSize(size) {
+  const match = String(size || "").match(/^(\d+)x(\d+)$/i);
+  if (!match) return { width: 512, height: 512 };
+  return {
+    width: Number(match[1]) || 512,
+    height: Number(match[2]) || 512
+  };
+}
+
+async function cacheEditFiles(nodeId) {
+  const storedFiles = fileStore.get(nodeId);
+  const node = canvasState.nodes.find((item) => item.id === nodeId);
+  if (!node || (!storedFiles?.images?.length && !storedFiles?.mask)) return;
+
+  const formData = new FormData();
+  formData.append("projectId", currentProjectId);
+  (storedFiles.images || []).forEach((file) => formData.append("image", file));
+  if (storedFiles.mask) formData.append("mask", storedFiles.mask);
+
+  try {
+    const response = await fetch("/api/cache-assets", {
+      method: "POST",
+      body: formData
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "素材缓存失败");
+
+    const assets = data.assets || [];
+    const imageAssets = assets.filter((asset) => asset.field === "image");
+    if (imageAssets.length) node.cachedImages = dedupeAssetRefs([...(node.cachedImages || []), ...imageAssets]);
+    const maskAsset = assets.find((asset) => asset.field === "mask");
+    node.cachedMask = maskAsset || node.cachedMask || null;
+    node.cacheStatus = node.cachedImages.length ? "ready" : "session-only";
+
+    const nextStored = { ...storedFiles };
+    if (imageAssets.length) delete nextStored.images;
+    if (maskAsset) delete nextStored.mask;
+    if (nextStored.images?.length || nextStored.mask) fileStore.set(node.id, nextStored);
+    else fileStore.delete(node.id);
+  } catch {
+    node.cacheStatus = "session-only";
+  }
+
+  updateNode(node);
+  saveCanvasState();
+}
+
+function dedupeAssetRefs(assets) {
+  const seen = new Set();
+  return assets.filter((asset) => {
+    const key = asset?.url || asset?.path || asset?.filename || asset?.originalName || "";
+    if (!key) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function syncNodeExtraParams(node) {
+  const raw = (node.extraParamsText ?? "{}").trim();
+  if (!raw) {
+    node.extraParams = {};
+    node.extraParamsText = "{}";
+    return true;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("额外 JSON 参数必须是对象");
+    }
+    node.extraParams = parsed;
+    return true;
+  } catch (error) {
+    showToast(error.message || "额外 JSON 参数格式错误");
+    return false;
+  }
+}
+
+function setKeyStatus(hasApiKey) {
+  keyStatus.classList.toggle("ready", hasApiKey);
+  keyStatus.classList.toggle("missing", !hasApiKey);
+  keyStatus.textContent = hasApiKey ? "Key 已配置" : "Key 未配置";
+}
+
+function openSettingsDialog() {
+  settingsApiKey.value = "";
+  settingsGptImageKey.value = "";
+  settingsGrokImageKey.value = "";
+  settingsGptImageKey.placeholder = config.modelKeys?.["gpt-image-2"] ? "已配置，留空不修改" : "留空则使用平台总 Key";
+  settingsGrokImageKey.placeholder = config.modelKeys?.["grok-image-image"] ? "已配置，留空不修改" : "留空则使用平台总 Key";
+  settingsBaseUrl.value = config.baseUrl || "https://yunwu.ai";
+  settingsImageEndpoint.value = config.imageEndpoint || "/v1/images/generations";
+  settingsEditEndpoint.value = config.editEndpoint || "/v1/images/edits";
+  settingsDefaultModel.value = config.defaultModel || "gpt-image-2";
+  settingsCacheDir.value = config.cacheDir || "";
+  settingsStatus.textContent = config.hasApiKey ? "Key 已配置" : "Key 未配置";
+  const modelKeyCount = Object.values(config.modelKeys || {}).filter(Boolean).length;
+  settingsStatus.textContent = config.hasApiKey || modelKeyCount ? `Key 已配置${modelKeyCount ? `（${modelKeyCount} 个模型专用）` : ""}` : "Key 未配置";
+  settingsDialog.showModal();
+}
+
+async function saveSettings(event) {
+  event.preventDefault();
+  settingsStatus.textContent = "保存中";
+
+  try {
+    const payload = {
+      apiKey: settingsApiKey.value.trim(),
+      modelApiKeys: {
+        "gpt-image-2": settingsGptImageKey.value.trim(),
+        "grok-image-image": settingsGrokImageKey.value.trim()
+      },
+      baseUrl: settingsBaseUrl.value.trim(),
+      imageEndpoint: settingsImageEndpoint.value.trim(),
+      editEndpoint: settingsEditEndpoint.value.trim(),
+      defaultModel: settingsDefaultModel.value.trim(),
+      cacheDir: settingsCacheDir.value.trim()
+    };
+
+    const response = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "设置保存失败");
+
+    config = {
+      ...config,
+      hasApiKey: data.hasApiKey,
+      hasAnyKey: data.hasAnyKey,
+      baseUrl: data.baseUrl,
+      imageEndpoint: data.imageEndpoint,
+      editEndpoint: data.editEndpoint,
+      defaultModel: data.defaultModel,
+      modelKeys: data.modelKeys,
+      cacheDir: data.cacheDir
+    };
+    setKeyStatus(config.hasAnyKey ?? config.hasApiKey);
+    await refreshProjectList();
+    settingsApiKey.value = "";
+    settingsGptImageKey.value = "";
+    settingsGrokImageKey.value = "";
+    settingsStatus.textContent = "已保存";
+    showToast("设置已保存");
+  } catch (error) {
+    settingsStatus.textContent = error.message || "保存失败";
+  }
+}
+
+function applySelectionScale() {
+  const selectedImages = canvasState.nodes.filter((node) => selectedNodeIds.has(node.id) && node.type === "image");
+  if (!selectedImages.length) {
+    showToast("选区里没有图片节点");
+    return;
+  }
+
+  const scale = clamp((Number(selectionScaleInput.value) || 50) / 100, 0.05, 4);
+  for (const node of selectedImages) {
+    node.scale = scale;
+  }
+
+  renderCanvas();
+  saveCanvasState();
+}
+
+function reusePromptFromSelection() {
+  const sourceImage = getSelectedImagesWithPrompt()[0];
+  if (!sourceImage) {
+    showToast("选中的图片没有可复用的提示词");
+    return;
+  }
+
+  reusePromptFromImage(sourceImage.id);
+}
+
+function reusePromptFromImage(imageNodeId) {
+  const sourceImage = canvasState.nodes.find((node) => node.id === imageNodeId && node.type === "image");
+  const prompt = getImagePrompt(sourceImage);
+  if (!sourceImage || !prompt) {
+    showToast("这张图片没有可复用的提示词");
+    return;
+  }
+
+  const selectedTasks = canvasState.nodes.filter((node) => selectedNodeIds.has(node.id) && node.type === "task");
+  if (selectedTasks.length) {
+    for (const task of selectedTasks) {
+      task.prompt = prompt;
+      task.debugOpen = true;
+    }
+    renderCanvas();
+    saveCanvasState();
+    showToast(`提示词已复用到 ${selectedTasks.length} 个节点`);
+    return;
+  }
+
+  const scale = Number(sourceImage.scale) || defaultImageScale;
+  const imageWidth = Math.max(1, Number(sourceImage.originalWidth) || 512) * scale;
+  const point = {
+    x: sourceImage.x + imageWidth + 56 + defaultTaskWidth / 2,
+    y: sourceImage.y + 210
+  };
+  const task = addTaskNode("create", point, { prompt });
+  task.debugOpen = true;
+  updateNode(task);
+  saveCanvasState();
+  showToast("已用图片提示词创建新生图节点");
+}
+
+function getSelectedImagesWithPrompt() {
+  return canvasState.nodes.filter((node) => selectedNodeIds.has(node.id) && node.type === "image" && getImagePrompt(node));
+}
+
+function getImagePrompt(node) {
+  return String(node?.image?.prompt || "").trim();
+}
+
+function updateSelectionToolbar() {
+  const selected = canvasState.nodes.filter((node) => selectedNodeIds.has(node.id));
+  if (!selected.length) {
+    selectionToolbar.hidden = true;
+    return;
+  }
+
+  const selectedImages = selected.filter((node) => node.type === "image");
+  selectionToolbar.hidden = false;
+  selectionMeta.textContent = selectedImages.length
+    ? `已选中 ${selected.length} 项 · ${selectedImages.length} 张图片`
+    : `已选中 ${selected.length} 项`;
+
+  const canScaleImages = selectedImages.length > 0;
+  const canReusePrompt = getSelectedImagesWithPrompt().length > 0;
+  selectionScaleInput.disabled = !canScaleImages;
+  applySelectionScaleButton.disabled = !canScaleImages;
+  reusePromptButton.disabled = !canReusePrompt;
+
+  if (canScaleImages && document.activeElement !== selectionScaleInput) {
+    const averageScale =
+      selectedImages.reduce((sum, node) => sum + (Number(node.scale) || defaultImageScale), 0) / selectedImages.length;
+    selectionScaleInput.value = String(Math.round(averageScale * 100));
+  }
+}
+
+function bindCanvasEvents() {
+  canvasViewport.addEventListener("pointerdown", handleCanvasPointerDown);
+  canvasViewport.addEventListener("dblclick", handleCanvasDoubleClick);
+  canvasViewport.addEventListener("wheel", handleWheel, { passive: false });
+  canvasViewport.addEventListener("dragover", handleCanvasDragOver);
+  canvasViewport.addEventListener("dragleave", handleCanvasDragLeave);
+  canvasViewport.addEventListener("drop", handleCanvasDrop);
+
+  window.addEventListener("keydown", (event) => {
+    if (handleCanvasShortcut(event)) return;
+    if (event.code !== "Space" || isInteractiveElement(event.target) || settingsDialog.open) return;
+    event.preventDefault();
+    isSpacePressed = true;
+    canvasViewport.classList.add("pan-mode");
+  });
+
+  window.addEventListener("keyup", (event) => {
+    if (event.code !== "Space") return;
+    isSpacePressed = false;
+    canvasViewport.classList.remove("pan-mode");
+  });
+
+  document.addEventListener("pointerdown", (event) => {
+    if (createMenu && !createMenu.hidden && !createMenu.contains(event.target)) {
+      hideCreateMenu();
+    }
+  });
+}
+
+function handleCanvasShortcut(event) {
+  if (settingsDialog.open) return false;
+
+  const key = event.key.toLowerCase();
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === "s") {
+    event.preventDefault();
+    saveProjectNow();
+    return true;
+  }
+
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === "n") {
+    event.preventDefault();
+    createNewProject();
+    return true;
+  }
+
+  if (isInteractiveElement(event.target)) return false;
+
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === "z") {
+    event.preventDefault();
+    undoCanvasChange();
+    return true;
+  }
+
+  if ((event.key === "Delete" || event.key === "Backspace") && selectedNodeIds.size) {
+    event.preventDefault();
+    deleteSelectedNodes();
+    return true;
+  }
+
+  return false;
+}
+
+function bindMinimapEvents() {
+  if (!minimap) return;
+
+  const jump = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const point = getMinimapWorldPoint(event.clientX, event.clientY);
+    centerViewportOnWorld(point.x, point.y);
+  };
+
+  minimap.addEventListener("pointerdown", (event) => {
+    jump(event);
+    minimap.setPointerCapture?.(event.pointerId);
+
+    const move = (moveEvent) => jump(moveEvent);
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    };
+
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop, { once: true });
+  });
+}
+
+function handleCanvasDragOver(event) {
+  if (!hasImageFiles(event.dataTransfer?.items)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+  canvasViewport.classList.add("is-file-over");
+}
+
+function handleCanvasDragLeave(event) {
+  if (canvasViewport.contains(event.relatedTarget)) return;
+  canvasViewport.classList.remove("is-file-over");
+}
+
+async function handleCanvasDrop(event) {
+  const files = Array.from(event.dataTransfer?.files || []).filter((file) => file.type.startsWith("image/"));
+  if (!files.length) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  canvasViewport.classList.remove("is-file-over");
+  hideCreateMenu();
+
+  const point = getWorldPointFromClient(event.clientX, event.clientY);
+  await addLocalImageFilesToCanvas(files, point);
+}
+
+function hasImageFiles(items) {
+  return Array.from(items || []).some((item) => item.kind === "file" && item.type.startsWith("image/"));
+}
+
+async function addLocalImageFilesToCanvas(files, point) {
+  const formData = new FormData();
+  formData.append("projectId", currentProjectId);
+  for (const file of files) {
+    formData.append("image", file);
+  }
+
+  let dimensions;
+  try {
+    dimensions = await Promise.all(files.map(readImageFileDimensions));
+  } catch {
+    dimensions = files.map(() => ({ width: 512, height: 512 }));
+  }
+
+  try {
+    const response = await fetch("/api/cache-assets", {
+      method: "POST",
+      body: formData
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "本地图片缓存失败");
+
+    const assets = (data.assets || []).filter((asset) => asset.field === "image");
+    if (!assets.length) throw new Error("没有识别到可用图片");
+
+    let cursorX = point.x;
+    let cursorY = point.y;
+    const createdIds = [];
+
+    for (const [index, asset] of assets.entries()) {
+      const dim = dimensions[index] || { width: 512, height: 512 };
+      const image = {
+        id: createId(),
+        type: "file",
+        url: asset.url || `/${asset.path}`,
+        filename: asset.originalName || asset.filename || "local-image",
+        sourceUrl: "",
+        prompt: "本地图片",
+        model: "local",
+        size: `${dim.width}x${dim.height}`,
+        format: imageFormatFromContentType(asset.contentType),
+        cachedAsset: asset,
+        createdAt: new Date().toISOString()
+      };
+
+      const imageNode = {
+        id: createId(),
+        type: "image",
+        image,
+        sourceTaskId: "",
+        sourceImageKey: asset.filename || image.url,
+        originalWidth: dim.width,
+        originalHeight: dim.height,
+        scale: defaultImageScale,
+        x: Math.round(cursorX),
+        y: Math.round(cursorY),
+        z: ++canvasState.nextZ,
+        createdAt: new Date().toISOString()
+      };
+
+      canvasState.nodes.push(imageNode);
+      createdIds.push(imageNode.id);
+      cursorX += dim.width * defaultImageScale + 32;
+      if (index > 0 && index % 3 === 2) {
+        cursorX = point.x;
+        cursorY += dim.height * defaultImageScale + 32;
+      }
+    }
+
+    selectedNodeIds.clear();
+    createdIds.forEach((id) => selectedNodeIds.add(id));
+    renderCanvas();
+    saveCanvasState();
+    showToast(`${createdIds.length} 张本地图片已加入画布`);
+  } catch (error) {
+    showToast(error.message || "拖入图片失败");
+  }
+}
+
+function readImageFileDimensions(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      const dimensions = {
+        width: image.naturalWidth || 512,
+        height: image.naturalHeight || 512
+      };
+      URL.revokeObjectURL(url);
+      resolve(dimensions);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Image dimension read failed"));
+    };
+    image.src = url;
+  });
+}
+
+function imageFormatFromContentType(contentType = "") {
+  if (contentType.includes("jpeg")) return "jpeg";
+  if (contentType.includes("webp")) return "webp";
+  if (contentType.includes("gif")) return "gif";
+  return "png";
+}
+
+function updateMinimap() {
+  if (!minimap || !minimapWorld || !minimapView) return;
+
+  minimapBounds = computeMinimapBounds();
+  minimapWorld.replaceChildren();
+
+  for (const node of canvasState.nodes) {
+    const bounds = getNodeBounds(node);
+    const item = document.createElement("span");
+    item.className = `minimap-node minimap-node-${node.type}`;
+    placeMinimapItem(item, bounds);
+    minimapWorld.append(item);
+  }
+
+  const viewportRect = getViewportWorldRect();
+  placeMinimapItem(minimapView, viewportRect);
+}
+
+function computeMinimapBounds() {
+  const rects = canvasState.nodes.map(getNodeBounds);
+  rects.push(getViewportWorldRect());
+
+  const minX = Math.min(...rects.map((rect) => rect.x));
+  const minY = Math.min(...rects.map((rect) => rect.y));
+  const maxX = Math.max(...rects.map((rect) => rect.x + rect.width));
+  const maxY = Math.max(...rects.map((rect) => rect.y + rect.height));
+  const padding = 240;
+
+  return {
+    x: minX - padding,
+    y: minY - padding,
+    width: Math.max(maxX - minX + padding * 2, 900),
+    height: Math.max(maxY - minY + padding * 2, 650)
+  };
+}
+
+function placeMinimapItem(element, rect) {
+  const left = ((rect.x - minimapBounds.x) / minimapBounds.width) * 100;
+  const top = ((rect.y - minimapBounds.y) / minimapBounds.height) * 100;
+  const width = (rect.width / minimapBounds.width) * 100;
+  const height = (rect.height / minimapBounds.height) * 100;
+
+  element.style.left = `${clamp(left, -20, 120)}%`;
+  element.style.top = `${clamp(top, -20, 120)}%`;
+  element.style.width = `${Math.max(width, 1.2)}%`;
+  element.style.height = `${Math.max(height, 1.2)}%`;
+}
+
+function getMinimapWorldPoint(clientX, clientY) {
+  const rect = minimap.getBoundingClientRect();
+  const localX = clamp((clientX - rect.left) / rect.width, 0, 1);
+  const localY = clamp((clientY - rect.top) / rect.height, 0, 1);
+  return {
+    x: minimapBounds.x + localX * minimapBounds.width,
+    y: minimapBounds.y + localY * minimapBounds.height
+  };
+}
+
+function centerViewportOnWorld(x, y) {
+  const rect = canvasViewport.getBoundingClientRect();
+  canvasState.viewport.x = rect.width / 2 - x * canvasState.viewport.zoom;
+  canvasState.viewport.y = rect.height / 2 - y * canvasState.viewport.zoom;
+  applyViewport();
+  saveCanvasState();
+}
+
+function getViewportWorldRect() {
+  const rect = canvasViewport.getBoundingClientRect();
+  return {
+    x: -canvasState.viewport.x / canvasState.viewport.zoom,
+    y: -canvasState.viewport.y / canvasState.viewport.zoom,
+    width: rect.width / canvasState.viewport.zoom,
+    height: rect.height / canvasState.viewport.zoom
+  };
+}
+
+function handleCanvasPointerDown(event) {
+  if (event.target.closest(".minimap")) return;
+  if (event.button === 1 || (event.button === 0 && isSpacePressed)) {
+    hideCreateMenu();
+    startPan(event);
+    return;
+  }
+
+  if (event.target.closest(".canvas-node")) return;
+  hideCreateMenu();
+
+  if (event.button !== 0) return;
+  startMarqueeSelect(event);
+}
+
+function handleCanvasDoubleClick(event) {
+  if (event.target.closest(".minimap")) return;
+  if (isSpacePressed) return;
+  if (event.target.closest(".canvas-node")) return;
+  event.preventDefault();
+  pendingCreatePoint = getWorldPointFromClient(event.clientX, event.clientY);
+  showCreateMenu(event.clientX, event.clientY);
+}
+
+function startPan(event) {
+  event.preventDefault();
+  const start = {
+    x: event.clientX,
+    y: event.clientY,
+    panX: canvasState.viewport.x,
+    panY: canvasState.viewport.y
+  };
+
+  canvasViewport.classList.add("is-panning");
+
+  const move = (moveEvent) => {
+    canvasState.viewport.x = start.panX + moveEvent.clientX - start.x;
+    canvasState.viewport.y = start.panY + moveEvent.clientY - start.y;
+    applyViewport();
+  };
+
+  const stop = () => {
+    canvasViewport.classList.remove("is-panning");
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", stop);
+    saveCanvasState();
+  };
+
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", stop, { once: true });
+}
+
+function startMarqueeSelect(event) {
+  event.preventDefault();
+  const start = { x: event.clientX, y: event.clientY };
+  let moved = false;
+
+  const move = (moveEvent) => {
+    const dx = moveEvent.clientX - start.x;
+    const dy = moveEvent.clientY - start.y;
+    if (!moved && Math.hypot(dx, dy) < 5) return;
+    moved = true;
+    updateSelectionBox(start.x, start.y, moveEvent.clientX, moveEvent.clientY);
+  };
+
+  const stop = (upEvent) => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", stop);
+    removeSelectionBox();
+
+    if (!moved) {
+      clearSelection();
+      return;
+    }
+
+    const worldRect = rectFromWorldPoints(
+      getWorldPointFromClient(start.x, start.y),
+      getWorldPointFromClient(upEvent.clientX, upEvent.clientY)
+    );
+    selectNodesInRect(worldRect, upEvent.shiftKey || upEvent.ctrlKey || upEvent.metaKey);
+  };
+
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", stop, { once: true });
+}
+
+function updateSelectionBox(startX, startY, endX, endY) {
+  if (!selectionBox) {
+    selectionBox = document.createElement("div");
+    selectionBox.className = "selection-rect";
+    canvasViewport.append(selectionBox);
+    canvasViewport.classList.add("is-selecting");
+  }
+
+  const viewportRect = canvasViewport.getBoundingClientRect();
+  const left = Math.min(startX, endX) - viewportRect.left;
+  const top = Math.min(startY, endY) - viewportRect.top;
+  const width = Math.abs(endX - startX);
+  const height = Math.abs(endY - startY);
+
+  selectionBox.style.left = `${left}px`;
+  selectionBox.style.top = `${top}px`;
+  selectionBox.style.width = `${width}px`;
+  selectionBox.style.height = `${height}px`;
+}
+
+function removeSelectionBox() {
+  if (selectionBox) selectionBox.remove();
+  selectionBox = null;
+  canvasViewport.classList.remove("is-selecting");
+}
+
+function handleWheel(event) {
+  event.preventDefault();
+  const factor = event.deltaY > 0 ? 0.9 : 1.1;
+  zoomAtPoint(canvasState.viewport.zoom * factor, event.clientX, event.clientY);
+}
+
+function zoomAtCenter(nextZoom) {
+  const rect = canvasViewport.getBoundingClientRect();
+  zoomAtPoint(nextZoom, rect.left + rect.width / 2, rect.top + rect.height / 2);
+}
+
+function zoomAtPoint(nextZoom, clientX, clientY) {
+  const zoom = clamp(nextZoom, minZoom, maxZoom);
+  const point = getWorldPointFromClient(clientX, clientY);
+  const rect = canvasViewport.getBoundingClientRect();
+  const localX = clientX - rect.left;
+  const localY = clientY - rect.top;
+
+  canvasState.viewport.zoom = zoom;
+  canvasState.viewport.x = localX - point.x * zoom;
+  canvasState.viewport.y = localY - point.y * zoom;
+  applyViewport();
+  saveCanvasState();
+}
+
+function applyViewport() {
+  const { x, y, zoom } = canvasState.viewport;
+  canvasViewport.style.setProperty("--pan-x", x);
+  canvasViewport.style.setProperty("--pan-y", y);
+  canvasViewport.style.setProperty("--zoom", zoom);
+  canvasViewport.style.setProperty("--screen-scale", 1 / zoom);
+  canvasStage.style.transform = `translate(${x}px, ${y}px) scale(${zoom})`;
+  zoomLevel.textContent = `${Math.round(zoom * 100)}%`;
+  updateMinimap();
+}
+
+function resetViewport() {
+  canvasState.viewport = { x: 120, y: 90, zoom: 1 };
+  applyViewport();
+  saveCanvasState();
+}
+
+function renderCanvas() {
+  syncNoteEditingWithSelection();
+  canvasStage.replaceChildren();
+
+  for (const node of canvasState.nodes) {
+    canvasStage.append(createCanvasNode(node));
+  }
+
+  emptyState.hidden = canvasState.nodes.length > 0;
+  updateCanvasMeta();
+  updateSelectionToolbar();
+  updateMinimap();
+}
+
+function updateNode(node) {
+  const previous = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === node.id);
+  if (previous) previous.replaceWith(createCanvasNode(node));
+}
+
+function createCanvasNode(node) {
+  if (node.type === "note") return createNoteNode(node);
+  if (node.type === "image") return createImageNode(node);
+  return createTaskNode(node);
+}
+
+function createImageNode(node) {
+  const selected = selectedNodeIds.has(node.id);
+  const scale = Number(node.scale) || defaultImageScale;
+  const width = Math.max(1, Number(node.originalWidth) || 512);
+  const height = Math.max(1, Number(node.originalHeight) || 512);
+
+  const tile = document.createElement("article");
+  tile.className = ["canvas-node", "image-node", selected ? "is-selected" : ""].filter(Boolean).join(" ");
+  tile.dataset.nodeId = node.id;
+  tile.style.left = `${node.x}px`;
+  tile.style.top = `${node.y}px`;
+  tile.style.width = `${Math.round(width * scale)}px`;
+  tile.style.height = `${Math.round(height * scale)}px`;
+  tile.style.zIndex = node.z;
+
+  const img = document.createElement("img");
+  img.alt = node.image?.prompt || "generated image";
+  img.src = node.image?.url || "";
+  img.draggable = false;
+  img.addEventListener("load", () => {
+    if (!img.naturalWidth || !img.naturalHeight) return;
+    if (node.originalWidth === img.naturalWidth && node.originalHeight === img.naturalHeight) return;
+    node.originalWidth = img.naturalWidth;
+    node.originalHeight = img.naturalHeight;
+    tile.style.width = `${Math.round(node.originalWidth * (Number(node.scale) || 1))}px`;
+    tile.style.height = `${Math.round(node.originalHeight * (Number(node.scale) || 1))}px`;
+    saveCanvasState();
+    updateMinimap();
+  });
+
+  tile.append(img);
+
+  if (selected) {
+    tile.append(createImageToolbar(node), createImagePromptPanel(node), createImageResizeHandle(node));
+  }
+
+  tile.addEventListener("pointerdown", (event) => {
+    if (referencePickTargetNodeId && event.button === 0 && !isInteractiveElement(event.target)) {
+      event.preventDefault();
+      event.stopPropagation();
+      useCanvasImagesAsReference(referencePickTargetNodeId, [node.id]);
+      referencePickTargetNodeId = null;
+      return;
+    }
+    startNodeDrag(event, node.id);
+  });
+  return tile;
+}
+
+function createImageToolbar(node) {
+  const toolbar = document.createElement("div");
+  toolbar.className = "image-toolbar";
+
+  const scaleInput = document.createElement("input");
+  scaleInput.type = "number";
+  scaleInput.min = "5";
+  scaleInput.max = "400";
+  scaleInput.step = "5";
+  scaleInput.value = String(Math.round((Number(node.scale) || 1) * 100));
+  scaleInput.title = "缩放百分比";
+  scaleInput.addEventListener("pointerdown", (event) => event.stopPropagation());
+  scaleInput.addEventListener("input", () => {
+    node.scale = clamp((Number(scaleInput.value) || 100) / 100, 0.05, 4);
+    updateNode(node);
+    updateSelectionToolbar();
+    saveCanvasState();
+    updateMinimap();
+  });
+
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.textContent = "100%";
+  reset.addEventListener("click", () => {
+    node.scale = 1;
+    updateNode(node);
+    updateSelectionToolbar();
+    saveCanvasState();
+    updateMinimap();
+  });
+
+  const open = document.createElement("a");
+  open.href = node.image?.url || "#";
+  open.target = "_blank";
+  open.rel = "noreferrer";
+  open.textContent = "打开";
+
+  const download = document.createElement("a");
+  download.href = node.image?.url || "#";
+  download.download = node.image?.filename || "generated-image";
+  download.textContent = "下载";
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.textContent = "删除";
+  remove.addEventListener("click", () => {
+    deleteNodes([node.id]);
+  });
+
+  toolbar.append(scaleInput, reset, open, download, remove);
+  return toolbar;
+}
+
+function createImagePromptPanel(node) {
+  const panel = document.createElement("div");
+  panel.className = "image-prompt-panel";
+  panel.addEventListener("pointerdown", (event) => event.stopPropagation());
+
+  const prompt = getImagePrompt(node);
+  const text = document.createElement("p");
+  text.className = "image-prompt-text";
+  text.textContent = prompt || "无提示词";
+
+  const meta = document.createElement("p");
+  meta.className = "image-prompt-meta";
+  meta.textContent = [node.image?.model, node.image?.size, node.image?.format].filter(Boolean).join(" · ");
+
+  const actions = document.createElement("div");
+  actions.className = "image-prompt-actions";
+
+  const reuse = document.createElement("button");
+  reuse.type = "button";
+  reuse.textContent = "复用提示词";
+  reuse.disabled = !prompt;
+  reuse.addEventListener("click", () => reusePromptFromImage(node.id));
+
+  actions.append(reuse);
+  panel.append(text, meta, actions);
+  return panel;
+}
+
+function createImageResizeHandle(node) {
+  const handle = document.createElement("button");
+  handle.type = "button";
+  handle.className = "image-resize-handle";
+  handle.title = "拖动缩放";
+  handle.setAttribute("aria-label", "拖动缩放图片");
+  handle.addEventListener("pointerdown", (event) => startImageResize(event, node.id));
+  return handle;
+}
+
+function startImageResize(event, nodeId) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  const node = canvasState.nodes.find((item) => item.id === nodeId);
+  if (!node || node.type !== "image") return;
+
+  const start = {
+    x: event.clientX,
+    y: event.clientY,
+    scale: Number(node.scale) || 1,
+    width: Math.max(1, Number(node.originalWidth) || 512),
+    height: Math.max(1, Number(node.originalHeight) || 512),
+    zoom: canvasState.viewport.zoom
+  };
+
+  const move = (moveEvent) => {
+    const dx = (moveEvent.clientX - start.x) / start.zoom;
+    const dy = (moveEvent.clientY - start.y) / start.zoom;
+    const targetScale = Math.max(
+      (start.width * start.scale + dx) / start.width,
+      (start.height * start.scale + dy) / start.height
+    );
+    node.scale = clamp(targetScale, 0.05, 4);
+
+    const tile = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === node.id);
+    if (tile) {
+      tile.style.width = `${Math.round(start.width * node.scale)}px`;
+      tile.style.height = `${Math.round(start.height * node.scale)}px`;
+    }
+    updateMinimap();
+  };
+
+  const stop = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", stop);
+    updateNode(node);
+    updateSelectionToolbar();
+    saveCanvasState();
+    updateMinimap();
+  };
+
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", stop, { once: true });
+}
+
+function createTaskNode(node) {
+  const selected = selectedNodeIds.has(node.id);
+  const compact = false;
+
+  const tile = document.createElement("article");
+  tile.className = [
+    "canvas-node",
+    "task-node",
+    `status-${node.status || "idle"}`,
+    selected ? "is-selected" : "",
+    compact ? "is-compact" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
+  tile.dataset.nodeId = node.id;
+  tile.style.left = `${node.x}px`;
+  tile.style.top = `${node.y}px`;
+  tile.style.width = `${node.width || defaultTaskWidth}px`;
+  tile.style.zIndex = node.z;
+
+  if (selected) {
+    tile.append(createTaskHeader(node), createPromptField(node), createDebugPanel(node));
+  }
+
+  tile.append(createImageArea(node, selected));
+
+  if (selected) {
+    tile.append(createTaskActions(node), createErrorLine(node));
+  }
+
+  tile.addEventListener("pointerdown", (event) => startNodeDrag(event, node.id));
+  return tile;
+}
+
+function createTaskHeader(node) {
+  const header = document.createElement("div");
+  header.className = "task-header";
+
+  const status = document.createElement("span");
+  status.className = "task-status";
+  status.textContent = statusText(node.status);
+
+  const modeTabs = document.createElement("div");
+  modeTabs.className = "node-mode-tabs";
+  modeTabs.append(createModeButton(node, "create", "创建"), createModeButton(node, "edit", "编辑"));
+
+  const meta = document.createElement("span");
+  meta.className = "node-meta";
+  meta.textContent = [node.model, node.size, node.format, cacheStatusText(node)].filter(Boolean).join(" · ");
+
+  header.append(status, modeTabs, meta);
+  return header;
+}
+
+function createPromptField(node) {
+  const prompt = document.createElement("textarea");
+  prompt.className = "node-prompt";
+  prompt.rows = 5;
+  prompt.value = node.prompt || "";
+  prompt.placeholder = "输入这个节点的提示词";
+  prompt.addEventListener("pointerdown", (event) => {
+    event.stopPropagation();
+    if (!selectedNodeIds.has(node.id)) {
+      event.preventDefault();
+      selectOnly(node.id, { focusSelector: ".node-prompt" });
+    }
+  });
+  prompt.addEventListener("input", () => {
+    node.prompt = prompt.value;
+    saveCanvasState();
+  });
+  return prompt;
+}
+
+function createDebugPanel(node) {
+  const debug = document.createElement("details");
+  debug.className = "node-debug";
+  debug.open = node.debugOpen !== false;
+  debug.addEventListener("toggle", () => {
+    node.debugOpen = debug.open;
+    saveCanvasState();
+  });
+
+  const summary = document.createElement("summary");
+  summary.textContent = "调试参数";
+
+  const settings = document.createElement("div");
+  settings.className = "node-config-grid";
+  const modelField = createTaskModelField(node);
+  settings.append(
+    modelField,
+    createNumberField("数量", node, "n", { min: 1, max: 10 }),
+    createSelectField("尺寸", node, "size", sizeOptionsForModel(node.model)),
+    createSelectField("质量", node, "quality", qualityOptions),
+    createSelectField("格式", node, "format", formatOptions),
+    createTextField("接口路径", node, "endpointPath")
+  );
+
+  if (node.mode === "edit") {
+    settings.append(
+      createSelectField("背景", node, "background", backgroundOptions),
+      createSelectField("审核", node, "moderation", moderationOptions)
+    );
+  }
+
+  const advanced = document.createElement("details");
+  advanced.className = "node-advanced";
+  const advancedSummary = document.createElement("summary");
+  advancedSummary.textContent = "高级";
+  const advancedGrid = document.createElement("div");
+  advancedGrid.className = "node-config-grid";
+  advancedGrid.append(createTextField("Base URL", node, "baseUrl", "node-field-full"));
+
+  const extraParams = document.createElement("textarea");
+  extraParams.className = "node-extra-json";
+  extraParams.rows = 4;
+  extraParams.spellcheck = false;
+  extraParams.value = node.extraParamsText ?? JSON.stringify(node.extraParams || {}, null, 2);
+  extraParams.addEventListener("pointerdown", (event) => event.stopPropagation());
+  extraParams.addEventListener("input", () => {
+    node.extraParamsText = extraParams.value;
+    saveCanvasState();
+  });
+  advancedGrid.append(createField("额外 JSON 参数", extraParams, "node-field-full"));
+  advanced.append(advancedSummary, advancedGrid);
+
+  debug.append(summary);
+  if (node.mode === "edit") debug.append(createEditAssetFields(node));
+  debug.append(settings, advanced);
+  return debug;
+}
+
+function createImageArea(node, selected) {
+  const imageArea = document.createElement("div");
+  imageArea.className = "node-image-area";
+
+  if (node.status === "running") {
+    const loading = document.createElement("div");
+    loading.className = "node-loading";
+
+    const text = document.createElement("span");
+    text.textContent = "生成中";
+
+    const progress = document.createElement("div");
+    progress.className = "node-progress";
+    progress.append(document.createElement("span"));
+
+    loading.append(text, progress);
+    imageArea.append(loading);
+    return imageArea;
+  }
+
+  if (node.images?.length) {
+    const placeholder = document.createElement("div");
+    placeholder.className = "node-placeholder";
+    placeholder.textContent = `${node.images.length} 张图片已放到画布`;
+    imageArea.append(placeholder);
+    return imageArea;
+  }
+
+  const placeholder = document.createElement("div");
+  placeholder.className = "node-placeholder";
+  placeholder.textContent = node.error || (node.mode === "edit" ? "等待参考图" : "待生成");
+  imageArea.append(placeholder);
+  return imageArea;
+}
+
+function createTaskActions(node) {
+  const actions = document.createElement("div");
+  actions.className = "node-actions";
+
+  const generate = document.createElement("button");
+  generate.type = "button";
+  generate.textContent = node.status === "running" ? "生成中" : "生成";
+  generate.disabled = node.status === "running";
+  generate.addEventListener("click", () => generateNode(node.id));
+
+  const duplicate = document.createElement("button");
+  duplicate.type = "button";
+  duplicate.textContent = "复制";
+  duplicate.addEventListener("click", () => duplicateNode(node.id));
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.textContent = "删除";
+  remove.addEventListener("click", () => {
+    deleteNodes([node.id]);
+  });
+
+  actions.append(generate, duplicate, remove);
+  return actions;
+}
+
+function createErrorLine(node) {
+  const error = document.createElement("p");
+  error.className = "node-error";
+  error.textContent = node.status === "error" ? node.error : "";
+  return error;
+}
+
+function createModeButton(node, mode, label) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = node.mode === mode ? "active" : "";
+  button.textContent = label;
+  button.addEventListener("click", () => {
+    if (node.mode === mode) return;
+    node.mode = mode;
+    node.endpointPath = defaultEndpointForMode(mode);
+    applyTaskModelDefaults(node, { modeChanged: true });
+    node.cacheStatus = mode === "edit" ? (node.cachedImages?.length ? "ready" : "pending") : "none";
+    node.debugOpen = true;
+    updateNode(node);
+    saveCanvasState();
+    updateCanvasMeta();
+  });
+  return button;
+}
+
+function createEditAssetFields(node) {
+  const panel = document.createElement("div");
+  panel.className = "edit-assets";
+
+  const imageInput = document.createElement("input");
+  imageInput.type = "file";
+  imageInput.accept = "image/png,image/jpeg,image/webp";
+  imageInput.multiple = true;
+  imageInput.addEventListener("pointerdown", (event) => event.stopPropagation());
+  imageInput.addEventListener("change", () => {
+    const files = Array.from(imageInput.files || []);
+    const stored = fileStore.get(node.id) || {};
+    const nextFiles = [...(stored.images || []), ...files];
+    fileStore.set(node.id, { ...stored, images: nextFiles });
+    node.sessionFiles = [...(node.sessionFiles || []), ...files.map((file) => file.name)];
+    node.cacheStatus = files.length ? "caching" : "pending";
+    updateNode(node);
+    saveCanvasState();
+    if (files.length) cacheEditFiles(node.id);
+  });
+
+  const maskInput = document.createElement("input");
+  maskInput.type = "file";
+  maskInput.accept = "image/png";
+  maskInput.addEventListener("pointerdown", (event) => event.stopPropagation());
+  maskInput.addEventListener("change", () => {
+    const stored = fileStore.get(node.id) || {};
+    const mask = maskInput.files?.[0] || null;
+    fileStore.set(node.id, { ...stored, mask });
+    node.sessionMask = mask?.name || "";
+    node.cachedMask = null;
+    if (stored.images?.length) node.cacheStatus = "caching";
+    updateNode(node);
+    saveCanvasState();
+    if (stored.images?.length) cacheEditFiles(node.id);
+  });
+
+  const summary = document.createElement("p");
+  summary.className = "asset-summary";
+  summary.textContent = assetSummaryText(node);
+
+  const thumbnails = createReferenceThumbnails(node);
+
+  const referenceActions = document.createElement("div");
+  referenceActions.className = "reference-actions";
+
+  const useSelected = document.createElement("button");
+  useSelected.type = "button";
+  useSelected.textContent = "使用选中图片";
+  useSelected.addEventListener("click", () => useSelectedCanvasImagesAsReference(node.id));
+
+  const pickFromCanvas = document.createElement("button");
+  pickFromCanvas.type = "button";
+  pickFromCanvas.textContent = referencePickTargetNodeId === node.id ? "点击画布图片" : "从画布选择";
+  pickFromCanvas.addEventListener("click", () => {
+    referencePickTargetNodeId = node.id;
+    showToast("请点击画布中的图片作为参考图");
+    updateNode(node);
+  });
+
+  referenceActions.append(useSelected, pickFromCanvas);
+
+  panel.append(
+    createField("参考图片", imageInput, "node-field-full"),
+    createField("蒙版 PNG", maskInput, "node-field-full"),
+    referenceActions,
+    thumbnails,
+    summary
+  );
+
+  return panel;
+}
+
+function createReferenceThumbnails(node) {
+  const strip = document.createElement("div");
+  strip.className = "reference-thumbs";
+
+  const images = node.cachedImages || [];
+  if (!images.length) {
+    strip.hidden = true;
+    return strip;
+  }
+
+  for (const [index, image] of images.entries()) {
+    const item = document.createElement("div");
+    item.className = "reference-thumb";
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "reference-thumb-preview";
+    button.title = "放大标注局部重绘区域";
+    button.addEventListener("click", () => openReferenceMaskEditor(node.id, index));
+
+    const img = document.createElement("img");
+    img.src = image.url || `/${image.path}`;
+    img.alt = image.originalName || image.filename || `参考图 ${index + 1}`;
+    button.append(img);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "reference-thumb-remove";
+    remove.textContent = "×";
+    remove.title = "删除参考图";
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      removeReferenceImage(node.id, index);
+    });
+
+    item.append(button, remove);
+    strip.append(item);
+  }
+
+  return strip;
+}
+
+function removeReferenceImage(nodeId, index) {
+  const node = canvasState.nodes.find((item) => item.id === nodeId);
+  if (!node || node.type !== "task") return;
+
+  node.cachedImages = (node.cachedImages || []).filter((_, imageIndex) => imageIndex !== index);
+  node.sessionFiles = (node.sessionFiles || []).filter((_, imageIndex) => imageIndex !== index);
+
+  const stored = fileStore.get(node.id);
+  if (stored?.images?.length) {
+    const nextImages = stored.images.filter((_, imageIndex) => imageIndex !== index);
+    fileStore.set(node.id, { ...stored, images: nextImages });
+  }
+
+  node.cacheStatus = node.cachedImages.length ? "ready" : "pending";
+  updateNode(node);
+  saveCanvasState();
+}
+
+function openReferenceMaskEditor(nodeId, imageIndex) {
+  const node = canvasState.nodes.find((item) => item.id === nodeId);
+  const imageRef = node?.cachedImages?.[imageIndex];
+  const imageUrl = imageRef?.url || (imageRef?.path ? `/${imageRef.path}` : "");
+  if (!node || !imageUrl) {
+    showToast("参考图还没有缓存完成");
+    return;
+  }
+
+  const overlay = document.createElement("div");
+  overlay.className = "mask-editor-overlay";
+
+  const editor = document.createElement("section");
+  editor.className = "mask-editor";
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "mask-editor-toolbar";
+
+  const title = document.createElement("strong");
+  title.textContent = "局部重绘标注";
+
+  const brushLabel = document.createElement("label");
+  brushLabel.textContent = "笔刷";
+  const brush = document.createElement("input");
+  brush.type = "range";
+  brush.min = "8";
+  brush.max = "160";
+  brush.value = "48";
+  brushLabel.append(brush);
+
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.textContent = "清空";
+
+  const save = document.createElement("button");
+  save.type = "button";
+  save.textContent = "保存蒙版";
+
+  const close = document.createElement("button");
+  close.type = "button";
+  close.textContent = "关闭";
+
+  toolbar.append(title, brushLabel, clear, save, close);
+
+  const stage = document.createElement("div");
+  stage.className = "mask-editor-stage";
+
+  const image = document.createElement("img");
+  image.src = imageUrl;
+  image.alt = imageRef.originalName || imageRef.filename || "参考图";
+
+  const overlayCanvas = document.createElement("canvas");
+  overlayCanvas.className = "mask-editor-canvas";
+
+  stage.append(image, overlayCanvas);
+  editor.append(toolbar, stage);
+  overlay.append(editor);
+  document.body.append(overlay);
+
+  const maskCanvas = document.createElement("canvas");
+  const maskContext = maskCanvas.getContext("2d");
+  const overlayContext = overlayCanvas.getContext("2d");
+  let isDrawing = false;
+
+  const closeEditor = () => overlay.remove();
+  close.addEventListener("click", closeEditor);
+  overlay.addEventListener("pointerdown", (event) => {
+    if (event.target === overlay) closeEditor();
+  });
+
+  const resetMaskCanvas = () => {
+    overlayContext.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    maskContext.globalCompositeOperation = "source-over";
+    maskContext.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+    maskContext.fillStyle = "#ffffff";
+    maskContext.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+  };
+
+  const initializeMaskEditor = () => {
+    const naturalWidth = image.naturalWidth || 512;
+    const naturalHeight = image.naturalHeight || 512;
+    const maxWidth = Math.min(window.innerWidth - 80, 1100);
+    const maxHeight = Math.min(window.innerHeight - 170, 760);
+    const scale = Math.min(maxWidth / naturalWidth, maxHeight / naturalHeight, 1);
+    const displayWidth = Math.max(1, Math.round(naturalWidth * scale));
+    const displayHeight = Math.max(1, Math.round(naturalHeight * scale));
+
+    stage.style.width = `${displayWidth}px`;
+    stage.style.height = `${displayHeight}px`;
+    image.style.width = `${displayWidth}px`;
+    image.style.height = `${displayHeight}px`;
+    overlayCanvas.width = naturalWidth;
+    overlayCanvas.height = naturalHeight;
+    overlayCanvas.style.width = `${displayWidth}px`;
+    overlayCanvas.style.height = `${displayHeight}px`;
+    maskCanvas.width = naturalWidth;
+    maskCanvas.height = naturalHeight;
+    resetMaskCanvas();
+  };
+
+  image.addEventListener("load", initializeMaskEditor);
+  if (image.complete && image.naturalWidth) initializeMaskEditor();
+
+  const pointFromEvent = (event) => {
+    const rect = overlayCanvas.getBoundingClientRect();
+    return {
+      x: ((event.clientX - rect.left) / rect.width) * overlayCanvas.width,
+      y: ((event.clientY - rect.top) / rect.height) * overlayCanvas.height
+    };
+  };
+
+  const drawPoint = (event) => {
+    const point = pointFromEvent(event);
+    const radius = Number(brush.value) / 2;
+
+    overlayContext.globalCompositeOperation = "source-over";
+    overlayContext.fillStyle = "rgba(230, 64, 48, 0.42)";
+    overlayContext.beginPath();
+    overlayContext.arc(point.x, point.y, radius, 0, Math.PI * 2);
+    overlayContext.fill();
+
+    maskContext.globalCompositeOperation = "destination-out";
+    maskContext.beginPath();
+    maskContext.arc(point.x, point.y, radius, 0, Math.PI * 2);
+    maskContext.fill();
+  };
+
+  overlayCanvas.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    isDrawing = true;
+    overlayCanvas.setPointerCapture?.(event.pointerId);
+    drawPoint(event);
+  });
+
+  overlayCanvas.addEventListener("pointermove", (event) => {
+    if (!isDrawing) return;
+    drawPoint(event);
+  });
+
+  const stopDrawing = () => {
+    isDrawing = false;
+  };
+  overlayCanvas.addEventListener("pointerup", stopDrawing);
+  overlayCanvas.addEventListener("pointercancel", stopDrawing);
+  clear.addEventListener("click", resetMaskCanvas);
+  save.addEventListener("click", () => {
+    maskCanvas.toBlob((blob) => {
+      if (!blob) {
+        showToast("蒙版生成失败");
+        return;
+      }
+
+      const file = new File([blob], `mask-${Date.now()}.png`, { type: "image/png" });
+      const stored = fileStore.get(node.id) || {};
+      fileStore.set(node.id, { ...stored, mask: file });
+      node.sessionMask = file.name;
+      node.cachedMask = null;
+      if (node.cachedImages?.length || stored.images?.length) node.cacheStatus = "caching";
+      updateNode(node);
+      saveCanvasState();
+      cacheEditFiles(node.id);
+      closeEditor();
+      showToast("局部重绘蒙版已保存");
+    }, "image/png");
+  });
+}
+
+async function useSelectedCanvasImagesAsReference(targetNodeId) {
+  const imageNodeIds = Array.from(selectedNodeIds).filter((id) => {
+    const node = canvasState.nodes.find((item) => item.id === id);
+    return node?.type === "image";
+  });
+
+  if (!imageNodeIds.length) {
+    showToast("请先选中画布中的图片节点");
+    return;
+  }
+
+  await useCanvasImagesAsReference(targetNodeId, imageNodeIds);
+}
+
+async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
+  const target = canvasState.nodes.find((node) => node.id === targetNodeId);
+  const imageNodes = imageNodeIds
+    .map((id) => canvasState.nodes.find((node) => node.id === id))
+    .filter((node) => node?.type === "image" && node.image?.url);
+
+  if (!target || target.type !== "task") return;
+  if (!imageNodes.length) {
+    showToast("没有可用的画布图片");
+    return;
+  }
+
+  try {
+    const files = await Promise.all(imageNodes.map(imageNodeToFile));
+    const stored = fileStore.get(target.id) || {};
+    const nextFiles = [...(stored.images || []), ...files];
+    fileStore.set(target.id, {
+      ...stored,
+      images: nextFiles
+    });
+
+    target.mode = "edit";
+    target.endpointPath = defaultEndpointForMode("edit");
+    applyTaskModelDefaults(target, { modeChanged: true });
+    target.sessionFiles = [...(target.sessionFiles || []), ...files.map((file) => file.name)];
+    target.cacheStatus = "caching";
+    target.debugOpen = true;
+    selectedNodeIds.clear();
+    selectedNodeIds.add(target.id);
+    updateNode(target);
+    saveCanvasState();
+
+    await cacheEditFiles(target.id);
+    renderCanvas();
+    showToast(`${files.length} 张画布图片已设为参考图`);
+  } catch (error) {
+    showToast(error.message || "设置参考图失败");
+  }
+}
+
+async function imageNodeToFile(node) {
+  const response = await fetch(node.image.url);
+  if (!response.ok) throw new Error("画布图片读取失败");
+
+  const blob = await response.blob();
+  const type = blob.type || contentTypeFromFormat(node.image.format);
+  const filename = node.image.filename || `${node.id}.${extensionFromContentType(type)}`;
+  return new File([blob], filename, { type });
+}
+
+function contentTypeFromFormat(format = "") {
+  if (format === "jpeg" || format === "jpg") return "image/jpeg";
+  if (format === "webp") return "image/webp";
+  if (format === "gif") return "image/gif";
+  return "image/png";
+}
+
+function extensionFromContentType(contentType = "") {
+  if (contentType.includes("jpeg")) return "jpg";
+  if (contentType.includes("webp")) return "webp";
+  if (contentType.includes("gif")) return "gif";
+  return "png";
+}
+
+function createNoteNode(node) {
+  const selected = selectedNodeIds.has(node.id);
+  const editing = selected && editingNoteId === node.id;
+  const width = clamp(Number(node.width) || defaultNoteWidth, minNoteWidth, maxNoteWidth);
+  const height = clamp(Number(node.height) || defaultNoteHeight, minNoteHeight, maxNoteHeight);
+  const tile = document.createElement("article");
+  tile.className = ["canvas-node", "note-node", selected ? "is-selected" : "", editing ? "is-editing" : ""]
+    .filter(Boolean)
+    .join(" ");
+  tile.dataset.nodeId = node.id;
+  tile.style.left = `${node.x}px`;
+  tile.style.top = `${node.y}px`;
+  tile.style.width = `${width}px`;
+  tile.style.setProperty("--note-min-height", `${height}px`);
+  tile.style.zIndex = node.z;
+
+  if (selected) {
+    tile.append(createNoteToolbar(node));
+  }
+
+  tile.append(editing ? createNoteEditor(node) : createNoteDisplay(node));
+
+  if (selected) {
+    tile.append(createNoteResizeHandle(node));
+  }
+
+  tile.addEventListener("dblclick", (event) => {
+    if (isInteractiveElement(event.target) && !event.target.classList?.contains("note-display")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    startNoteEdit(node.id);
+  });
+  tile.addEventListener("pointerdown", (event) => {
+    if (event.detail > 1) return;
+    startNodeDrag(event, node.id);
+  });
+  return tile;
+}
+
+function createLegacyNoteNode(node) {
+  const selected = selectedNodeIds.has(node.id);
+  const tile = document.createElement("article");
+  tile.className = ["canvas-node", "note-node", selected ? "is-selected" : ""].filter(Boolean).join(" ");
+  tile.dataset.nodeId = node.id;
+  tile.style.left = `${node.x}px`;
+  tile.style.top = `${node.y}px`;
+  tile.style.width = `${node.width || 300}px`;
+  tile.style.zIndex = node.z;
+
+  if (selected) {
+    tile.append(createNoteToolbar(node));
+  }
+
+  const text = document.createElement("textarea");
+  text.className = "note-text";
+  text.value = node.text || "";
+  text.placeholder = "输入文字";
+  text.spellcheck = false;
+  text.style.fontSize = `${node.fontSize || 22}px`;
+  text.style.color = node.color || "#202124";
+  text.addEventListener("pointerdown", (event) => {
+    if (!selectedNodeIds.has(node.id)) {
+      event.preventDefault();
+      selectOnly(node.id, { focusSelector: ".note-text" });
+      return;
+    }
+    event.stopPropagation();
+  });
+  text.addEventListener("focus", () => {
+    if (!selectedNodeIds.has(node.id)) selectOnly(node.id);
+  });
+  text.addEventListener("input", () => {
+    node.text = text.value;
+    saveCanvasState();
+  });
+
+  tile.append(text);
+  tile.addEventListener("pointerdown", (event) => startNodeDrag(event, node.id));
+  return tile;
+}
+
+function createNoteDisplay(node) {
+  const text = document.createElement("div");
+  text.className = "note-text note-display";
+  if (!node.text) text.classList.add("is-empty");
+  text.textContent = node.text || "双击输入文字";
+  text.tabIndex = 0;
+  text.title = "双击编辑文字";
+  text.style.fontSize = `${node.fontSize || 22}px`;
+  text.style.color = node.color || "#202124";
+  text.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || !selectedNodeIds.has(node.id)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    startNoteEdit(node.id);
+  });
+  return text;
+}
+
+function createNoteEditor(node) {
+  const text = document.createElement("textarea");
+  text.className = "note-text note-editor";
+  text.value = node.text || "";
+  text.placeholder = "输入文字";
+  text.spellcheck = false;
+  text.style.fontSize = `${node.fontSize || 22}px`;
+  text.style.color = node.color || "#202124";
+  text.addEventListener("pointerdown", (event) => event.stopPropagation());
+  text.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" || ((event.ctrlKey || event.metaKey) && event.key === "Enter")) {
+      event.preventDefault();
+      finishNoteEdit(node.id);
+    }
+  });
+  text.addEventListener("blur", () => finishNoteEdit(node.id));
+  text.addEventListener("input", () => {
+    node.text = text.value;
+    autoResizeNoteEditor(text, node);
+    saveCanvasState();
+    updateMinimap();
+  });
+  window.requestAnimationFrame(() => {
+    text.focus();
+    autoResizeNoteEditor(text, node);
+  });
+  return text;
+}
+
+function startNoteEdit(nodeId) {
+  const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "note");
+  if (!node) return;
+
+  editingNoteId = nodeId;
+  selectOnly(nodeId, { focusSelector: ".note-editor" });
+}
+
+function finishNoteEdit(nodeId) {
+  if (editingNoteId !== nodeId) return;
+
+  editingNoteId = null;
+  const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "note");
+  if (node) {
+    updateNode(node);
+    saveCanvasState();
+    updateMinimap();
+  } else {
+    renderCanvas();
+  }
+}
+
+function syncNoteEditingWithSelection() {
+  if (editingNoteId && !selectedNodeIds.has(editingNoteId)) {
+    editingNoteId = null;
+  }
+}
+
+function autoResizeNoteEditor(text, node) {
+  const minHeight = clamp(Number(node.height) || defaultNoteHeight, minNoteHeight, maxNoteHeight);
+  text.style.minHeight = `${minHeight}px`;
+  text.style.height = "auto";
+  const height = Math.max(minHeight, text.scrollHeight || minHeight);
+  text.style.height = `${height}px`;
+  if (height > (Number(node.height) || 0)) {
+    node.height = Math.min(height, maxNoteHeight);
+  }
+}
+
+function createNoteResizeHandle(node) {
+  const handle = document.createElement("button");
+  handle.type = "button";
+  handle.className = "note-resize-handle";
+  handle.title = "拖动调整文字框大小";
+  handle.setAttribute("aria-label", "拖动调整文字框大小");
+  handle.addEventListener("pointerdown", (event) => startNoteResize(event, node.id));
+  return handle;
+}
+
+function startNoteResize(event, nodeId) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "note");
+  if (!node) return;
+
+  const tile = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === node.id);
+  const text = tile?.querySelector(".note-text");
+  const start = {
+    x: event.clientX,
+    y: event.clientY,
+    width: Number(node.width) || tile?.offsetWidth || defaultNoteWidth,
+    height: Number(node.height) || text?.offsetHeight || defaultNoteHeight,
+    fontSize: Number(node.fontSize) || 22,
+    editing: editingNoteId === nodeId,
+    zoom: canvasState.viewport.zoom
+  };
+
+  const move = (moveEvent) => {
+    const dx = (moveEvent.clientX - start.x) / start.zoom;
+    const dy = (moveEvent.clientY - start.y) / start.zoom;
+    node.width = Math.round(clamp(start.width + dx, minNoteWidth, maxNoteWidth));
+    node.height = Math.round(clamp(start.height + dy, minNoteHeight, maxNoteHeight));
+    if (!start.editing) {
+      const widthRatio = node.width / start.width;
+      const heightRatio = node.height / start.height;
+      const fontScale = Math.max(widthRatio, heightRatio);
+      node.fontSize = Math.round(clamp(start.fontSize * fontScale, minNoteFontSize, maxNoteFontSize));
+    }
+
+    if (tile) {
+      tile.style.width = `${node.width}px`;
+      tile.style.setProperty("--note-min-height", `${node.height}px`);
+    }
+    if (text) {
+      text.style.minHeight = `${node.height}px`;
+      text.style.fontSize = `${node.fontSize || 22}px`;
+      if (text instanceof HTMLTextAreaElement) autoResizeNoteEditor(text, node);
+    }
+    const sizeInput = tile?.querySelector(".note-toolbar input[type='number']");
+    if (sizeInput && !start.editing) sizeInput.value = String(node.fontSize || 22);
+    updateMinimap();
+  };
+
+  const stop = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", stop);
+    saveCanvasState();
+    updateMinimap();
+  };
+
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", stop, { once: true });
+}
+
+function applyNoteFontSize(node, value, options = {}) {
+  const nextSize = Math.round(clamp(value, minNoteFontSize, maxNoteFontSize));
+  node.fontSize = nextSize;
+
+  const tile = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === node.id);
+  tile?.querySelectorAll(".note-text").forEach((text) => {
+    text.style.fontSize = `${nextSize}px`;
+    if (text instanceof HTMLTextAreaElement) autoResizeNoteEditor(text, node);
+  });
+
+  if (options.syncInput) {
+    const input = tile?.querySelector(".note-toolbar input[type='number']");
+    if (input) input.value = String(nextSize);
+  }
+
+  saveCanvasState();
+  updateMinimap();
+}
+
+function commitNoteFontSize(node, input) {
+  const raw = String(input.value || "").trim();
+  const fallback = Number(node.fontSize) || 22;
+  const value = raw ? Number(raw) : fallback;
+  const nextSize = Math.round(clamp(Number.isFinite(value) ? value : fallback, minNoteFontSize, maxNoteFontSize));
+  input.value = String(nextSize);
+  applyNoteFontSize(node, nextSize);
+}
+
+function createNoteToolbar(node) {
+  const toolbar = document.createElement("div");
+  toolbar.className = "note-toolbar";
+
+  const sizeInput = document.createElement("input");
+  sizeInput.type = "number";
+  sizeInput.min = String(minNoteFontSize);
+  sizeInput.max = String(maxNoteFontSize);
+  sizeInput.value = String(node.fontSize || 22);
+  sizeInput.title = "字号";
+  sizeInput.addEventListener("pointerdown", (event) => event.stopPropagation());
+  sizeInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    commitNoteFontSize(node, sizeInput);
+  });
+  sizeInput.addEventListener("input", () => {
+    const value = Number(sizeInput.value);
+    if (Number.isFinite(value) && value >= minNoteFontSize && value <= maxNoteFontSize) {
+      applyNoteFontSize(node, value);
+    }
+  });
+  sizeInput.addEventListener("blur", () => commitNoteFontSize(node, sizeInput));
+
+  const colorInput = document.createElement("input");
+  colorInput.type = "color";
+  colorInput.value = node.color || "#202124";
+  colorInput.title = "颜色";
+  colorInput.addEventListener("pointerdown", (event) => event.stopPropagation());
+  colorInput.addEventListener("input", () => {
+    node.color = colorInput.value;
+    updateNode(node);
+    saveCanvasState();
+  });
+
+  const duplicate = document.createElement("button");
+  duplicate.type = "button";
+  duplicate.textContent = "复制";
+  duplicate.addEventListener("click", () => duplicateNode(node.id));
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.textContent = "删除";
+  remove.addEventListener("click", () => {
+    deleteNodes([node.id]);
+  });
+
+  toolbar.append(sizeInput, colorInput, duplicate, remove);
+  return toolbar;
+}
+
+function createField(label, control, className = "") {
+  const field = document.createElement("label");
+  field.className = ["node-field", className].filter(Boolean).join(" ");
+
+  const text = document.createElement("span");
+  text.textContent = label;
+
+  field.append(text, control);
+  return field;
+}
+
+function createTaskModelField(node) {
+  return createSelectField("模型", node, "model", taskModelOptions, {
+    onChange: () => {
+      applyTaskModelDefaults(node, { modelChanged: true });
+      updateNode(node);
+    }
+  });
+}
+
+function createTextField(label, node, key, className = "") {
+  const input = document.createElement("input");
+  input.type = "text";
+  if (key === "model") {
+    input.setAttribute("list", "modelOptions");
+  }
+  input.value = node[key] || "";
+  input.addEventListener("pointerdown", (event) => event.stopPropagation());
+  input.addEventListener("input", () => {
+    node[key] = input.value;
+    saveCanvasState();
+  });
+  return createField(label, input, className);
+}
+
+function createNumberField(label, node, key, options = {}) {
+  const input = document.createElement("input");
+  input.type = "number";
+  input.min = options.min ?? 1;
+  input.max = options.max ?? 10;
+  input.value = node[key] || "1";
+  input.addEventListener("pointerdown", (event) => event.stopPropagation());
+  input.addEventListener("input", () => {
+    node[key] = input.value || "1";
+    saveCanvasState();
+  });
+  return createField(label, input);
+}
+
+function createSelectField(label, node, key, options, fieldOptions = {}) {
+  const select = document.createElement("select");
+  for (const [value, optionLabel] of options) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = optionLabel;
+    select.append(option);
+  }
+  select.value = node[key] ?? "";
+  select.addEventListener("pointerdown", (event) => event.stopPropagation());
+  select.addEventListener("change", () => {
+    node[key] = select.value;
+    fieldOptions.onChange?.(select.value, node);
+    saveCanvasState();
+    updateCanvasMeta();
+  });
+  return createField(label, select);
+}
+
+function createResultThumb(image, showActions) {
+  const item = document.createElement("div");
+  item.className = "node-thumb";
+
+  const img = document.createElement("img");
+  img.alt = image.prompt || "generated image";
+  img.src = image.url;
+  img.draggable = false;
+
+  item.append(img);
+
+  if (showActions) {
+    const links = document.createElement("div");
+    links.className = "thumb-actions";
+
+    const open = document.createElement("a");
+    open.href = image.url;
+    open.target = "_blank";
+    open.rel = "noreferrer";
+    open.textContent = "打开";
+
+    const download = document.createElement("a");
+    download.href = image.url;
+    download.download = image.filename || "generated-image";
+    download.textContent = "下载";
+
+    links.append(open, download);
+    item.append(links);
+  }
+
+  return item;
+}
+
+function createContextMenu() {
+  createMenu = document.createElement("div");
+  createMenu.className = "create-menu";
+  createMenu.hidden = true;
+  createMenu.addEventListener("pointerdown", (event) => event.stopPropagation());
+
+  const options = [
+    ["生图节点", () => addTaskNode("create", pendingCreatePoint)],
+    ["编辑节点", () => addTaskNode("edit", pendingCreatePoint)],
+    ["文字节点", () => addNoteNode(pendingCreatePoint)]
+  ];
+
+  options.splice(
+    2,
+    0,
+    ["Grok 生图节点", () => addGrokTaskNode("create", pendingCreatePoint)],
+    ["Grok 图生图节点", () => addGrokTaskNode("edit", pendingCreatePoint)]
+  );
+  options.splice(1, options.length - 2);
+
+  for (const [label, action] of options) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.addEventListener("click", () => {
+      action();
+      hideCreateMenu();
+    });
+    createMenu.append(button);
+  }
+
+  document.body.append(createMenu);
+}
+
+function showCreateMenu(clientX, clientY) {
+  if (!createMenu) return;
+  createMenu.hidden = false;
+  createMenu.style.left = `${clientX}px`;
+  createMenu.style.top = `${clientY}px`;
+}
+
+function hideCreateMenu() {
+  if (createMenu) createMenu.hidden = true;
+  pendingCreatePoint = null;
+}
+
+function statusText(status) {
+  if (status === "running") return "运行中";
+  if (status === "done") return "已完成";
+  if (status === "error") return "失败";
+  return "待生成";
+}
+
+function cacheStatusText(node) {
+  if (node.mode !== "edit") return "";
+  if (node.cacheStatus === "caching") return "素材缓存中";
+  if (node.cachedImages?.length) return "素材已缓存";
+  if (fileStore.has(node.id)) return "素材本次可用";
+  return "缺少素材";
+}
+
+function assetSummaryText(node) {
+  if (node.cacheStatus === "caching") return "素材缓存中";
+  if (node.cachedImages?.length) {
+    const mask = node.cachedMask ? "，含蒙版" : "";
+    return `${node.cachedImages.length} 张参考图已缓存${mask}`;
+  }
+  if (node.sessionFiles?.length) {
+    const mask = node.sessionMask ? `，蒙版：${node.sessionMask}` : "";
+    return `${node.sessionFiles.join("、")}${mask}`;
+  }
+  return "请选择参考图片后再生成编辑节点";
+}
+
+function duplicateNode(nodeId) {
+  const node = canvasState.nodes.find((item) => item.id === nodeId);
+  if (!node) return;
+
+  const copy = {
+    ...node,
+    id: createId(),
+    x: node.x + 36,
+    y: node.y + 36,
+    z: ++canvasState.nextZ,
+    createdAt: new Date().toISOString()
+  };
+
+  if (node.type === "task") {
+    copy.images = [];
+    copy.status = "idle";
+    copy.error = "";
+    copy.durationMs = null;
+    copy.sessionFiles = [...(node.sessionFiles || [])];
+    copy.cachedImages = [...(node.cachedImages || [])];
+    const storedFiles = fileStore.get(nodeId);
+    if (storedFiles) fileStore.set(copy.id, storedFiles);
+  }
+
+  canvasState.nodes.push(copy);
+  selectOnly(copy.id, { revealControls: true });
+  saveCanvasState();
+}
+
+function deleteSelectedNodes() {
+  deleteNodes(Array.from(selectedNodeIds));
+}
+
+function deleteNodes(nodeIds) {
+  const ids = new Set(nodeIds);
+  if (!ids.size) return;
+
+  const before = canvasState.nodes.length;
+  canvasState.nodes = canvasState.nodes.filter((node) => !ids.has(node.id));
+  if (canvasState.nodes.length === before) return;
+
+  for (const id of ids) {
+    selectedNodeIds.delete(id);
+  }
+  if (referencePickTargetNodeId && ids.has(referencePickTargetNodeId)) {
+    referencePickTargetNodeId = null;
+  }
+
+  renderCanvas();
+  saveCanvasState();
+}
+
+function startNodeDrag(event, nodeId) {
+  if (event.button !== 0 || event.target.closest("a, button, textarea, input, select, summary")) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  hideCreateMenu();
+
+  const node = canvasState.nodes.find((item) => item.id === nodeId);
+  if (!node) return;
+
+  if (event.shiftKey || event.ctrlKey || event.metaKey) {
+    toggleSelection(nodeId);
+  } else if (!selectedNodeIds.has(nodeId)) {
+    selectOnly(nodeId, { revealControls: true });
+  }
+
+  if (!selectedNodeIds.has(nodeId)) return;
+
+  const selectedNodes = canvasState.nodes.filter((item) => selectedNodeIds.has(item.id));
+  for (const item of selectedNodes) {
+    item.z = ++canvasState.nextZ;
+  }
+  renderCanvas();
+
+  const start = {
+    x: event.clientX,
+    y: event.clientY,
+    zoom: canvasState.viewport.zoom,
+    nodes: selectedNodes.map((item) => ({ id: item.id, x: item.x, y: item.y }))
+  };
+
+  const move = (moveEvent) => {
+    const dx = (moveEvent.clientX - start.x) / start.zoom;
+    const dy = (moveEvent.clientY - start.y) / start.zoom;
+    for (const item of start.nodes) {
+      const target = canvasState.nodes.find((nodeItem) => nodeItem.id === item.id);
+      const tile = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === item.id);
+      if (!target || !tile) continue;
+      target.x = Math.round(item.x + dx);
+      target.y = Math.round(item.y + dy);
+      tile.style.left = `${target.x}px`;
+      tile.style.top = `${target.y}px`;
+    }
+    updateMinimap();
+  };
+
+  const stop = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", stop);
+    saveCanvasState();
+  };
+
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", stop, { once: true });
+}
+
+function selectOnly(nodeId, options = {}) {
+  selectedNodeIds.clear();
+  selectedNodeIds.add(nodeId);
+
+  const node = canvasState.nodes.find((item) => item.id === nodeId);
+  if (options.revealControls && node?.type === "task") node.debugOpen = true;
+
+  renderCanvas();
+
+  if (options.focusSelector) {
+    window.requestAnimationFrame(() => {
+      const tile = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === nodeId);
+      tile?.querySelector(options.focusSelector)?.focus();
+    });
+  }
+}
+
+function toggleSelection(nodeId) {
+  if (selectedNodeIds.has(nodeId)) selectedNodeIds.delete(nodeId);
+  else selectedNodeIds.add(nodeId);
+  renderCanvas();
+}
+
+function clearSelection() {
+  if (!selectedNodeIds.size) return;
+  selectedNodeIds.clear();
+  renderCanvas();
+}
+
+function selectNodesInRect(worldRect, additive = false) {
+  if (!additive) selectedNodeIds.clear();
+
+  for (const node of canvasState.nodes) {
+    const bounds = getNodeBounds(node);
+    if (rectsIntersect(worldRect, bounds)) selectedNodeIds.add(node.id);
+  }
+
+  renderCanvas();
+}
+
+function getNodeBounds(node) {
+  const tile = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === node.id);
+  const fallbackWidth =
+    node.type === "image"
+      ? Math.max(1, Number(node.originalWidth) || 512) * (Number(node.scale) || 1)
+      : node.type === "note"
+        ? clamp(Number(node.width) || defaultNoteWidth, minNoteWidth, maxNoteWidth)
+        : node.width || defaultTaskWidth;
+  const fallbackHeight =
+    node.type === "image"
+      ? Math.max(1, Number(node.originalHeight) || 512) * (Number(node.scale) || 1)
+      : node.type === "note"
+        ? clamp(Number(node.height) || defaultNoteHeight, minNoteHeight, maxNoteHeight)
+        : 360;
+  const width = tile ? tile.offsetWidth : fallbackWidth;
+  const height = tile ? tile.offsetHeight : fallbackHeight;
+  return { x: node.x, y: node.y, width, height };
+}
+
+function rectsIntersect(a, b) {
+  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+}
+
+function rectFromWorldPoints(a, b) {
+  return {
+    x: Math.min(a.x, b.x),
+    y: Math.min(a.y, b.y),
+    width: Math.abs(a.x - b.x),
+    height: Math.abs(a.y - b.y)
+  };
+}
+
+function clearCanvas() {
+  canvasState.nodes = [];
+  canvasState.nextZ = 1;
+  selectedNodeIds.clear();
+  referencePickTargetNodeId = null;
+  rawResponse.textContent = "{}";
+  renderCanvas();
+  saveCanvasState();
+}
+
+function updateCanvasMeta() {
+  const taskNodes = canvasState.nodes.filter((node) => node.type === "task");
+  const imageNodes = canvasState.nodes.filter((node) => node.type === "image");
+  const noteNodes = canvasState.nodes.filter((node) => node.type === "note");
+  const running = taskNodes.filter((node) => node.status === "running").length;
+  if (running) {
+    requestMeta.textContent = `${running} 个节点生成中`;
+    return;
+  }
+  if (!canvasState.nodes.length) {
+    requestMeta.textContent = "等待添加节点";
+    return;
+  }
+  requestMeta.textContent = `${taskNodes.length} 个任务 · ${imageNodes.length} 张图 · ${noteNodes.length} 个文字`;
+}
+
+function isRunnableTask(node) {
+  if (node.type !== "task" || node.status === "running" || !node.prompt.trim()) return false;
+  if (node.mode !== "edit") return true;
+  return Boolean(fileStore.get(node.id)?.images?.length || node.cachedImages?.length);
+}
+
+function getViewportCenterWorld() {
+  const rect = canvasViewport.getBoundingClientRect();
+  return {
+    x: (rect.width / 2 - canvasState.viewport.x) / canvasState.viewport.zoom,
+    y: (rect.height / 2 - canvasState.viewport.y) / canvasState.viewport.zoom
+  };
+}
+
+function getWorldPointFromClient(clientX, clientY) {
+  const rect = canvasViewport.getBoundingClientRect();
+  return {
+    x: (clientX - rect.left - canvasState.viewport.x) / canvasState.viewport.zoom,
+    y: (clientY - rect.top - canvasState.viewport.y) / canvasState.viewport.zoom
+  };
+}
+
+function migrateNode(node) {
+  if (node.type === "note") {
+    return {
+      ...node,
+      id: node.id || createId(),
+      type: "note",
+      text: node.text || "",
+      fontSize: Number(node.fontSize) || 22,
+      color: node.color || "#202124",
+      width: clamp(Number(node.width) || defaultNoteWidth, minNoteWidth, maxNoteWidth),
+      height: clamp(Number(node.height) || defaultNoteHeight, minNoteHeight, maxNoteHeight),
+      x: node.x || 0,
+      y: node.y || 0,
+      z: node.z || 1,
+      createdAt: node.createdAt || new Date().toISOString()
+    };
+  }
+
+  if (node.type === "image") {
+    const dimensions = parseImageSize(node.image?.size || node.size);
+    return {
+      ...node,
+      id: node.id || createId(),
+      type: "image",
+      image: node.image || {},
+      sourceTaskId: node.sourceTaskId || "",
+      sourceImageKey: node.sourceImageKey || getImageKey(node.image),
+      originalWidth: Number(node.originalWidth) || dimensions.width || 512,
+      originalHeight: Number(node.originalHeight) || dimensions.height || 512,
+      scale: clamp(Number(node.scale) || defaultImageScale, 0.05, 4),
+      x: node.x || 0,
+      y: node.y || 0,
+      z: node.z || 1,
+      createdAt: node.createdAt || new Date().toISOString()
+    };
+  }
+
+  if (node.type === "task") {
+    return migrateTaskNode(node);
+  }
+
+  return migrateTaskNode({
+    ...node,
+    type: "task",
+    provider: node.provider || (isGrokModelName(node.model) ? "grok" : ""),
+    prompt: node.prompt || "",
+    images: node.url ? [normalizeNodeImage({ url: node.url, filename: node.filename }, node)] : [],
+    status: node.url ? "done" : "idle"
+  });
+}
+
+function migrateTaskNode(node) {
+  const mode = node.mode === "edit" ? "edit" : "create";
+  const extraParams = isPlainObject(node.extraParams) ? node.extraParams : {};
+  const migrated = {
+    ...node,
+    id: node.id || createId(),
+    type: "task",
+    provider: node.provider || (isGrokModelName(node.model) ? "grok" : ""),
+    prompt: node.prompt || "",
+    model: node.model || config.defaultModel || "gpt-image-2",
+    n: String(node.n || "1"),
+    size: node.size || "auto",
+    quality: node.quality || "",
+    format: node.format || "png",
+    baseUrl: node.baseUrl || config.baseUrl || "https://yunwu.ai",
+    endpointPath: node.endpointPath || defaultEndpointForMode(mode),
+    mode,
+    background: node.background || "",
+    moderation: node.moderation || "",
+    extraParams,
+    extraParamsText: node.extraParamsText || JSON.stringify(extraParams, null, 2),
+    cachedImages: node.cachedImages || [],
+    cachedMask: node.cachedMask || null,
+    cacheStatus: node.cacheStatus || (mode === "edit" ? "session-only" : "none"),
+    sessionFiles: node.sessionFiles || [],
+    sessionMask: node.sessionMask || "",
+    images: dedupeNodeImages(node.images || []),
+    status: node.status === "running" ? "idle" : node.status || "idle",
+    error: node.error || "",
+    durationMs: node.durationMs || null,
+    debugOpen: node.debugOpen !== false,
+    width: Math.max(Number(node.width) || defaultTaskWidth, 420),
+    x: node.x || 0,
+    y: node.y || 0,
+    z: node.z || 1,
+    createdAt: node.createdAt || new Date().toISOString()
+  };
+  applyTaskModelDefaults(migrated);
+  return migrated;
+}
+
+function materializeTaskImageNodes() {
+  const imageKeys = new Set(
+    canvasState.nodes
+      .filter((node) => node.type === "image")
+      .map((node) => node.sourceImageKey)
+      .filter(Boolean)
+  );
+
+  const additions = [];
+  for (const task of canvasState.nodes) {
+    if (task.type !== "task" || !task.images?.length) continue;
+
+    let cursorY = task.y;
+    const x = task.x + (task.width || defaultTaskWidth) + 48;
+    for (const image of task.images) {
+      const key = getImageKey(image);
+      if (key && imageKeys.has(key)) continue;
+
+      const dimensions = parseImageSize(image.size || task.size);
+      additions.push({
+        id: createId(),
+        type: "image",
+        image,
+        sourceTaskId: task.id,
+        sourceImageKey: key,
+        originalWidth: dimensions.width || 512,
+        originalHeight: dimensions.height || 512,
+        scale: defaultImageScale,
+        x,
+        y: cursorY,
+        z: ++canvasState.nextZ,
+        createdAt: new Date().toISOString()
+      });
+
+      imageKeys.add(key);
+      cursorY += (dimensions.height || 512) * defaultImageScale + 32;
+    }
+  }
+
+  if (additions.length) canvasState.nodes.push(...additions);
+}
+
+function readLocalCanvasState() {
+  try {
+    const raw =
+      localStorage.getItem(projectStorageKey(currentProjectId)) ||
+      (currentProjectId === "default" ? localStorage.getItem(storageKey) || localStorage.getItem(legacyStorageKey) : "") ||
+      "{}";
+    return JSON.parse(raw);
+  } catch {
+    localStorage.removeItem(projectStorageKey(currentProjectId));
+    return null;
+  }
+}
+
+async function refreshProjectList() {
+  try {
+    const response = await fetch("/api/projects");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "画布列表读取失败");
+    projectList = Array.isArray(data.projects) ? data.projects : [];
+  } catch {
+    projectList = [];
+  }
+  renderProjectSelect();
+}
+
+function renderProjectSelect() {
+  projectSelect.replaceChildren();
+  const projects = projectList.length ? projectList : [{ id: currentProjectId, name: currentProjectName }];
+  for (const project of projects) {
+    const option = document.createElement("option");
+    option.value = project.id;
+    option.textContent = project.name || project.id;
+    projectSelect.append(option);
+  }
+  projectSelect.value = currentProjectId;
+}
+
+async function loadProjectById(projectId, options = {}) {
+  currentProjectId = normalizeProjectId(projectId);
+  localStorage.setItem(currentProjectStorageKey, currentProjectId);
+  fileStore.clear();
+
+  const diskState = await loadDiskProjectState(currentProjectId);
+  const localState = readLocalCanvasState();
+  const state = diskState || localState || createEmptyProject(currentProjectId);
+  currentProjectName = state.name || projectList.find((project) => project.id === currentProjectId)?.name || "未命名画布";
+  projectNameInput.value = currentProjectName;
+  applySavedState({ ...state, id: currentProjectId, name: currentProjectName });
+
+  renderCanvas();
+  applyViewport();
+  primeUndoHistory();
+  renderProjectSelect();
+
+  if (options.initial && diskState) {
+    localStorage.setItem(projectStorageKey(currentProjectId), JSON.stringify(serializeCanvasState()));
+  } else if (options.initial && localState && (Array.isArray(localState.nodes) || localState.viewport)) {
+    saveCanvasState({ history: false });
+  }
+}
+
+async function switchProject(projectId) {
+  if (!projectId || projectId === currentProjectId) return;
+  saveCanvasState({ history: false });
+  persistDiskProject(serializeCanvasState(), currentProjectId);
+  selectedNodeIds.clear();
+  referencePickTargetNodeId = null;
+  fileStore.clear();
+  await loadProjectById(projectId);
+}
+
+function createNewProject() {
+  saveCanvasState({ history: false });
+  persistDiskProject(serializeCanvasState(), currentProjectId);
+  selectedNodeIds.clear();
+  referencePickTargetNodeId = null;
+  fileStore.clear();
+  const now = new Date();
+  currentProjectId = `canvas-${now.toISOString().replace(/[^0-9]/g, "").slice(0, 14)}-${Math.random().toString(16).slice(2, 6)}`;
+  currentProjectName = `新画布 ${now.toLocaleString("zh-CN", { hour12: false })}`;
+  canvasState = {
+    nodes: [],
+    viewport: { x: 120, y: 90, zoom: 1 },
+    nextZ: 1
+  };
+  localStorage.setItem(currentProjectStorageKey, currentProjectId);
+  projectNameInput.value = currentProjectName;
+  rawResponse.textContent = "{}";
+  renderCanvas();
+  applyViewport();
+  primeUndoHistory();
+  saveCanvasState({ history: false });
+  upsertProjectSummary({ id: currentProjectId, name: currentProjectName, savedAt: new Date().toISOString(), nodeCount: 0 });
+  renderProjectSelect();
+  showToast("已新建画布");
+}
+
+function renameCurrentProject(name) {
+  currentProjectName = name.trim() || "未命名画布";
+  projectNameInput.value = currentProjectName;
+  saveCanvasState();
+  upsertProjectSummary({
+    id: currentProjectId,
+    name: currentProjectName,
+    savedAt: new Date().toISOString(),
+    nodeCount: canvasState.nodes.length
+  });
+  renderProjectSelect();
+}
+
+function saveProjectNow() {
+  currentProjectName = projectNameInput.value.trim() || currentProjectName || "未命名画布";
+  projectNameInput.value = currentProjectName;
+  saveCanvasState({ history: false });
+  persistDiskProject(serializeCanvasState(), currentProjectId);
+  showToast("画布已保存");
+}
+
+function upsertProjectSummary(project) {
+  const index = projectList.findIndex((item) => item.id === project.id);
+  if (index >= 0) projectList[index] = { ...projectList[index], ...project };
+  else projectList.unshift(project);
+}
+
+function createEmptyProject(id) {
+  return {
+    version: 2,
+    id,
+    name: id === "default" ? "默认画布" : "未命名画布",
+    nodes: [],
+    viewport: { x: 120, y: 90, zoom: 1 },
+    nextZ: 1
+  };
+}
+
+async function loadDiskProjectState(projectId = currentProjectId) {
+  try {
+    const response = await fetch(`/api/project?projectId=${encodeURIComponent(projectId)}`);
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.project || null;
+  } catch {
+    return null;
+  }
+}
+
+function projectStorageKey(projectId) {
+  return `${storageKeyPrefix}:${normalizeProjectId(projectId)}`;
+}
+
+function normalizeProjectId(value) {
+  const safe = String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 80);
+  return safe || "default";
+}
+
+function applySavedState(saved, options = {}) {
+  if (!saved || typeof saved !== "object") return;
+
+  if (Array.isArray(saved.nodes)) canvasState.nodes = saved.nodes.map(migrateNode);
+  if (options.materializeImages !== false) materializeTaskImageNodes();
+  if (saved.viewport) {
+    canvasState.viewport = {
+      x: Number(saved.viewport.x) || 120,
+      y: Number(saved.viewport.y) || 90,
+      zoom: clamp(Number(saved.viewport.zoom) || 1, minZoom, maxZoom)
+    };
+  }
+  canvasState.nextZ = Math.max(1, Number(saved.nextZ) || 1, ...canvasState.nodes.map((node) => Number(node.z) || 1));
+}
+
+function undoCanvasChange() {
+  if (!undoStack.length) {
+    showToast("没有可撤销的操作");
+    return;
+  }
+
+  const snapshot = undoStack.pop();
+  let previous;
+  try {
+    previous = JSON.parse(snapshot);
+  } catch {
+    showToast("撤销历史已损坏");
+    return;
+  }
+
+  isRestoringHistory = true;
+  try {
+    selectedNodeIds.clear();
+    referencePickTargetNodeId = null;
+    currentProjectName = previous.name || currentProjectName || "未命名画布";
+    projectNameInput.value = currentProjectName;
+    applySavedState(previous, { materializeImages: false });
+    renderCanvas();
+    applyViewport();
+    rawResponse.textContent = "{}";
+    lastHistorySnapshot = createHistorySnapshot();
+    saveCanvasState({ history: false });
+  } finally {
+    isRestoringHistory = false;
+  }
+}
+
+function primeUndoHistory() {
+  undoStack.length = 0;
+  lastHistorySnapshot = createHistorySnapshot();
+}
+
+function recordUndoPoint() {
+  if (isLoadingProject || isRestoringHistory) return;
+
+  const snapshot = createHistorySnapshot();
+  if (!lastHistorySnapshot) {
+    lastHistorySnapshot = snapshot;
+    return;
+  }
+  if (snapshot === lastHistorySnapshot) return;
+
+  undoStack.push(lastHistorySnapshot);
+  if (undoStack.length > undoLimit) undoStack.shift();
+  lastHistorySnapshot = snapshot;
+}
+
+function createHistorySnapshot() {
+  return JSON.stringify({
+    version: 2,
+    id: currentProjectId,
+    name: currentProjectName,
+    nodes: serializeCanvasNodes(),
+    viewport: { ...canvasState.viewport },
+    nextZ: canvasState.nextZ
+  });
+}
+
+function saveCanvasState(options = {}) {
+  if (options.history !== false) recordUndoPoint();
+
+  const project = serializeCanvasState();
+
+  localStorage.setItem(projectStorageKey(currentProjectId), JSON.stringify(project));
+  localStorage.setItem(currentProjectStorageKey, currentProjectId);
+  scheduleDiskSave(project, currentProjectId);
+}
+
+function serializeCanvasState() {
+  return {
+    version: 2,
+    id: currentProjectId,
+    name: currentProjectName,
+    savedAt: new Date().toISOString(),
+    nodes: serializeCanvasNodes(),
+    viewport: { ...canvasState.viewport },
+    nextZ: canvasState.nextZ
+  };
+}
+
+function serializeCanvasNodes() {
+  return canvasState.nodes.map((node) => ({
+    ...node,
+    status: node.status === "running" ? "idle" : node.status
+  }));
+}
+
+function scheduleDiskSave(project, projectId = currentProjectId) {
+  if (isLoadingProject) return;
+  window.clearTimeout(saveTimer);
+  saveTimer = window.setTimeout(() => {
+    persistDiskProject(project, projectId);
+  }, 350);
+}
+
+async function persistDiskProject(project, projectId = currentProjectId) {
+  try {
+    const response = await fetch(`/api/project?projectId=${encodeURIComponent(projectId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(project)
+    });
+    const data = await response.json().catch(() => ({}));
+    if (response.ok && data.project) {
+      upsertProjectSummary(data.project);
+      renderProjectSelect();
+    }
+  } catch {
+    // Browser localStorage remains as a fallback if the server is temporarily unavailable.
+  }
+}
+
+function defaultEndpointForMode(mode) {
+  return mode === "edit"
+    ? config.editEndpoint || "/v1/images/edits"
+    : config.imageEndpoint || "/v1/images/generations";
+}
+
+function isPlainObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isInteractiveElement(target) {
+  return Boolean(target?.closest?.("a, button, textarea, input, select, summary, [contenteditable='true']"));
+}
+
+function createId() {
+  if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function showToast(message) {
+  const previous = document.querySelector(".toast");
+  if (previous) previous.remove();
+
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  toast.textContent = message;
+  document.body.append(toast);
+
+  window.setTimeout(() => toast.remove(), 4600);
+}

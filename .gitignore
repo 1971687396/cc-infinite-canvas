@@ -1,0 +1,7 @@
+.env
+.env.local
+outputs/
+cache/
+node_modules/
+dist/
+*.log

@@ -14,6 +14,13 @@ const maxNoteWidth = 1600;
 const maxNoteHeight = 1400;
 const minNoteFontSize = 10;
 const maxNoteFontSize = 96;
+const chatGptUrl = "https://chatgpt.com/";
+const defaultChatGptWidth = 760;
+const defaultChatGptHeight = 620;
+const minChatGptWidth = 360;
+const minChatGptHeight = 260;
+const maxChatGptWidth = 1400;
+const maxChatGptHeight = 1100;
 
 const addTaskButton = document.querySelector("#addTaskButton");
 const addEditTaskButton = document.querySelector("#addEditTaskButton");
@@ -22,6 +29,7 @@ const addGrokEditTaskButton = document.querySelector("#addGrokEditTaskButton");
 const clearCanvasButton = document.querySelector("#clearCanvasButton");
 const generateAllButton = document.querySelector("#generateAllButton");
 const addNoteButton = document.querySelector("#addNoteButton");
+const addChatGptButton = document.querySelector("#addChatGptButton");
 const resetViewButton = document.querySelector("#resetViewButton");
 const zoomInButton = document.querySelector("#zoomInButton");
 const zoomOutButton = document.querySelector("#zoomOutButton");
@@ -145,6 +153,12 @@ const fileStore = new Map();
 const selectedNodeIds = new Set();
 const undoLimit = 80;
 const undoStack = [];
+const nodeClipboard = {
+  nodes: [],
+  bounds: null,
+  pasteCount: 0,
+  files: new Map()
+};
 
 let config = {};
 let saveTimer = 0;
@@ -204,6 +218,7 @@ generateAllButton.addEventListener("click", () => {
 });
 
 addNoteButton.addEventListener("click", addNoteNode);
+addChatGptButton?.addEventListener("click", addChatGptNode);
 clearCanvasButton.addEventListener("click", clearCanvas);
 resetViewButton.addEventListener("click", resetViewport);
 zoomInButton.addEventListener("click", () => zoomAtCenter(canvasState.viewport.zoom * 1.2));
@@ -381,6 +396,30 @@ function addNoteNode(point = null) {
   selectOnly(node.id, { focusSelector: ".note-editor" });
   saveCanvasState();
   updateCanvasMeta();
+}
+
+function addChatGptNode(point = null) {
+  const center = point || getViewportCenterWorld();
+  const offset = point ? 0 : canvasState.nodes.length % 8;
+  const node = {
+    id: createId(),
+    type: "chatgpt",
+    url: chatGptUrl,
+    proxy: "",
+    interactive: false,
+    width: defaultChatGptWidth,
+    height: defaultChatGptHeight,
+    x: Math.round(center.x - defaultChatGptWidth / 2 + offset * 26),
+    y: Math.round(center.y - defaultChatGptHeight / 2 + offset * 26),
+    z: ++canvasState.nextZ,
+    createdAt: new Date().toISOString()
+  };
+
+  canvasState.nodes.push(node);
+  selectOnly(node.id);
+  saveCanvasState();
+  updateCanvasMeta();
+  return node;
 }
 
 async function generateNode(nodeId) {
@@ -913,6 +952,7 @@ function bindCanvasEvents() {
     isSpacePressed = false;
     canvasViewport.classList.remove("pan-mode");
   });
+  window.addEventListener("resize", syncChatGptHostSoon);
 
   document.addEventListener("pointerdown", (event) => {
     if (createMenu && !createMenu.hidden && !createMenu.contains(event.target)) {
@@ -938,6 +978,18 @@ function handleCanvasShortcut(event) {
   }
 
   if (isInteractiveElement(event.target)) return false;
+
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === "c") {
+    event.preventDefault();
+    copySelectedNodesToClipboard();
+    return true;
+  }
+
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === "v") {
+    event.preventDefault();
+    pasteNodesFromClipboard();
+    return true;
+  }
 
   if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === "z") {
     event.preventDefault();
@@ -1336,6 +1388,7 @@ function applyViewport() {
   canvasStage.style.transform = `translate(${x}px, ${y}px) scale(${zoom})`;
   zoomLevel.textContent = `${Math.round(zoom * 100)}%`;
   updateMinimap();
+  syncChatGptHostSoon();
 }
 
 function resetViewport() {
@@ -1356,17 +1409,349 @@ function renderCanvas() {
   updateCanvasMeta();
   updateSelectionToolbar();
   updateMinimap();
+  syncChatGptHostSoon();
 }
 
 function updateNode(node) {
   const previous = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === node.id);
   if (previous) previous.replaceWith(createCanvasNode(node));
+  syncChatGptHostSoon();
 }
 
 function createCanvasNode(node) {
   if (node.type === "note") return createNoteNode(node);
   if (node.type === "image") return createImageNode(node);
+  if (node.type === "chatgpt") return createChatGptNode(node);
   return createTaskNode(node);
+}
+
+function createChatGptNode(node) {
+  const selected = selectedNodeIds.has(node.id);
+  const nativeHost = hasDesktopChatGptHost();
+  node.width = clamp(Number(node.width) || defaultChatGptWidth, minChatGptWidth, maxChatGptWidth);
+  node.height = clamp(Number(node.height) || defaultChatGptHeight, minChatGptHeight, maxChatGptHeight);
+
+  const tile = document.createElement("article");
+  tile.className = [
+    "canvas-node",
+    "chatgpt-node",
+    selected ? "is-selected" : "",
+    node.interactive ? "is-interactive" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
+  tile.dataset.nodeId = node.id;
+  tile.style.left = `${node.x}px`;
+  tile.style.top = `${node.y}px`;
+  tile.style.width = `${node.width}px`;
+  tile.style.height = `${node.height}px`;
+  tile.style.zIndex = node.z;
+
+  const frameWrap = document.createElement("div");
+  frameWrap.className = "chatgpt-frame-wrap";
+
+  if (nativeHost) {
+    frameWrap.append(createChatGptNativePlaceholder(selected));
+  } else {
+    frameWrap.append(createChatGptBrowserFallback(node));
+  }
+
+  const shield = document.createElement("div");
+  shield.className = "chatgpt-frame-shield";
+  shield.hidden = !nativeHost || (selected && node.interactive);
+  shield.title = selected ? "双击进入 ChatGPT 交互" : "点击选中 ChatGPT 节点";
+  shield.addEventListener("dblclick", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    node.interactive = true;
+    updateNode(node);
+    saveCanvasState();
+  });
+
+  const hint = document.createElement("span");
+  hint.textContent = selected ? "双击进入 ChatGPT" : "ChatGPT";
+  shield.append(hint);
+
+  frameWrap.append(shield);
+
+  if (selected) {
+    tile.append(createChatGptToolbar(node));
+  }
+
+  tile.append(frameWrap);
+
+  if (selected) {
+    tile.append(createChatGptResizeHandle(node));
+  }
+
+  tile.addEventListener("pointerdown", (event) => startNodeDrag(event, node.id));
+  return tile;
+}
+
+function createChatGptToolbar(node) {
+  const toolbar = document.createElement("div");
+  toolbar.className = "chatgpt-toolbar";
+  toolbar.addEventListener("pointerdown", (event) => event.stopPropagation());
+
+  const moveHandle = document.createElement("button");
+  moveHandle.type = "button";
+  moveHandle.className = "chatgpt-move-handle";
+  moveHandle.textContent = "拖动";
+  moveHandle.title = "按住拖动 ChatGPT 节点";
+  moveHandle.addEventListener("pointerdown", (event) => {
+    event.stopPropagation();
+    startNodeDrag(event, node.id, { force: true });
+  });
+
+  const interaction = document.createElement("button");
+  interaction.type = "button";
+  interaction.textContent = node.interactive ? "移动" : "交互";
+  interaction.title = node.interactive ? "切回节点拖动模式" : "进入 ChatGPT 页面交互";
+  interaction.addEventListener("click", () => {
+    node.interactive = !node.interactive;
+    updateNode(node);
+    saveCanvasState();
+  });
+
+  const proxy = createChatGptProxyField(node);
+
+  const open = document.createElement("button");
+  open.type = "button";
+  open.textContent = "打开官网";
+  open.addEventListener("click", () => openChatGptExternal(node.url));
+
+  const refresh = document.createElement("button");
+  refresh.type = "button";
+  refresh.textContent = "刷新";
+  refresh.addEventListener("click", () => {
+    node.reloadKey = Date.now();
+    updateNode(node);
+    window.ccCanvasDesktop?.reloadChatGpt?.();
+  });
+
+  const duplicate = document.createElement("button");
+  duplicate.type = "button";
+  duplicate.textContent = "复制";
+  duplicate.addEventListener("click", () => duplicateNode(node.id));
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.textContent = "删除";
+  remove.addEventListener("click", () => deleteNodes([node.id]));
+
+  toolbar.append(moveHandle, interaction, proxy, open, refresh, duplicate, remove);
+  return toolbar;
+}
+
+function createChatGptProxyField(node) {
+  const input = document.createElement("input");
+  input.className = "chatgpt-proxy-input";
+  input.type = "text";
+  input.value = node.proxy || "";
+  input.placeholder = "代理 127.0.0.1:7890";
+  input.title = "仅用于这个 ChatGPT 节点，例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:7890；留空直连";
+  input.spellcheck = false;
+  input.addEventListener("pointerdown", (event) => event.stopPropagation());
+
+  const commit = () => {
+    const nextProxy = input.value.trim();
+    if ((node.proxy || "") === nextProxy) return;
+    node.proxy = nextProxy;
+    node.reloadKey = Date.now();
+    saveCanvasState();
+    syncChatGptHostSoon();
+  };
+
+  input.addEventListener("change", commit);
+  input.addEventListener("blur", commit);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commit();
+      input.blur();
+    }
+    if (event.key === "Escape") {
+      input.value = node.proxy || "";
+      input.blur();
+    }
+  });
+
+  return input;
+}
+
+function createChatGptResizeHandle(node) {
+  const handle = document.createElement("button");
+  handle.type = "button";
+  handle.className = "chatgpt-resize-handle";
+  handle.title = "拖动调整 ChatGPT 面板";
+  handle.setAttribute("aria-label", "拖动调整 ChatGPT 面板");
+  handle.addEventListener("pointerdown", (event) => startChatGptResize(event, node.id));
+  return handle;
+}
+
+function startChatGptResize(event, nodeId) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  const node = canvasState.nodes.find((item) => item.id === nodeId);
+  if (!node || node.type !== "chatgpt") return;
+
+  const start = {
+    x: event.clientX,
+    y: event.clientY,
+    width: Number(node.width) || defaultChatGptWidth,
+    height: Number(node.height) || defaultChatGptHeight
+  };
+
+  const move = (moveEvent) => {
+    const dx = moveEvent.clientX - start.x;
+    const dy = moveEvent.clientY - start.y;
+    node.width = Math.round(clamp(start.width + dx, minChatGptWidth, maxChatGptWidth));
+    node.height = Math.round(clamp(start.height + dy, minChatGptHeight, maxChatGptHeight));
+
+    const tile = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === node.id);
+    if (tile) {
+      tile.style.width = `${node.width}px`;
+      tile.style.height = `${node.height}px`;
+    }
+    updateMinimap();
+    syncChatGptHostSoon();
+  };
+
+  const stop = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", stop);
+    updateNode(node);
+    saveCanvasState();
+    updateMinimap();
+    syncChatGptHostSoon();
+  };
+
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", stop, { once: true });
+}
+
+function normalizeChatGptUrl(value) {
+  try {
+    const parsed = new URL(String(value || chatGptUrl), chatGptUrl);
+    if (parsed.protocol === "https:" && (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com"))) {
+      return parsed.href;
+    }
+  } catch {
+    // Fall back to the official ChatGPT entrypoint.
+  }
+  return chatGptUrl;
+}
+
+function chatGptFrameSrc(node) {
+  const src = normalizeChatGptUrl(node.url);
+  if (!node.reloadKey) return src;
+  try {
+    const parsed = new URL(src);
+    parsed.searchParams.set("cc_canvas_reload", node.reloadKey);
+    return parsed.href;
+  } catch {
+    return src;
+  }
+}
+
+function createChatGptNativePlaceholder(selected) {
+  const panel = document.createElement("div");
+  panel.className = "chatgpt-native-placeholder";
+
+  const title = document.createElement("strong");
+  title.textContent = selected ? "ChatGPT 桌面视图加载中" : "ChatGPT 桌面视图";
+
+  const text = document.createElement("p");
+  text.textContent = selected ? "如果没有显示，请稍等或点刷新。" : "选中节点后显示官网聊天页。";
+
+  panel.append(title, text);
+  return panel;
+}
+
+function createChatGptBrowserFallback(node) {
+  const panel = document.createElement("div");
+  panel.className = "chatgpt-browser-fallback";
+
+  const title = document.createElement("strong");
+  title.textContent = "普通浏览器不能内嵌 ChatGPT 官网";
+
+  const text = document.createElement("p");
+  text.textContent = "ChatGPT 官网禁止被 iframe 放进其他网页。要在画布内使用 Plus 登录态，请用桌面测试模式启动。";
+
+  const actions = document.createElement("div");
+  actions.className = "chatgpt-fallback-actions";
+
+  const open = document.createElement("button");
+  open.type = "button";
+  open.textContent = "打开官网";
+  open.addEventListener("click", () => openChatGptExternal(node.url));
+
+  actions.append(open);
+  panel.append(title, text, actions);
+  return panel;
+}
+
+function hasDesktopChatGptHost() {
+  return typeof window.ccCanvasDesktop?.showChatGpt === "function";
+}
+
+function openChatGptExternal(url) {
+  const normalized = normalizeChatGptUrl(url);
+  if (typeof window.ccCanvasDesktop?.openExternal === "function") {
+    window.ccCanvasDesktop.openExternal(normalized);
+    return;
+  }
+  window.open(normalized, "_blank", "noreferrer");
+}
+
+let chatGptHostSyncFrame = 0;
+
+function syncChatGptHostSoon() {
+  if (!hasDesktopChatGptHost()) return;
+  if (chatGptHostSyncFrame) return;
+  chatGptHostSyncFrame = window.requestAnimationFrame(() => {
+    chatGptHostSyncFrame = 0;
+    syncChatGptHostNow();
+  });
+}
+
+function syncChatGptHostNow() {
+  if (!hasDesktopChatGptHost()) return;
+
+  const node = canvasState.nodes.find((item) => item.type === "chatgpt" && selectedNodeIds.has(item.id));
+  if (!node) {
+    window.ccCanvasDesktop.hideChatGpt();
+    return;
+  }
+
+  const tile = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === node.id);
+  const frameWrap = tile?.querySelector(".chatgpt-frame-wrap");
+  if (!frameWrap) {
+    window.ccCanvasDesktop.hideChatGpt();
+    return;
+  }
+
+  const rect = frameWrap.getBoundingClientRect();
+  const viewportRect = canvasViewport.getBoundingClientRect();
+  const left = Math.max(rect.left, viewportRect.left);
+  const top = Math.max(rect.top, viewportRect.top);
+  const right = Math.min(rect.right, viewportRect.right);
+  const bottom = Math.min(rect.bottom, viewportRect.bottom);
+  const width = right - left;
+  const height = bottom - top;
+
+  if (width < 80 || height < 80) {
+    window.ccCanvasDesktop.hideChatGpt();
+    return;
+  }
+
+  window.ccCanvasDesktop.showChatGpt({
+    url: normalizeChatGptUrl(node.url),
+    proxy: node.proxy || "",
+    interactive: Boolean(node.interactive),
+    bounds: { x: left, y: top, width, height }
+  });
 }
 
 function createImageNode(node) {
@@ -1540,6 +1925,7 @@ function startImageResize(event, nodeId) {
       tile.style.height = `${Math.round(start.height * node.scale)}px`;
     }
     updateMinimap();
+    syncChatGptHostSoon();
   };
 
   const stop = () => {
@@ -2573,17 +2959,9 @@ function createContextMenu() {
 
   const options = [
     ["生图节点", () => addTaskNode("create", pendingCreatePoint)],
-    ["编辑节点", () => addTaskNode("edit", pendingCreatePoint)],
+    ["ChatGPT 节点", () => addChatGptNode(pendingCreatePoint)],
     ["文字节点", () => addNoteNode(pendingCreatePoint)]
   ];
-
-  options.splice(
-    2,
-    0,
-    ["Grok 生图节点", () => addGrokTaskNode("create", pendingCreatePoint)],
-    ["Grok 图生图节点", () => addGrokTaskNode("edit", pendingCreatePoint)]
-  );
-  options.splice(1, options.length - 2);
 
   for (const [label, action] of options) {
     const button = document.createElement("button");
@@ -2662,10 +3040,127 @@ function duplicateNode(nodeId) {
     const storedFiles = fileStore.get(nodeId);
     if (storedFiles) fileStore.set(copy.id, storedFiles);
   }
+  if (node.type === "chatgpt") {
+    copy.interactive = false;
+    delete copy.reloadKey;
+  }
 
   canvasState.nodes.push(copy);
   selectOnly(copy.id, { revealControls: true });
   saveCanvasState();
+}
+
+function copySelectedNodesToClipboard() {
+  const selected = canvasState.nodes.filter((node) => selectedNodeIds.has(node.id));
+  if (!selected.length) {
+    showToast("没有可复制的节点");
+    return;
+  }
+
+  nodeClipboard.nodes = selected.map((node) => clonePlainNode(node));
+  nodeClipboard.bounds = computeNodesBounds(selected);
+  nodeClipboard.pasteCount = 0;
+  nodeClipboard.files = new Map();
+
+  for (const node of selected) {
+    const stored = fileStore.get(node.id);
+    if (stored) {
+      nodeClipboard.files.set(node.id, {
+        images: [...(stored.images || [])],
+        mask: stored.mask || null
+      });
+    }
+  }
+
+  showToast(`已复制 ${selected.length} 个节点`);
+}
+
+function pasteNodesFromClipboard() {
+  if (!nodeClipboard.nodes.length) {
+    showToast("剪贴板里没有节点");
+    return;
+  }
+
+  const offset = 36 * (nodeClipboard.pasteCount + 1);
+  const idMap = new Map();
+  const now = new Date().toISOString();
+
+  for (const source of nodeClipboard.nodes) {
+    idMap.set(source.id, createId());
+  }
+
+  const pasted = nodeClipboard.nodes.map((source) => {
+    const copy = preparePastedNode(source, idMap, offset, now);
+    const stored = nodeClipboard.files.get(source.id);
+    if (stored && copy.type === "task") {
+      fileStore.set(copy.id, {
+        images: [...(stored.images || [])],
+        mask: stored.mask || null
+      });
+    }
+    return copy;
+  });
+
+  canvasState.nodes.push(...pasted);
+  selectedNodeIds.clear();
+  pasted.forEach((node) => selectedNodeIds.add(node.id));
+  nodeClipboard.pasteCount += 1;
+  renderCanvas();
+  saveCanvasState();
+  showToast(`已粘贴 ${pasted.length} 个节点`);
+}
+
+function clonePlainNode(node) {
+  return JSON.parse(JSON.stringify(serializeNodeForClipboard(node)));
+}
+
+function serializeNodeForClipboard(node) {
+  return {
+    ...node,
+    status: node.status === "running" ? "idle" : node.status
+  };
+}
+
+function preparePastedNode(source, idMap, offset, createdAt) {
+  const copy = {
+    ...clonePlainNode(source),
+    id: idMap.get(source.id) || createId(),
+    x: Math.round((Number(source.x) || 0) + offset),
+    y: Math.round((Number(source.y) || 0) + offset),
+    z: ++canvasState.nextZ,
+    createdAt
+  };
+
+  if (copy.sourceTaskId && idMap.has(copy.sourceTaskId)) {
+    copy.sourceTaskId = idMap.get(copy.sourceTaskId);
+  }
+
+  if (copy.type === "task") {
+    copy.images = [];
+    copy.status = "idle";
+    copy.error = "";
+    copy.durationMs = null;
+    copy.debugOpen = true;
+    copy.sessionFiles = [...(copy.sessionFiles || [])];
+    copy.cachedImages = [...(copy.cachedImages || [])];
+  }
+
+  if (copy.type === "chatgpt") {
+    copy.interactive = false;
+    delete copy.reloadKey;
+  }
+
+  return copy;
+}
+
+function computeNodesBounds(nodes) {
+  if (!nodes.length) return null;
+  const rects = nodes.map(getNodeBounds);
+  const minX = Math.min(...rects.map((rect) => rect.x));
+  const minY = Math.min(...rects.map((rect) => rect.y));
+  const maxX = Math.max(...rects.map((rect) => rect.x + rect.width));
+  const maxY = Math.max(...rects.map((rect) => rect.y + rect.height));
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 
 function deleteSelectedNodes() {
@@ -2691,8 +3186,8 @@ function deleteNodes(nodeIds) {
   saveCanvasState();
 }
 
-function startNodeDrag(event, nodeId) {
-  if (event.button !== 0 || event.target.closest("a, button, textarea, input, select, summary")) return;
+function startNodeDrag(event, nodeId, options = {}) {
+  if (event.button !== 0 || (!options.force && event.target.closest("a, button, textarea, input, select, summary"))) return;
 
   event.preventDefault();
   event.stopPropagation();
@@ -2703,6 +3198,7 @@ function startNodeDrag(event, nodeId) {
 
   if (event.shiftKey || event.ctrlKey || event.metaKey) {
     toggleSelection(nodeId);
+    return;
   } else if (!selectedNodeIds.has(nodeId)) {
     selectOnly(nodeId, { revealControls: true });
   }
@@ -2715,16 +3211,22 @@ function startNodeDrag(event, nodeId) {
   }
   renderCanvas();
 
+  const dragElement = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === nodeId);
+  dragElement?.setPointerCapture?.(event.pointerId);
+
   const start = {
     x: event.clientX,
     y: event.clientY,
     zoom: canvasState.viewport.zoom,
     nodes: selectedNodes.map((item) => ({ id: item.id, x: item.x, y: item.y }))
   };
+  let isDragging = false;
 
   const move = (moveEvent) => {
     const dx = (moveEvent.clientX - start.x) / start.zoom;
     const dy = (moveEvent.clientY - start.y) / start.zoom;
+    if (!isDragging && Math.hypot(moveEvent.clientX - start.x, moveEvent.clientY - start.y) < 4) return;
+    isDragging = true;
     for (const item of start.nodes) {
       const target = canvasState.nodes.find((nodeItem) => nodeItem.id === item.id);
       const tile = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === item.id);
@@ -2740,7 +3242,9 @@ function startNodeDrag(event, nodeId) {
   const stop = () => {
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", stop);
-    saveCanvasState();
+    dragElement?.releasePointerCapture?.(event.pointerId);
+    if (isDragging) saveCanvasState();
+    syncChatGptHostSoon();
   };
 
   window.addEventListener("pointermove", move);
@@ -2789,20 +3293,26 @@ function selectNodesInRect(worldRect, additive = false) {
 
 function getNodeBounds(node) {
   const tile = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === node.id);
+  const fixedChatGpt = node.type === "chatgpt" && selectedNodeIds.has(node.id);
+  const fixedScale = fixedChatGpt ? 1 / Math.max(canvasState.viewport.zoom || 1, 0.001) : 1;
   const fallbackWidth =
     node.type === "image"
       ? Math.max(1, Number(node.originalWidth) || 512) * (Number(node.scale) || 1)
       : node.type === "note"
         ? clamp(Number(node.width) || defaultNoteWidth, minNoteWidth, maxNoteWidth)
-        : node.width || defaultTaskWidth;
+        : node.type === "chatgpt"
+          ? clamp(Number(node.width) || defaultChatGptWidth, minChatGptWidth, maxChatGptWidth)
+          : node.width || defaultTaskWidth;
   const fallbackHeight =
     node.type === "image"
       ? Math.max(1, Number(node.originalHeight) || 512) * (Number(node.scale) || 1)
       : node.type === "note"
         ? clamp(Number(node.height) || defaultNoteHeight, minNoteHeight, maxNoteHeight)
-        : 360;
-  const width = tile ? tile.offsetWidth : fallbackWidth;
-  const height = tile ? tile.offsetHeight : fallbackHeight;
+        : node.type === "chatgpt"
+          ? clamp(Number(node.height) || defaultChatGptHeight, minChatGptHeight, maxChatGptHeight)
+          : 360;
+  const width = (tile ? tile.offsetWidth : fallbackWidth) * fixedScale;
+  const height = (tile ? tile.offsetHeight : fallbackHeight) * fixedScale;
   return { x: node.x, y: node.y, width, height };
 }
 
@@ -2833,6 +3343,7 @@ function updateCanvasMeta() {
   const taskNodes = canvasState.nodes.filter((node) => node.type === "task");
   const imageNodes = canvasState.nodes.filter((node) => node.type === "image");
   const noteNodes = canvasState.nodes.filter((node) => node.type === "note");
+  const chatNodes = canvasState.nodes.filter((node) => node.type === "chatgpt");
   const running = taskNodes.filter((node) => node.status === "running").length;
   if (running) {
     requestMeta.textContent = `${running} 个节点生成中`;
@@ -2842,7 +3353,7 @@ function updateCanvasMeta() {
     requestMeta.textContent = "等待添加节点";
     return;
   }
-  requestMeta.textContent = `${taskNodes.length} 个任务 · ${imageNodes.length} 张图 · ${noteNodes.length} 个文字`;
+  requestMeta.textContent = `${taskNodes.length} 个任务 · ${imageNodes.length} 张图 · ${noteNodes.length} 个文字 · ${chatNodes.length} 个 ChatGPT`;
 }
 
 function isRunnableTask(node) {
@@ -2897,6 +3408,23 @@ function migrateNode(node) {
       originalWidth: Number(node.originalWidth) || dimensions.width || 512,
       originalHeight: Number(node.originalHeight) || dimensions.height || 512,
       scale: clamp(Number(node.scale) || defaultImageScale, 0.05, 4),
+      x: node.x || 0,
+      y: node.y || 0,
+      z: node.z || 1,
+      createdAt: node.createdAt || new Date().toISOString()
+    };
+  }
+
+  if (node.type === "chatgpt") {
+    return {
+      ...node,
+      id: node.id || createId(),
+      type: "chatgpt",
+      url: normalizeChatGptUrl(node.url),
+      proxy: String(node.proxy || ""),
+      interactive: Boolean(node.interactive),
+      width: clamp(Number(node.width) || defaultChatGptWidth, minChatGptWidth, maxChatGptWidth),
+      height: clamp(Number(node.height) || defaultChatGptHeight, minChatGptHeight, maxChatGptHeight),
       x: node.x || 0,
       y: node.y || 0,
       z: node.z || 1,

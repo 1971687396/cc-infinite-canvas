@@ -34,8 +34,10 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using Microsoft.Win32;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Windows.Forms;
 
 internal sealed class InstallerForm : Form
@@ -47,9 +49,11 @@ internal sealed class InstallerForm : Form
 
     public InstallerForm()
     {
+        InstallDefaults defaults = ReadInstallDefaults();
+
         Text = "cc infinite canvas installer";
         Width = 720;
-        Height = 470;
+        Height = 500;
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -63,13 +67,23 @@ internal sealed class InstallerForm : Form
         title.Height = 30;
         Controls.Add(title);
 
-        installPath = AddPathRow("Install location", Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) + "\\ccInfiniteCanvas", 62);
-        cachePath = AddPathRow("File cache location", Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) + "\\ccInfiniteCanvasCache", 122);
+        Label status = new Label();
+        status.Text = defaults.HasExistingInstall
+            ? "Existing installation detected. Installing to this location will update it in place."
+            : "Choose installation folders. Drive roots are not allowed.";
+        status.Left = 18;
+        status.Top = 50;
+        status.Width = 666;
+        status.Height = 20;
+        Controls.Add(status);
+
+        installPath = AddPathRow("Install location", defaults.InstallPath, 82);
+        cachePath = AddPathRow("File cache location", defaults.CachePath, 142);
 
         installButton = new Button();
         installButton.Text = "Install";
         installButton.Left = 18;
-        installButton.Top = 184;
+        installButton.Top = 204;
         installButton.Width = 110;
         installButton.Height = 34;
         installButton.Click += delegate { RunInstall(); };
@@ -77,9 +91,9 @@ internal sealed class InstallerForm : Form
 
         logBox = new TextBox();
         logBox.Left = 18;
-        logBox.Top = 234;
+        logBox.Top = 254;
         logBox.Width = 666;
-        logBox.Height = 180;
+        logBox.Height = 190;
         logBox.Multiline = true;
         logBox.ScrollBars = ScrollBars.Vertical;
         logBox.ReadOnly = true;
@@ -124,6 +138,108 @@ internal sealed class InstallerForm : Form
         Controls.Add(browse);
 
         return box;
+    }
+
+    private sealed class InstallDefaults
+    {
+        public string InstallPath;
+        public string CachePath;
+        public bool HasExistingInstall;
+    }
+
+    private static InstallDefaults ReadInstallDefaults()
+    {
+        InstallDefaults defaults = new InstallDefaults();
+        defaults.InstallPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ccInfiniteCanvas");
+        defaults.CachePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ccInfiniteCanvasCache");
+
+        try
+        {
+            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\ccInfiniteCanvas"))
+            {
+                if (key != null)
+                {
+                    string installLocation = TryNormalizePath(Convert.ToString(key.GetValue("InstallLocation")));
+                    if (installLocation.Length > 0)
+                    {
+                        defaults.InstallPath = installLocation;
+                        defaults.HasExistingInstall = true;
+                    }
+
+                    string cacheLocation = TryNormalizePath(Convert.ToString(key.GetValue("CacheLocation")));
+                    if (cacheLocation.Length > 0)
+                    {
+                        defaults.CachePath = cacheLocation;
+                    }
+                }
+            }
+        }
+        catch { }
+
+        ApplyInstallInfo(defaults, defaults.InstallPath);
+        return defaults;
+    }
+
+    private static void ApplyInstallInfo(InstallDefaults defaults, string installPath)
+    {
+        string safeInstallPath = TryNormalizePath(installPath);
+        if (safeInstallPath.Length == 0) return;
+
+        string infoPath = Path.Combine(safeInstallPath, "install-info.json");
+        if (!File.Exists(infoPath)) return;
+
+        try
+        {
+            string json = File.ReadAllText(infoPath, Encoding.UTF8);
+            string storedInstallPath = TryNormalizePath(ReadJsonString(json, "installDir"));
+            if (storedInstallPath.Length > 0)
+            {
+                defaults.InstallPath = storedInstallPath;
+                defaults.HasExistingInstall = true;
+            }
+
+            string storedCachePath = TryNormalizePath(ReadJsonString(json, "cacheDir"));
+            if (storedCachePath.Length > 0)
+            {
+                defaults.CachePath = storedCachePath;
+            }
+        }
+        catch { }
+    }
+
+    private static string ReadJsonString(string json, string key)
+    {
+        Match match = Regex.Match(
+            json,
+            "\"" + Regex.Escape(key) + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"",
+            RegexOptions.IgnoreCase
+        );
+        if (!match.Success) return "";
+
+        try
+        {
+            return Regex.Unescape(match.Groups[1].Value);
+        }
+        catch
+        {
+            return match.Groups[1].Value.Replace("\\\\", "\\").Replace("\\\"", "\"");
+        }
+    }
+
+    private static string TryNormalizePath(string value)
+    {
+        if (String.IsNullOrWhiteSpace(value)) return "";
+
+        try
+        {
+            string full = Path.GetFullPath(Environment.ExpandEnvironmentVariables(value.Trim()));
+            if (IsDriveRoot(full)) return "";
+            return full;
+        }
+        catch
+        {
+            return "";
+        }
     }
 
     private void RunInstall()
@@ -217,12 +333,17 @@ internal sealed class InstallerForm : Form
 
     private static void ValidatePath(string path, string label)
     {
-        string full = Path.GetFullPath(path).TrimEnd('\\');
-        string root = Path.GetPathRoot(full).TrimEnd('\\');
-        if (String.Equals(full, root, StringComparison.OrdinalIgnoreCase))
+        if (IsDriveRoot(path))
         {
             throw new InvalidOperationException(label + " must not be a drive root.");
         }
+    }
+
+    private static bool IsDriveRoot(string path)
+    {
+        string full = Path.GetFullPath(path).TrimEnd('\\');
+        string root = Path.GetPathRoot(full).TrimEnd('\\');
+        return String.Equals(full, root, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string EscapeArgument(string value)
@@ -281,20 +402,35 @@ New-Item -ItemType Directory -Path (Join-Path $payloadRoot "tools") -Force | Out
 $files = @(
   "server.js",
   "package.json",
+  "package-lock.json",
   "README.md",
   "SETUP.md",
   ".env.local.example",
   "YunwuCanvas.cmd",
+  "YunwuCanvasDesktop.cmd",
   "Uninstall.cmd"
 )
 
 foreach ($file in $files) {
-  Copy-Item -LiteralPath (Join-Path $root $file) -Destination (Join-Path $payloadRoot $file) -Force
+  $source = Join-Path $root $file
+  if (Test-Path $source) {
+    Copy-Item -LiteralPath $source -Destination (Join-Path $payloadRoot $file) -Force
+  }
 }
 
 Copy-Item -LiteralPath (Join-Path $root "public") -Destination (Join-Path $payloadRoot "public") -Recurse -Force
+Copy-Item -LiteralPath (Join-Path $root "electron-main.cjs") -Destination (Join-Path $payloadRoot "electron-main.cjs") -Force
+Copy-Item -LiteralPath (Join-Path $root "electron-preload.cjs") -Destination (Join-Path $payloadRoot "electron-preload.cjs") -Force
 Copy-Item -LiteralPath (Join-Path $root "tools\start-yunwu-canvas.ps1") -Destination (Join-Path $payloadRoot "tools\start-yunwu-canvas.ps1") -Force
+Copy-Item -LiteralPath (Join-Path $root "tools\start-yunwu-canvas-desktop.ps1") -Destination (Join-Path $payloadRoot "tools\start-yunwu-canvas-desktop.ps1") -Force
 Copy-Item -LiteralPath (Join-Path $root "tools\uninstall-yunwu-canvas.ps1") -Destination (Join-Path $payloadRoot "tools\uninstall-yunwu-canvas.ps1") -Force
+
+$electronDist = Join-Path $root "node_modules\electron\dist"
+if (-not (Test-Path (Join-Path $electronDist "electron.exe"))) {
+  throw "Electron runtime was not found. Run npm.cmd install before building the installer."
+}
+New-Item -ItemType Directory -Path (Join-Path $payloadRoot "runtime") -Force | Out-Null
+Copy-Item -LiteralPath $electronDist -Destination (Join-Path $payloadRoot "runtime\electron") -Recurse -Force
 
 Compress-Archive -Path (Join-Path $payloadRoot "*") -DestinationPath $payloadZip -Force
 Copy-Item -LiteralPath (Join-Path $root "tools\install-yunwu-canvas.ps1") -Destination $installScript -Force
@@ -345,16 +481,25 @@ FILE1=Install-YunwuCanvas.ps1
 
 Set-Content -LiteralPath $sedPath -Value $sed -Encoding ASCII
 
-$iexpress = Join-Path $env:SystemRoot "System32\iexpress.exe"
-if (-not (Test-Path $iexpress)) {
-  throw "IExpress was not found at $iexpress"
+$installerBuilt = $false
+try {
+  Build-CSharpInstaller
+  $installerBuilt = $true
+} catch {
+  Write-Host "C# installer was not created; falling back to IExpress. $($_.Exception.Message)"
 }
 
-& $iexpress /N /Q $sedPath
+if (-not $installerBuilt) {
+  $iexpress = Join-Path $env:SystemRoot "System32\iexpress.exe"
+  if (-not (Test-Path $iexpress)) {
+    throw "IExpress was not found at $iexpress"
+  }
 
-if (-not (Test-Path $installerTempPath)) {
-  Write-Host "IExpress did not create an installer; building C# self-extracting installer instead."
-  Build-CSharpInstaller
+  & $iexpress /N /Q $sedPath
+
+  if (-not (Test-Path $installerTempPath)) {
+    throw "IExpress did not create an installer."
+  }
 }
 
 Copy-Item -LiteralPath $installerTempPath -Destination $installerPath -Force

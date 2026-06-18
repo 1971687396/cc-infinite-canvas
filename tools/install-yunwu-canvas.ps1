@@ -23,6 +23,89 @@ function Test-IsRootPath($path) {
   return $full.Equals($root, [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Get-SafeFullPath($path) {
+  if ([string]::IsNullOrWhiteSpace($path)) {
+    return ""
+  }
+
+  try {
+    $resolved = Resolve-UserPath ([string]$path)
+    if (Test-IsRootPath $resolved) {
+      return ""
+    }
+    return $resolved
+  } catch {
+    return ""
+  }
+}
+
+function Read-InstallInfoDefaults($installPath) {
+  $resolvedInstallDir = Get-SafeFullPath $installPath
+  $result = @{
+    installDir = ""
+    cacheDir = ""
+  }
+  if (-not $resolvedInstallDir) {
+    return $result
+  }
+
+  $infoPath = Join-Path $resolvedInstallDir "install-info.json"
+  if (-not (Test-Path $infoPath)) {
+    return $result
+  }
+
+  try {
+    $info = Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
+    $storedInstallDir = $resolvedInstallDir
+    if ($info.installDir) {
+      $storedInstallDir = [string]$info.installDir
+    }
+    $result.installDir = Get-SafeFullPath $storedInstallDir
+    if ($info.cacheDir) {
+      $result.cacheDir = Get-SafeFullPath ([string]$info.cacheDir)
+    }
+  } catch {
+    return @{
+      installDir = ""
+      cacheDir = ""
+    }
+  }
+
+  return $result
+}
+
+function Get-PreviousInstallInfo {
+  $result = @{
+    installDir = ""
+    cacheDir = ""
+  }
+
+  $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$appId"
+  try {
+    $reg = Get-ItemProperty -Path $regPath -ErrorAction Stop
+    if ($reg.InstallLocation) {
+      $result.installDir = Get-SafeFullPath ([string]$reg.InstallLocation)
+    }
+    if ($reg.CacheLocation) {
+      $result.cacheDir = Get-SafeFullPath ([string]$reg.CacheLocation)
+    }
+  } catch {
+    # First install, or an older build without uninstall metadata.
+  }
+
+  foreach ($candidate in @($result.installDir, $defaultInstallDir)) {
+    $fileDefaults = Read-InstallInfoDefaults $candidate
+    if (-not $result.installDir -and $fileDefaults.installDir) {
+      $result.installDir = $fileDefaults.installDir
+    }
+    if (-not $result.cacheDir -and $fileDefaults.cacheDir) {
+      $result.cacheDir = $fileDefaults.cacheDir
+    }
+  }
+
+  return [pscustomobject]$result
+}
+
 function Read-SafePath($label, $defaultPath) {
   while ($true) {
     $inputValue = Read-Host "$label [$defaultPath]"
@@ -167,8 +250,20 @@ if (-not (Test-Path $payloadZip)) {
   throw "Installer payload was not found: $payloadZip"
 }
 
+$previousInstall = Get-PreviousInstallInfo
+if ($previousInstall.installDir) {
+  $defaultInstallDir = $previousInstall.installDir
+}
+if ($previousInstall.cacheDir) {
+  $defaultCacheDir = $previousInstall.cacheDir
+}
+
 Write-Host "$appName installer"
 Write-Host "Install path and cache path must not be a drive root."
+if ($previousInstall.installDir) {
+  Write-Host "Existing installation detected: $($previousInstall.installDir)"
+  Write-Host "Installing to the same location will update it in place."
+}
 $installDir = if ([string]::IsNullOrWhiteSpace($InstallDir)) { Read-SafePath "Install location" $defaultInstallDir } else { Resolve-UserPath $InstallDir }
 $cacheDir = if ([string]::IsNullOrWhiteSpace($CacheDir)) { Read-SafePath "File cache location" $defaultCacheDir } else { Resolve-UserPath $CacheDir }
 if (Test-IsRootPath $installDir) {
@@ -204,7 +299,11 @@ try {
   }
   $installInfo | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $installDir "install-info.json") -Encoding UTF8
 
-  $launcher = Join-Path $installDir "YunwuCanvas.cmd"
+  $launcher = Join-Path $installDir "YunwuCanvasDesktop.cmd"
+  $browserLauncher = Join-Path $installDir "YunwuCanvas.cmd"
+  if (-not (Test-Path $launcher)) {
+    $launcher = $browserLauncher
+  }
   $uninstaller = Join-Path $installDir "Uninstall.cmd"
   $desktop = [Environment]::GetFolderPath("DesktopDirectory")
   $programs = [Environment]::GetFolderPath("Programs")
@@ -225,6 +324,14 @@ try {
   $startShortcut.Description = $appName
   $startShortcut.Save()
 
+  if (Test-Path $browserLauncher) {
+    $browserShortcut = $shell.CreateShortcut((Join-Path $startMenuDir "$appName Browser.lnk"))
+    $browserShortcut.TargetPath = $browserLauncher
+    $browserShortcut.WorkingDirectory = $installDir
+    $browserShortcut.Description = "$appName browser fallback"
+    $browserShortcut.Save()
+  }
+
   $uninstallShortcut = $shell.CreateShortcut((Join-Path $startMenuDir "Uninstall $appName.lnk"))
   $uninstallShortcut.TargetPath = $uninstaller
   $uninstallShortcut.WorkingDirectory = $installDir
@@ -235,6 +342,7 @@ try {
   New-Item -Path $regPath -Force | Out-Null
   New-ItemProperty -Path $regPath -Name DisplayName -Value $appName -PropertyType String -Force | Out-Null
   New-ItemProperty -Path $regPath -Name InstallLocation -Value $installDir -PropertyType String -Force | Out-Null
+  New-ItemProperty -Path $regPath -Name CacheLocation -Value $cacheDir -PropertyType String -Force | Out-Null
   New-ItemProperty -Path $regPath -Name UninstallString -Value "`"$uninstaller`"" -PropertyType String -Force | Out-Null
   New-ItemProperty -Path $regPath -Name Publisher -Value "Local" -PropertyType String -Force | Out-Null
 

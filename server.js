@@ -15,6 +15,10 @@ const projectCacheFile = path.join(cacheDir, "project.json");
 const defaultCacheDir = cacheDir;
 const envFile = path.join(__dirname, ".env.local");
 const grokKeyModel = "grok-image-image";
+const grsaiDefaultBaseUrl = "https://grsaiapi.com";
+const grsaiGenerateEndpoint = "/v1/api/generate";
+const grsaiResultEndpoint = "/v1/api/result";
+const grsaiDefaultModel = "nano-banana-2";
 const modelKeyModels = ["gpt-image-2", "grok-image-image"];
 
 loadEnvFile(envFile);
@@ -24,6 +28,7 @@ const config = {
   version: packageInfo.version || "0.0.0",
   updateRepo: process.env.CC_CANVAS_UPDATE_REPO || "1971687396/cc-infinite-canvas",
   apiKey: process.env.YUNWU_API_KEY || "",
+  grsaiApiKey: process.env.GRSAI_API_KEY || "",
   baseUrl: process.env.YUNWU_BASE_URL || "https://yunwu.ai",
   imageEndpoint: process.env.YUNWU_IMAGE_ENDPOINT || "/v1/images/generations",
   editEndpoint: process.env.YUNWU_EDIT_ENDPOINT || "/v1/images/edits",
@@ -120,6 +125,7 @@ export { server };
 function publicSettings() {
   return {
     hasApiKey: Boolean(config.apiKey),
+    hasGrsaiApiKey: Boolean(config.grsaiApiKey),
     hasAnyKey: hasAnyApiKey(),
     baseUrl: config.baseUrl,
     imageEndpoint: config.imageEndpoint,
@@ -133,7 +139,7 @@ function publicSettings() {
 }
 
 function hasAnyApiKey() {
-  return Boolean(config.apiKey) || Object.values(config.modelApiKeys || {}).some(Boolean);
+  return Boolean(config.apiKey) || Boolean(config.grsaiApiKey) || Object.values(config.modelApiKeys || {}).some(Boolean);
 }
 
 function loadModelApiKeys() {
@@ -169,6 +175,7 @@ function mergeModelApiKeys(body) {
 }
 
 function apiKeyForModel(model) {
+  if (isGrsaiImageModel(model)) return config.grsaiApiKey;
   return config.modelApiKeys[modelKeyBucket(model)] || config.apiKey;
 }
 
@@ -182,7 +189,12 @@ function isGrokImageModel(model) {
   return normalizeModelName(model).startsWith("grok-");
 }
 
+function isGrsaiImageModel(model) {
+  return normalizeModelName(model).startsWith("nano-banana");
+}
+
 function applyModelRequestDefaults(payload, mode = "create") {
+  if (isGrsaiImageModel(payload.model)) return applyGrsaiRequestDefaults(payload);
   if (!isGrokImageModel(payload.model)) return payload;
 
   if (mode === "create") {
@@ -196,7 +208,75 @@ function applyModelRequestDefaults(payload, mode = "create") {
   return payload;
 }
 
+function applyGrsaiRequestDefaults(payload) {
+  const size = parseGrsaiSize(payload.size);
+  delete payload.n;
+  delete payload.size;
+  delete payload.quality;
+  delete payload.format;
+  delete payload.response_format;
+  payload.aspectRatio = payload.aspectRatio || size.aspectRatio;
+  payload.imageSize = payload.imageSize || size.imageSize;
+  payload.replyType = payload.replyType || "json";
+  if (!Array.isArray(payload.images)) payload.images = [];
+  return payload;
+}
+
+function parseGrsaiSize(sizeValue) {
+  const raw = String(sizeValue || "").trim();
+  if (!raw || raw === "auto") return { aspectRatio: "auto", imageSize: "1K" };
+
+  const compact = raw.replace(/\s/g, "");
+  const [ratioPart, imageSizePart] = compact.split(/[|@]/);
+  if (/^\d+:\d+$/.test(ratioPart)) {
+    return {
+      aspectRatio: ratioPart,
+      imageSize: normalizeGrsaiImageSize(imageSizePart) || "1K"
+    };
+  }
+
+  const pixelMatch = compact.match(/^(\d+)x(\d+)$/i);
+  if (!pixelMatch) return { aspectRatio: "auto", imageSize: normalizeGrsaiImageSize(raw) || "1K" };
+
+  const width = Number(pixelMatch[1]);
+  const height = Number(pixelMatch[2]);
+  return {
+    aspectRatio: pixelSizeToAspectRatio(width, height),
+    imageSize: pixelSizeToGrsaiImageSize(width, height)
+  };
+}
+
+function normalizeGrsaiImageSize(value) {
+  const clean = String(value || "").trim().toUpperCase();
+  return ["1K", "2K", "4K"].includes(clean) ? clean : "";
+}
+
+function pixelSizeToAspectRatio(width, height) {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return "auto";
+  const divisor = gcd(Math.round(width), Math.round(height));
+  return `${Math.round(width / divisor)}:${Math.round(height / divisor)}`;
+}
+
+function pixelSizeToGrsaiImageSize(width, height) {
+  const longest = Math.max(Number(width) || 0, Number(height) || 0);
+  if (longest >= 2800) return "4K";
+  if (longest >= 1700) return "2K";
+  return "1K";
+}
+
+function gcd(a, b) {
+  while (b) {
+    const next = a % b;
+    a = b;
+    b = next;
+  }
+  return Math.max(a, 1);
+}
+
 function missingKeyMessage(model) {
+  if (isGrsaiImageModel(model)) {
+    return `Grsai API key is not configured for model ${model || grsaiDefaultModel}. Set it in Settings.`;
+  }
   return `API key is not configured for model ${model || config.defaultModel}. Set a platform key or a model-specific key in Settings.`;
 }
 
@@ -310,6 +390,7 @@ async function handleSaveSettings(req, res) {
   const body = await readJsonBody(req);
   const nextSettings = {
     apiKey: sanitizeOptionalText(body.apiKey) || config.apiKey,
+    grsaiApiKey: sanitizeOptionalText(body.grsaiApiKey) || config.grsaiApiKey,
     baseUrl: sanitizeOptionalText(body.baseUrl) || config.baseUrl,
     imageEndpoint: sanitizeOptionalText(body.imageEndpoint) || config.imageEndpoint,
     editEndpoint: sanitizeOptionalText(body.editEndpoint) || config.editEndpoint,
@@ -319,6 +400,7 @@ async function handleSaveSettings(req, res) {
   };
 
   config.apiKey = nextSettings.apiKey;
+  config.grsaiApiKey = nextSettings.grsaiApiKey;
   config.baseUrl = nextSettings.baseUrl;
   config.imageEndpoint = nextSettings.imageEndpoint;
   config.editEndpoint = nextSettings.editEndpoint;
@@ -338,6 +420,7 @@ function sanitizeOptionalText(value) {
 async function writeSettingsEnv(settings) {
   const updates = new Map([
     ["YUNWU_API_KEY", settings.apiKey],
+    ["GRSAI_API_KEY", settings.grsaiApiKey],
     ["YUNWU_BASE_URL", settings.baseUrl],
     ["YUNWU_IMAGE_ENDPOINT", settings.imageEndpoint],
     ["YUNWU_EDIT_ENDPOINT", settings.editEndpoint],
@@ -594,6 +677,10 @@ async function handleCacheAssets(req, res) {
 }
 
 async function handleCreate(res, body, prompt) {
+  if (isGrsaiImageModel(body.model || config.defaultModel)) {
+    return await handleGrsaiGenerate(res, body, prompt);
+  }
+
   const projectId = normalizeProjectId(body.projectId || "default");
   const extraParams = isPlainObject(body.extraParams) ? body.extraParams : {};
   const payload = pruneEmpty({
@@ -644,6 +731,75 @@ async function handleCreate(res, body, prompt) {
   });
 }
 
+async function handleGrsaiGenerate(res, body, prompt, imageFiles = []) {
+  const projectId = normalizeProjectId(body.projectId || "default");
+  const extraParams = parseExtraParamsValue(body.extraParams);
+  const { images: extraImages, ...extraPayload } = extraParams;
+  const size = parseGrsaiSize(body.size);
+  const payload = pruneEmpty({
+    model: body.model || grsaiDefaultModel,
+    prompt,
+    images: [...normalizeGrsaiImageRefs(extraImages), ...imageFiles.map(fileToDataUrl)],
+    aspectRatio: size.aspectRatio,
+    imageSize: size.imageSize,
+    replyType: "json",
+    ...extraPayload
+  });
+  applyModelRequestDefaults(payload, "create");
+
+  const apiUrl = grsaiGenerateUrl(body);
+  const apiKey = apiKeyForModel(payload.model);
+  if (!apiKey) {
+    return sendJson(res, 500, { error: missingKeyMessage(payload.model) });
+  }
+  const startedAt = Date.now();
+
+  const upstream = await fetch(apiUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const responseText = await upstream.text();
+  const upstreamData = tryParseJson(responseText);
+
+  if (!upstream.ok) {
+    return sendJson(res, upstream.status, {
+      error: readUpstreamError(upstreamData, responseText),
+      status: upstream.status,
+      upstream: upstreamData
+    });
+  }
+
+  let finalData;
+  try {
+    finalData = await resolveGrsaiResult(upstreamData, apiUrl, apiKey);
+  } catch (error) {
+    return sendJson(res, 502, {
+      error: error.message || "Grsai generation failed.",
+      upstream: upstreamData
+    });
+  }
+
+  const images = await normalizeAndPersistImages(finalData, body.format || "png", projectId);
+  if (!images.length) {
+    return sendJson(res, 502, {
+      error: "Grsai response did not include an image URL.",
+      upstream: finalData
+    });
+  }
+
+  sendJson(res, 200, {
+    durationMs: Date.now() - startedAt,
+    request: { apiUrl, payload: { ...payload, prompt } },
+    images,
+    raw: finalData
+  });
+}
+
 async function handleEdit(res, body) {
   const projectId = normalizeProjectId(body.projectId || "default");
   const files = Array.isArray(body.files) ? body.files : [];
@@ -658,6 +814,10 @@ async function handleEdit(res, body) {
 
   if (!requestImages.length) {
     return sendJson(res, 400, { error: "At least one image file is required for edit mode." });
+  }
+
+  if (isGrsaiImageModel(modelName)) {
+    return await handleGrsaiGenerate(res, body, body.prompt, requestImages);
   }
 
   const form = new FormData();
@@ -727,6 +887,83 @@ async function handleEdit(res, body) {
     images: resultImages,
     raw: upstreamData
   });
+}
+
+function grsaiGenerateUrl(body) {
+  return buildApiUrl(grsaiBaseUrl(body.baseUrl), grsaiEndpointPath(body.endpointPath));
+}
+
+function grsaiBaseUrl(value) {
+  const clean = sanitizeOptionalText(value);
+  if (!clean || clean === config.baseUrl || /yunwu/i.test(clean)) return grsaiDefaultBaseUrl;
+  return clean;
+}
+
+function grsaiEndpointPath(value) {
+  const clean = sanitizeOptionalText(value);
+  if (!clean || clean === config.imageEndpoint || clean === config.editEndpoint || /^\/v1\/images\//i.test(clean)) {
+    return grsaiGenerateEndpoint;
+  }
+  return clean;
+}
+
+function grsaiResultUrl(generateUrl, id) {
+  const parsed = new URL(generateUrl);
+  parsed.pathname = parsed.pathname.replace(/\/generate\/?$/i, "/result");
+  if (parsed.pathname === new URL(generateUrl).pathname) parsed.pathname = grsaiResultEndpoint;
+  parsed.search = "";
+  parsed.searchParams.set("id", id);
+  return parsed.toString();
+}
+
+function normalizeGrsaiImageRefs(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => String(item || "").trim())
+    .filter((item) => item && (/^https?:\/\//i.test(item) || item.startsWith("data:image/") || looksLikeImageBase64(item)));
+}
+
+function fileToDataUrl(file) {
+  const contentType = file.contentType || "image/png";
+  return `data:${contentType};base64,${Buffer.from(file.data || []).toString("base64")}`;
+}
+
+async function resolveGrsaiResult(initialData, apiUrl, apiKey) {
+  let current = initialData;
+  for (let attempt = 0; attempt <= 30; attempt++) {
+    const status = normalizeModelName(current?.status);
+    if (status === "failed" || status === "violation") {
+      throw new Error(readUpstreamError(current, current?.error) || `Grsai task ${status}.`);
+    }
+    if (status === "succeeded" || hasImageCandidates(current)) return current;
+    if (!current?.id || status !== "running") return current;
+
+    await delay(2000);
+    const response = await fetch(grsaiResultUrl(apiUrl, current.id), {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json"
+      }
+    });
+    const responseText = await response.text();
+    const data = tryParseJson(responseText);
+    if (!response.ok) {
+      throw new Error(readUpstreamError(data, responseText));
+    }
+    current = data;
+  }
+
+  throw new Error("Grsai task is still running after waiting 60 seconds.");
+}
+
+function hasImageCandidates(data) {
+  const candidates = [];
+  collectImageCandidates(data, candidates);
+  return candidates.length > 0;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function loadEnvFile(filePath) {

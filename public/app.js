@@ -13,7 +13,7 @@ const minNoteHeight = 44;
 const maxNoteWidth = 1600;
 const maxNoteHeight = 1400;
 const minNoteFontSize = 10;
-const maxNoteFontSize = 96;
+const maxNoteFontSize = 240;
 const chatGptUrl = "https://chatgpt.com/";
 const defaultChatGptWidth = 760;
 const defaultChatGptHeight = 620;
@@ -60,6 +60,7 @@ const closeSettingsButton = document.querySelector("#closeSettingsButton");
 const settingsApiKey = document.querySelector("#settingsApiKey");
 const settingsGptImageKey = document.querySelector("#settingsGptImageKey");
 const settingsGrokImageKey = document.querySelector("#settingsGrokImageKey");
+const settingsGrsaiApiKey = document.querySelector("#settingsGrsaiApiKey");
 const settingsBaseUrl = document.querySelector("#settingsBaseUrl");
 const settingsImageEndpoint = document.querySelector("#settingsImageEndpoint");
 const settingsEditEndpoint = document.querySelector("#settingsEditEndpoint");
@@ -140,12 +141,40 @@ const moderationOptions = [
 
 const grokDefaultModel = "grok-3-image";
 const grokDefaultSize = "960x960";
+const grsaiDefaultModel = "nano-banana-2";
+const grsaiDefaultBaseUrl = "https://grsaiapi.com";
+const grsaiGenerateEndpoint = "/v1/api/generate";
+const grsaiDefaultSize = "1:1|1K";
 const grokModelOptions = [
   ["grok-3-image", "grok-3-image"],
   ["grok-image-image", "grok-image-image"]
 ];
+const grsaiSizeOptions = [
+  ["auto", "auto"],
+  ["1:1|1K", "1:1 (1K)"],
+  ["1:1|2K", "1:1 (2K)"],
+  ["1:1|4K", "1:1 (4K)"],
+  ["16:9|1K", "16:9 (1K)"],
+  ["16:9|2K", "16:9 (2K)"],
+  ["16:9|4K", "16:9 (4K)"],
+  ["9:16|1K", "9:16 (1K)"],
+  ["9:16|2K", "9:16 (2K)"],
+  ["9:16|4K", "9:16 (4K)"],
+  ["4:3|1K", "4:3 (1K)"],
+  ["3:4|1K", "3:4 (1K)"],
+  ["3:2|1K", "3:2 (1K)"],
+  ["2:3|1K", "2:3 (1K)"],
+  ["5:4|1K", "5:4 (1K)"],
+  ["4:5|1K", "4:5 (1K)"],
+  ["21:9|1K", "21:9 (1K)"],
+  ["1:4|1K", "1:4 (1K)"],
+  ["4:1|1K", "4:1 (1K)"],
+  ["1:8|1K", "1:8 (1K)"],
+  ["8:1|1K", "8:1 (1K)"]
+];
 const taskModelOptions = [
   ["gpt-image-2", "gpt-image-2"],
+  [grsaiDefaultModel, grsaiDefaultModel],
   ...grokModelOptions
 ];
 
@@ -172,6 +201,7 @@ let minimapBounds = { x: -400, y: -300, width: 1200, height: 900 };
 let referencePickTargetNodeId = null;
 let editingNoteId = null;
 let latestUpdateInfo = null;
+let suppressChatGptHost = false;
 let lastHistorySnapshot = "";
 let currentProjectId = "default";
 let currentProjectName = "未命名画布";
@@ -199,6 +229,7 @@ async function init() {
   await refreshProjectList();
   const preferredProjectId = localStorage.getItem(currentProjectStorageKey) || projectList[0]?.id || "default";
   await loadProjectById(preferredProjectId, { initial: true });
+  checkForUpdates({ automatic: true });
 }
 
 addTaskButton.addEventListener("click", () => addTaskNode("create"));
@@ -232,9 +263,11 @@ projectNameInput.addEventListener("keydown", (event) => {
   }
 });
 settingsButton.addEventListener("click", openSettingsDialog);
-checkUpdateButton?.addEventListener("click", checkForUpdates);
-closeSettingsButton.addEventListener("click", () => settingsDialog.close());
-closeUpdateButton?.addEventListener("click", () => updateDialog.close());
+checkUpdateButton?.addEventListener("click", () => checkForUpdates());
+closeSettingsButton.addEventListener("click", () => closeSettingsDialog());
+settingsDialog.addEventListener("close", resumeChatGptHost);
+closeUpdateButton?.addEventListener("click", () => closeUpdateDialog());
+updateDialog?.addEventListener("close", resumeChatGptHost);
 openReleaseButton?.addEventListener("click", () => {
   if (latestUpdateInfo?.releaseUrl) window.open(latestUpdateInfo.releaseUrl, "_blank", "noreferrer");
 });
@@ -293,10 +326,24 @@ function applyTaskNodePreset(node, preset) {
 
 function applyTaskModelDefaults(node, options = {}) {
   const wasGrok = node.provider === "grok";
+  const wasGrsai = node.provider === "grsai";
   const isGrok = isGrokModelName(node.model);
-  node.provider = isGrok ? "grok" : "";
+  const isGrsai = isGrsaiModelName(node.model);
+  node.provider = isGrok ? "grok" : isGrsai ? "grsai" : "";
 
-  if (isGrok) {
+  if (isGrsai) {
+    node.model = isGrsaiModelName(node.model) ? node.model : grsaiDefaultModel;
+    if (!isSizeAllowedForModel(node.size, node.model)) {
+      node.size = defaultSizeForModel(node.model, node.mode);
+    }
+    node.quality = "";
+    node.format = "png";
+    node.baseUrl = isGrsaiBaseUrl(node.baseUrl) ? node.baseUrl : grsaiDefaultBaseUrl;
+    node.endpointPath = grsaiGenerateEndpoint;
+    node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
+    node.extraParams.replyType = node.extraParams.replyType || "json";
+    delete node.extraParams.response_format;
+  } else if (isGrok) {
     node.model = isGrokModelName(node.model) ? node.model : grokDefaultModel;
     if (node.mode === "edit") {
       node.size = "";
@@ -316,9 +363,14 @@ function applyTaskModelDefaults(node, options = {}) {
     if (!isSizeAllowedForModel(node.size, node.model)) {
       node.size = defaultSizeForModel(node.model, node.mode);
     }
-    if (wasGrok || options.modelChanged) {
+    if (wasGrok || wasGrsai || options.modelChanged) {
       node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
       delete node.extraParams.response_format;
+      delete node.extraParams.replyType;
+    }
+    if (wasGrsai && options.modelChanged) {
+      node.baseUrl = config.baseUrl || "https://yunwu.ai";
+      node.endpointPath = defaultEndpointForMode(node.mode);
     }
   }
 
@@ -330,11 +382,21 @@ function isGrokModelName(model) {
   return String(model || "").trim().toLowerCase().startsWith("grok-");
 }
 
+function isGrsaiModelName(model) {
+  return String(model || "").trim().toLowerCase().startsWith("nano-banana");
+}
+
+function isGrsaiBaseUrl(value) {
+  return /grsai/i.test(String(value || ""));
+}
+
 function sizeOptionsForModel(model) {
+  if (isGrsaiModelName(model)) return grsaiSizeOptions;
   return isGrokModelName(model) ? grokSizeOptions : gptSizeOptions;
 }
 
 function defaultSizeForModel(model, mode = "create") {
+  if (isGrsaiModelName(model)) return grsaiDefaultSize;
   if (isGrokModelName(model)) return mode === "create" ? grokDefaultSize : "";
   return "auto";
 }
@@ -440,6 +502,10 @@ async function generateNode(nodeId) {
 
   if (!syncNodeExtraParams(node)) return;
 
+  if (node.mode === "edit" && fileStore.get(node.id)?.images?.length) {
+    await cacheEditFiles(node.id);
+  }
+
   node.status = "running";
   node.error = "";
   node.debugOpen = false;
@@ -474,6 +540,7 @@ async function generateNode(nodeId) {
     node.status = "done";
     node.durationMs = data.durationMs;
     node.error = "";
+    removeGeneratedTaskNode(node.id);
   } catch (error) {
     node.status = "error";
     node.error = error.message || "生成失败";
@@ -483,6 +550,13 @@ async function generateNode(nodeId) {
     saveCanvasState();
     updateCanvasMeta();
   }
+}
+
+function removeGeneratedTaskNode(nodeId) {
+  canvasState.nodes = canvasState.nodes.filter((item) => item.id !== nodeId);
+  selectedNodeIds.delete(nodeId);
+  fileStore.delete(nodeId);
+  if (referencePickTargetNodeId === nodeId) referencePickTargetNodeId = null;
 }
 
 function buildNodeRequest(node) {
@@ -557,6 +631,7 @@ function appendNodeFields(formData, node, options = {}) {
 }
 
 function normalizeNodeImage(image, node) {
+  const generation = buildGenerationSnapshot(node);
   return {
     id: createId(),
     url: image.url,
@@ -566,7 +641,27 @@ function normalizeNodeImage(image, node) {
     model: node.model,
     size: node.size,
     format: node.format || "",
+    generation,
     createdAt: new Date().toISOString()
+  };
+}
+
+function buildGenerationSnapshot(node) {
+  return {
+    mode: node.mode === "edit" ? "edit" : "create",
+    prompt: node.prompt || "",
+    model: node.model || config.defaultModel || "gpt-image-2",
+    n: String(node.n || "1"),
+    size: node.size || "auto",
+    quality: node.quality || "",
+    format: node.format || "png",
+    background: node.background || "",
+    moderation: node.moderation || "",
+    baseUrl: node.baseUrl || config.baseUrl || "https://yunwu.ai",
+    endpointPath: node.endpointPath || defaultEndpointForMode(node.mode),
+    extraParams: clonePlainValue(node.extraParams || {}),
+    cachedImages: clonePlainValue(node.cachedImages || []),
+    cachedMask: node.cachedMask ? clonePlainValue(node.cachedMask) : null
   };
 }
 
@@ -713,8 +808,10 @@ function openSettingsDialog() {
   settingsApiKey.value = "";
   settingsGptImageKey.value = "";
   settingsGrokImageKey.value = "";
+  settingsGrsaiApiKey.value = "";
   settingsGptImageKey.placeholder = config.modelKeys?.["gpt-image-2"] ? "已配置，留空不修改" : "留空则使用平台总 Key";
   settingsGrokImageKey.placeholder = config.modelKeys?.["grok-image-image"] ? "已配置，留空不修改" : "留空则使用平台总 Key";
+  settingsGrsaiApiKey.placeholder = config.hasGrsaiApiKey ? "已配置，留空不修改" : "填写 Grsai API Key";
   settingsBaseUrl.value = config.baseUrl || "https://yunwu.ai";
   settingsImageEndpoint.value = config.imageEndpoint || "/v1/images/generations";
   settingsEditEndpoint.value = config.editEndpoint || "/v1/images/edits";
@@ -722,8 +819,15 @@ function openSettingsDialog() {
   settingsCacheDir.value = config.cacheDir || "";
   settingsStatus.textContent = config.hasApiKey ? "Key 已配置" : "Key 未配置";
   const modelKeyCount = Object.values(config.modelKeys || {}).filter(Boolean).length;
-  settingsStatus.textContent = config.hasApiKey || modelKeyCount ? `Key 已配置${modelKeyCount ? `（${modelKeyCount} 个模型专用）` : ""}` : "Key 未配置";
+  const keyCount = Number(Boolean(config.hasApiKey)) + Number(Boolean(config.hasGrsaiApiKey)) + modelKeyCount;
+  settingsStatus.textContent = keyCount ? `Key 已配置（${keyCount} 个）` : "Key 未配置";
+  pauseChatGptHost();
   settingsDialog.showModal();
+}
+
+function closeSettingsDialog() {
+  if (settingsDialog.open) settingsDialog.close();
+  else resumeChatGptHost();
 }
 
 async function saveSettings(event) {
@@ -733,6 +837,7 @@ async function saveSettings(event) {
   try {
     const payload = {
       apiKey: settingsApiKey.value.trim(),
+      grsaiApiKey: settingsGrsaiApiKey.value.trim(),
       modelApiKeys: {
         "gpt-image-2": settingsGptImageKey.value.trim(),
         "grok-image-image": settingsGrokImageKey.value.trim()
@@ -755,6 +860,7 @@ async function saveSettings(event) {
     config = {
       ...config,
       hasApiKey: data.hasApiKey,
+      hasGrsaiApiKey: data.hasGrsaiApiKey,
       hasAnyKey: data.hasAnyKey,
       baseUrl: data.baseUrl,
       imageEndpoint: data.imageEndpoint,
@@ -768,6 +874,7 @@ async function saveSettings(event) {
     settingsApiKey.value = "";
     settingsGptImageKey.value = "";
     settingsGrokImageKey.value = "";
+    settingsGrsaiApiKey.value = "";
     settingsStatus.textContent = "已保存";
     showToast("设置已保存");
   } catch (error) {
@@ -775,7 +882,8 @@ async function saveSettings(event) {
   }
 }
 
-async function checkForUpdates() {
+async function checkForUpdates(options = {}) {
+  const automatic = Boolean(options.automatic);
   if (!updateDialog) return;
 
   if (!config.version || !config.updateRepo) {
@@ -796,8 +904,10 @@ async function checkForUpdates() {
   updateRepoText.textContent = config.updateRepo || "";
   openReleaseButton.disabled = true;
   downloadUpdateButton.disabled = true;
-  checkUpdateButton.disabled = true;
-  updateDialog.showModal();
+  if (!automatic) {
+    checkUpdateButton.disabled = true;
+    openUpdateDialog();
+  }
 
   try {
     const response = await fetch("/api/update/check");
@@ -822,7 +932,7 @@ async function checkForUpdates() {
 
     if (!data.hasRelease) {
       updateStatus.textContent = data.message || "还没有找到 GitHub Release。";
-      showToast("还没有找到 GitHub Release");
+      if (!automatic) showToast("还没有找到 GitHub Release");
       return;
     }
 
@@ -833,17 +943,41 @@ async function checkForUpdates() {
       updateStatus.textContent = data.asset
         ? `发现新版本 v${data.latestVersion}，可以下载更新。`
         : `发现新版本 v${data.latestVersion}，但 Release 没有可下载附件。`;
+      if (!updateDialog.open) openUpdateDialog();
       showToast(`发现新版本 v${data.latestVersion}`);
     } else {
       updateStatus.textContent = "当前已经是最新版本。";
-      showToast("当前已经是最新版本");
+      if (!automatic) showToast("当前已经是最新版本");
     }
   } catch (error) {
     updateStatus.textContent = error.message || "检查更新失败";
-    showToast(updateStatus.textContent);
+    if (!automatic) showToast(updateStatus.textContent);
   } finally {
     checkUpdateButton.disabled = false;
   }
+}
+
+function openUpdateDialog() {
+  if (!updateDialog || updateDialog.open) return;
+  pauseChatGptHost();
+  updateDialog.showModal();
+}
+
+function closeUpdateDialog() {
+  if (updateDialog?.open) updateDialog.close();
+  else resumeChatGptHost();
+}
+
+function pauseChatGptHost() {
+  if (!hasDesktopChatGptHost()) return;
+  suppressChatGptHost = true;
+  window.ccCanvasDesktop.hideChatGpt();
+}
+
+function resumeChatGptHost() {
+  if (!suppressChatGptHost) return;
+  suppressChatGptHost = false;
+  syncChatGptHostSoon();
 }
 
 async function readJsonResponse(response) {
@@ -900,8 +1034,8 @@ function reusePromptFromSelection() {
 
 function reusePromptFromImage(imageNodeId) {
   const sourceImage = canvasState.nodes.find((node) => node.id === imageNodeId && node.type === "image");
-  const prompt = getImagePrompt(sourceImage);
-  if (!sourceImage || !prompt) {
+  const generation = getImageGeneration(sourceImage);
+  if (!sourceImage || !generation?.prompt) {
     showToast("这张图片没有可复用的提示词");
     return;
   }
@@ -909,12 +1043,11 @@ function reusePromptFromImage(imageNodeId) {
   const selectedTasks = canvasState.nodes.filter((node) => selectedNodeIds.has(node.id) && node.type === "task");
   if (selectedTasks.length) {
     for (const task of selectedTasks) {
-      task.prompt = prompt;
-      task.debugOpen = true;
+      applyGenerationToTask(task, generation);
     }
     renderCanvas();
     saveCanvasState();
-    showToast(`提示词已复用到 ${selectedTasks.length} 个节点`);
+    showToast(`提示词和生成参数已复用到 ${selectedTasks.length} 个节点`);
     return;
   }
 
@@ -924,11 +1057,11 @@ function reusePromptFromImage(imageNodeId) {
     x: sourceImage.x + imageWidth + 56 + defaultTaskWidth / 2,
     y: sourceImage.y + 210
   };
-  const task = addTaskNode("create", point, { prompt });
-  task.debugOpen = true;
+  const task = addTaskNode(generation.mode, point, { prompt: generation.prompt });
+  applyGenerationToTask(task, generation);
   updateNode(task);
   saveCanvasState();
-  showToast("已用图片提示词创建新生图节点");
+  showToast("已用图片提示词和参数创建新生图节点");
 }
 
 function getSelectedImagesWithPrompt() {
@@ -936,7 +1069,60 @@ function getSelectedImagesWithPrompt() {
 }
 
 function getImagePrompt(node) {
-  return String(node?.image?.prompt || "").trim();
+  return String(node?.image?.generation?.prompt || node?.image?.prompt || "").trim();
+}
+
+function getImageGeneration(node) {
+  const image = node?.image || {};
+  const generation = isPlainObject(image.generation) ? image.generation : {};
+  const prompt = String(generation.prompt || image.prompt || "").trim();
+  if (!prompt) return null;
+
+  const mode = generation.mode === "edit" ? "edit" : "create";
+  return {
+    mode,
+    prompt,
+    model: generation.model || image.model || config.defaultModel || "gpt-image-2",
+    n: String(generation.n || "1"),
+    size: generation.size || image.size || "auto",
+    quality: generation.quality || "",
+    format: generation.format || image.format || "png",
+    background: generation.background || "",
+    moderation: generation.moderation || "",
+    baseUrl: generation.baseUrl || config.baseUrl || "https://yunwu.ai",
+    endpointPath: generation.endpointPath || defaultEndpointForMode(mode),
+    extraParams: isPlainObject(generation.extraParams) ? clonePlainValue(generation.extraParams) : {},
+    cachedImages: Array.isArray(generation.cachedImages) ? clonePlainValue(generation.cachedImages) : [],
+    cachedMask: generation.cachedMask ? clonePlainValue(generation.cachedMask) : null
+  };
+}
+
+function applyGenerationToTask(task, generation) {
+  task.mode = generation.mode === "edit" ? "edit" : "create";
+  task.model = generation.model || config.defaultModel || "gpt-image-2";
+  task.baseUrl = generation.baseUrl || config.baseUrl || "https://yunwu.ai";
+  task.endpointPath = generation.endpointPath || defaultEndpointForMode(task.mode);
+  applyTaskModelDefaults(task, { modeChanged: true, modelChanged: true });
+
+  task.prompt = generation.prompt || "";
+  task.n = String(generation.n || "1");
+  task.size = generation.size || defaultSizeForModel(task.model, task.mode);
+  task.quality = generation.quality || "";
+  task.format = generation.format || "png";
+  task.background = generation.background || "";
+  task.moderation = generation.moderation || "";
+  task.extraParams = isPlainObject(generation.extraParams) ? clonePlainValue(generation.extraParams) : {};
+  task.extraParamsText = JSON.stringify(task.extraParams, null, 2);
+  task.cachedImages = Array.isArray(generation.cachedImages) ? dedupeAssetRefs(clonePlainValue(generation.cachedImages)) : [];
+  task.cachedMask = generation.cachedMask ? clonePlainValue(generation.cachedMask) : null;
+  task.sessionFiles = [];
+  task.sessionMask = "";
+  fileStore.delete(task.id);
+  task.cacheStatus = task.mode === "edit" ? (task.cachedImages.length ? "ready" : "pending") : "none";
+  task.status = "idle";
+  task.error = "";
+  task.durationMs = null;
+  task.debugOpen = true;
 }
 
 function updateSelectionToolbar() {
@@ -1752,6 +1938,10 @@ function syncChatGptHostSoon() {
 
 function syncChatGptHostNow() {
   if (!hasDesktopChatGptHost()) return;
+  if (suppressChatGptHost || settingsDialog.open || updateDialog?.open) {
+    window.ccCanvasDesktop.hideChatGpt();
+    return;
+  }
 
   const node = canvasState.nodes.find((item) => item.type === "chatgpt" && selectedNodeIds.has(item.id));
   if (!node) {
@@ -3148,6 +3338,10 @@ function clonePlainNode(node) {
   return JSON.parse(JSON.stringify(serializeNodeForClipboard(node)));
 }
 
+function clonePlainValue(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 function serializeNodeForClipboard(node) {
   return {
     ...node,
@@ -3473,7 +3667,7 @@ function migrateNode(node) {
   return migrateTaskNode({
     ...node,
     type: "task",
-    provider: node.provider || (isGrokModelName(node.model) ? "grok" : ""),
+    provider: node.provider || providerForModel(node.model),
     prompt: node.prompt || "",
     images: node.url ? [normalizeNodeImage({ url: node.url, filename: node.filename }, node)] : [],
     status: node.url ? "done" : "idle"
@@ -3487,7 +3681,7 @@ function migrateTaskNode(node) {
     ...node,
     id: node.id || createId(),
     type: "task",
-    provider: node.provider || (isGrokModelName(node.model) ? "grok" : ""),
+    provider: node.provider || providerForModel(node.model),
     prompt: node.prompt || "",
     model: node.model || config.defaultModel || "gpt-image-2",
     n: String(node.n || "1"),
@@ -3519,6 +3713,12 @@ function migrateTaskNode(node) {
   };
   applyTaskModelDefaults(migrated);
   return migrated;
+}
+
+function providerForModel(model) {
+  if (isGrokModelName(model)) return "grok";
+  if (isGrsaiModelName(model)) return "grsai";
+  return "";
 }
 
 function materializeTaskImageNodes() {

@@ -19,6 +19,25 @@ function Assert-UnderRoot($path, $parent) {
   }
 }
 
+function Assert-NoLocalDataInPayload {
+  $localOnlyEntries = @(
+    ".env",
+    ".env.local",
+    "cache",
+    "data",
+    "dist",
+    "node_modules",
+    "outputs"
+  )
+
+  foreach ($entry in $localOnlyEntries) {
+    $payloadEntry = Join-Path $payloadRoot $entry
+    if (Test-Path $payloadEntry) {
+      throw "Refusing to package local data or development-only entry: $entry"
+    }
+  }
+}
+
 function Build-CSharpInstaller {
   $cscCandidates = @(
     (Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"),
@@ -432,6 +451,7 @@ if (-not (Test-Path (Join-Path $electronDist "electron.exe"))) {
 New-Item -ItemType Directory -Path (Join-Path $payloadRoot "runtime") -Force | Out-Null
 Copy-Item -LiteralPath $electronDist -Destination (Join-Path $payloadRoot "runtime\electron") -Recurse -Force
 
+Assert-NoLocalDataInPayload
 Compress-Archive -Path (Join-Path $payloadRoot "*") -DestinationPath $payloadZip -Force
 Copy-Item -LiteralPath (Join-Path $root "tools\install-yunwu-canvas.ps1") -Destination $installScript -Force
 

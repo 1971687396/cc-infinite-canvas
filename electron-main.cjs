@@ -1,4 +1,5 @@
 const { app, BrowserView, BrowserWindow, ipcMain, shell } = require("electron");
+const { once } = require("node:events");
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
@@ -6,13 +7,13 @@ const { pathToFileURL } = require("node:url");
 
 loadEnvFile(path.join(__dirname, ".env.local"));
 
-const port = Number(process.env.PORT || 3000);
-const appUrl = `http://127.0.0.1:${port}`;
 const preloadPath = path.join(__dirname, "electron-preload.cjs");
 const logPath = path.join(__dirname, "electron-desktop.log");
 const chatGptPartition = "persist:cc-canvas-chatgpt";
 
 let mainWindow = null;
+let appUrl = "";
+let localServer = null;
 let chatGptView = null;
 let chatGptViewAttached = false;
 let chatGptUrl = "";
@@ -24,7 +25,10 @@ process.on("uncaughtException", (error) => log(`uncaughtException: ${error.stack
 process.on("unhandledRejection", (error) => log(`unhandledRejection: ${error?.stack || error?.message || error}`));
 app.on("will-finish-launching", () => log("will finish launching"));
 app.on("ready", () => log("ready event"));
-app.on("before-quit", () => log("before quit"));
+app.on("before-quit", () => {
+  log("before quit");
+  if (localServer?.listening) localServer.close();
+});
 app.on("quit", (_event, code) => log(`quit code ${code}`));
 app.on("web-contents-created", (_event, contents) => attachProxyAuth(contents));
 
@@ -50,10 +54,18 @@ app.on("window-all-closed", () => {
 });
 
 async function ensureServer() {
-  if (!(await isServerReady())) {
-    process.env.PORT = String(port);
-    await import(pathToFileURL(path.join(__dirname, "server.js")).href);
+  process.env.PORT = "0";
+  const serverModule = await import(pathToFileURL(path.join(__dirname, "server.js")).href);
+  localServer = serverModule.server;
+  if (!localServer) throw new Error("The embedded server module did not export a server instance.");
+  if (!localServer.listening) await once(localServer, "listening");
+
+  const address = localServer.address();
+  if (!address || typeof address === "string" || !address.port) {
+    throw new Error("The embedded server did not receive a local port.");
   }
+  appUrl = `http://127.0.0.1:${address.port}`;
+  log(`embedded server ready at ${appUrl}`);
 
   const started = Date.now();
   while (!(await isServerReady())) {
@@ -63,6 +75,7 @@ async function ensureServer() {
 }
 
 function isServerReady() {
+  if (!appUrl) return Promise.resolve(false);
   return new Promise((resolve) => {
     const request = http.get(appUrl, (response) => {
       response.resume();

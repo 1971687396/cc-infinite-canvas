@@ -20,6 +20,7 @@ const grsaiGenerateEndpoint = "/v1/api/generate";
 const grsaiResultEndpoint = "/v1/api/result";
 const grsaiDefaultModel = "nano-banana-2";
 const modelKeyModels = ["gpt-image-2", "grok-image-image"];
+const serverHost = "127.0.0.1";
 
 loadEnvFile(envFile);
 
@@ -116,9 +117,24 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(config.port, () => {
-  console.log(`cc无限画布 is running at http://localhost:${config.port}`);
+let usedPortFallback = false;
+server.on("error", (error) => {
+  if (error?.code === "EADDRINUSE" && config.port !== 0 && !usedPortFallback) {
+    usedPortFallback = true;
+    console.warn(`Port ${config.port} is unavailable. Selecting another local port.`);
+    server.listen(0, serverHost);
+    return;
+  }
+  throw error;
 });
+server.on("listening", logServerAddress);
+server.listen(config.port, serverHost);
+
+function logServerAddress() {
+  const address = server.address();
+  const activePort = typeof address === "object" && address ? address.port : config.port;
+  console.log(`cc无限画布 is running at http://${serverHost}:${activePort}`);
+}
 
 export { server };
 

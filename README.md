@@ -99,13 +99,17 @@ PORT=3000
 
 ## 运行
 
+桌面版直接双击 `YunwuCanvasDesktop.cmd`。桌面端会在 Electron 进程内启动服务并自动选择空闲端口，不依赖 `3000`，也不需要单独打开或保持浏览器页面。
+
+网页版可以使用：
+
 ```bash
 npm start
 ```
 
 打开 `http://localhost:3000`。
 
-也可以直接双击 `YunwuCanvas.cmd`，启动器会读取 `.env.local` 里的 `PORT`，启动本地服务并打开浏览器。
+也可以直接双击 `YunwuCanvas.cmd`。启动器会读取 `.env.local` 里的 `PORT`；如果该端口已被占用，会自动选择其他空闲端口并打开浏览器。
 
 ## 打包安装
 

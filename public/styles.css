@@ -522,8 +522,8 @@ button.compact,
 
 .task-node {
   display: grid;
-  gap: 11px;
-  padding: 12px;
+  gap: 8px;
+  padding: 10px;
 }
 
 .task-node.is-selected {
@@ -942,9 +942,20 @@ button.compact,
 
 .task-header {
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  gap: 6px;
   align-items: center;
+}
+
+.task-header .node-actions {
+  grid-template-columns: repeat(3, minmax(42px, auto));
+  gap: 4px;
+}
+
+.task-header .node-actions button {
+  min-height: 28px;
+  padding: 0 7px;
+  font-size: 12px;
 }
 
 .node-mode-tabs {
@@ -1003,9 +1014,11 @@ button.compact,
 }
 
 .node-prompt {
-  min-height: 96px;
+  min-height: 76px;
+  max-height: 220px;
   resize: vertical;
-  padding: 10px;
+  overflow-y: auto;
+  padding: 8px 9px;
   line-height: 1.45;
   user-select: text;
 }
@@ -1014,7 +1027,7 @@ button.compact,
 .edit-assets {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 9px;
+  gap: 7px;
 }
 
 .node-field {
@@ -1030,16 +1043,18 @@ button.compact,
 
 .node-field input,
 .node-field select {
-  min-height: 36px;
+  min-height: 32px;
   border-radius: 8px;
   padding: 0 9px;
   font-size: 13px;
 }
 
 .node-field textarea {
-  min-height: 92px;
+  min-height: 72px;
+  max-height: 180px;
   border-radius: 8px;
-  padding: 10px;
+  overflow-y: auto;
+  padding: 8px 9px;
   font-size: 13px;
 }
 
@@ -1056,11 +1071,11 @@ button.compact,
 
 .node-debug {
   display: grid;
-  gap: 9px;
+  gap: 7px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fbfcfa;
-  padding: 9px;
+  padding: 7px;
 }
 
 .node-debug > summary,
@@ -1088,7 +1103,7 @@ button.compact,
   border: 1px dashed var(--line);
   border-radius: 8px;
   background: #f8faf7;
-  padding: 9px;
+  padding: 7px;
 }
 
 .asset-summary {
@@ -1335,7 +1350,7 @@ button.compact,
 }
 
 .node-image-area {
-  min-height: 150px;
+  min-height: 88px;
   display: grid;
 }
 
@@ -1343,8 +1358,8 @@ button.compact,
 .node-loading {
   display: grid;
   place-items: center;
-  gap: 10px;
-  min-height: 150px;
+  gap: 6px;
+  min-height: 88px;
   border: 1px dashed var(--line);
   border-radius: 8px;
   background: #f8faf7;
@@ -1360,7 +1375,7 @@ button.compact,
   content: "";
   width: 18px;
   height: 18px;
-  margin-bottom: 10px;
+  margin-bottom: 4px;
   border: 3px solid rgba(37, 111, 116, 0.2);
   border-top-color: var(--accent);
   border-radius: 999px;

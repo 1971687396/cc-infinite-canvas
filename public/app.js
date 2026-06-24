@@ -2,9 +2,9 @@ const storageKeyPrefix = "cc-infinite-canvas-project-v1";
 const currentProjectStorageKey = "cc-infinite-canvas-current-project";
 const storageKey = "yunwu-image-canvas-v2";
 const legacyStorageKey = "yunwu-image-canvas-v1";
-const minZoom = 0.25;
-const maxZoom = 2.5;
-const defaultTaskWidth = 460;
+const minZoom = 0.02;
+const maxZoom = 24;
+const defaultTaskWidth = 420;
 const defaultImageScale = 0.5;
 const defaultNoteWidth = 300;
 const defaultNoteHeight = 64;
@@ -222,6 +222,7 @@ let currentProjectId = "default";
 let currentProjectName = "未命名画布";
 let projectList = [];
 let dreaminaStatus = { installed: false, loggedIn: false };
+let lastCanvasPointer = null;
 let canvasState = {
   nodes: [],
   viewport: { x: 120, y: 90, zoom: 1 },
@@ -420,7 +421,6 @@ function applyTaskModelDefaults(node, options = {}) {
   }
 
   node.extraParamsText = JSON.stringify(node.extraParams, null, 2);
-  node.debugOpen = true;
 }
 
 function isGrokModelName(model) {
@@ -496,7 +496,7 @@ function createDefaultTaskNode(mode = "create") {
     status: "idle",
     error: "",
     durationMs: null,
-    debugOpen: true,
+    debugOpen: false,
     width: defaultTaskWidth,
     x: 0,
     y: 0,
@@ -1280,7 +1280,7 @@ function applyGenerationToTask(task, generation) {
   task.status = "idle";
   task.error = "";
   task.durationMs = null;
-  task.debugOpen = true;
+  task.debugOpen = false;
 }
 
 function updateSelectionToolbar() {
@@ -1311,11 +1311,13 @@ function updateSelectionToolbar() {
 
 function bindCanvasEvents() {
   canvasViewport.addEventListener("pointerdown", handleCanvasPointerDown);
+  canvasViewport.addEventListener("pointermove", rememberCanvasPointer);
   canvasViewport.addEventListener("dblclick", handleCanvasDoubleClick);
   canvasViewport.addEventListener("wheel", handleWheel, { passive: false });
   canvasViewport.addEventListener("dragover", handleCanvasDragOver);
   canvasViewport.addEventListener("dragleave", handleCanvasDragLeave);
   canvasViewport.addEventListener("drop", handleCanvasDrop);
+  document.addEventListener("paste", handleDocumentPaste);
 
   window.addEventListener("keydown", (event) => {
     if (handleCanvasShortcut(event)) return;
@@ -1363,12 +1365,6 @@ function handleCanvasShortcut(event) {
     return true;
   }
 
-  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === "v") {
-    event.preventDefault();
-    pasteNodesFromClipboard();
-    return true;
-  }
-
   if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === "z") {
     event.preventDefault();
     undoCanvasChange();
@@ -1382,6 +1378,10 @@ function handleCanvasShortcut(event) {
   }
 
   return false;
+}
+
+function rememberCanvasPointer(event) {
+  lastCanvasPointer = { clientX: event.clientX, clientY: event.clientY };
 }
 
 function bindMinimapEvents() {
@@ -1432,6 +1432,63 @@ async function handleCanvasDrop(event) {
 
   const point = getWorldPointFromClient(event.clientX, event.clientY);
   await addLocalImageFilesToCanvas(files, point);
+}
+
+function handleDocumentPaste(event) {
+  if (settingsDialog.open || updateDialog?.open) return;
+
+  const imageFiles = clipboardImageFiles(event.clipboardData);
+  if (imageFiles.length) {
+    event.preventDefault();
+    event.stopPropagation();
+    hideCreateMenu();
+    addLocalImageFilesToCanvas(imageFiles, getCanvasPastePoint());
+    return;
+  }
+
+  if (isInteractiveElement(event.target)) return;
+  if (!nodeClipboard.nodes.length) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  pasteNodesFromClipboard();
+}
+
+function clipboardImageFiles(clipboardData) {
+  const items = Array.from(clipboardData?.items || []);
+  const files = items
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+
+  if (!files.length) {
+    files.push(...Array.from(clipboardData?.files || []).filter((file) => file.type.startsWith("image/")));
+  }
+
+  return files.map((file, index) => normalizeClipboardImageFile(file, index));
+}
+
+function normalizeClipboardImageFile(file, index) {
+  if (file.name) return file;
+  const type = file.type || "image/png";
+  const extension = type.includes("jpeg") ? "jpg" : type.includes("webp") ? "webp" : type.includes("gif") ? "gif" : "png";
+  return new File([file], `clipboard-image-${Date.now()}-${index + 1}.${extension}`, {
+    type,
+    lastModified: Date.now()
+  });
+}
+
+function getCanvasPastePoint() {
+  if (lastCanvasPointer) {
+    const rect = canvasViewport.getBoundingClientRect();
+    const inside =
+      lastCanvasPointer.clientX >= rect.left &&
+      lastCanvasPointer.clientX <= rect.right &&
+      lastCanvasPointer.clientY >= rect.top &&
+      lastCanvasPointer.clientY <= rect.bottom;
+    if (inside) return getWorldPointFromClient(lastCanvasPointer.clientX, lastCanvasPointer.clientY);
+  }
+  return getViewportCenterWorld();
 }
 
 function hasImageFiles(items) {
@@ -1733,9 +1790,26 @@ function removeSelectionBox() {
 }
 
 function handleWheel(event) {
+  if (shouldLetFieldHandleWheel(event)) return;
   event.preventDefault();
-  const factor = event.deltaY > 0 ? 0.9 : 1.1;
+  const delta =
+    event.deltaMode === WheelEvent.DOM_DELTA_LINE
+      ? event.deltaY * 16
+      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+        ? event.deltaY * 320
+        : event.deltaY;
+  const factor = clamp(Math.exp(-delta * 0.0015), 0.5, 2);
   zoomAtPoint(canvasState.viewport.zoom * factor, event.clientX, event.clientY);
+}
+
+function shouldLetFieldHandleWheel(event) {
+  const field = event.target.closest?.("textarea, input, select, [contenteditable='true']");
+  if (!field) return false;
+  if (field.matches("textarea, [contenteditable='true']") || field.scrollHeight > field.clientHeight) {
+    event.stopPropagation();
+    return true;
+  }
+  return false;
 }
 
 function zoomAtCenter(nextZoom) {
@@ -1744,7 +1818,7 @@ function zoomAtCenter(nextZoom) {
 }
 
 function zoomAtPoint(nextZoom, clientX, clientY) {
-  const zoom = clamp(nextZoom, minZoom, maxZoom);
+  const zoom = normalizeZoom(nextZoom);
   const point = getWorldPointFromClient(clientX, clientY);
   const rect = canvasViewport.getBoundingClientRect();
   const localX = clientX - rect.left;
@@ -1758,15 +1832,30 @@ function zoomAtPoint(nextZoom, clientX, clientY) {
 }
 
 function applyViewport() {
-  const { x, y, zoom } = canvasState.viewport;
+  const x = Number(canvasState.viewport.x) || 0;
+  const y = Number(canvasState.viewport.y) || 0;
+  const zoom = normalizeZoom(canvasState.viewport.zoom);
+  canvasState.viewport = { x, y, zoom };
   canvasViewport.style.setProperty("--pan-x", x);
   canvasViewport.style.setProperty("--pan-y", y);
   canvasViewport.style.setProperty("--zoom", zoom);
-  canvasViewport.style.setProperty("--screen-scale", 1 / zoom);
+  canvasViewport.style.setProperty("--screen-scale", 1 / Math.max(zoom, minZoom));
   canvasStage.style.transform = `translate(${x}px, ${y}px) scale(${zoom})`;
-  zoomLevel.textContent = `${Math.round(zoom * 100)}%`;
+  zoomLevel.textContent = formatZoomLabel(zoom);
   updateMinimap();
   syncChatGptHostSoon();
+}
+
+function normalizeZoom(value) {
+  const zoom = Number(value);
+  return clamp(Number.isFinite(zoom) && zoom > 0 ? zoom : 1, minZoom, maxZoom);
+}
+
+function formatZoomLabel(zoom) {
+  const percent = zoom * 100;
+  if (percent < 10) return `${percent.toFixed(1)}%`;
+  if (percent >= 1000) return `${Math.round(percent / 100) / 10}k%`;
+  return `${Math.round(percent)}%`;
 }
 
 function resetViewport() {
@@ -2350,7 +2439,7 @@ function createTaskNode(node) {
   tile.append(createImageArea(node, selected));
 
   if (selected) {
-    tile.append(createTaskActions(node), createErrorLine(node));
+    tile.append(createErrorLine(node));
   }
 
   tile.addEventListener("pointerdown", (event) => startNodeDrag(event, node.id));
@@ -2373,14 +2462,14 @@ function createTaskHeader(node) {
   meta.className = "node-meta";
   meta.textContent = [node.model, node.size, node.format, cacheStatusText(node)].filter(Boolean).join(" · ");
 
-  header.append(status, modeTabs, meta);
+  header.append(status, modeTabs, meta, createTaskActions(node));
   return header;
 }
 
 function createPromptField(node) {
   const prompt = document.createElement("textarea");
   prompt.className = "node-prompt";
-  prompt.rows = 5;
+  prompt.rows = 4;
   prompt.value = node.prompt || "";
   prompt.placeholder = "输入这个节点的提示词";
   prompt.addEventListener("pointerdown", (event) => {
@@ -2400,7 +2489,7 @@ function createPromptField(node) {
 function createDebugPanel(node) {
   const debug = document.createElement("details");
   debug.className = "node-debug";
-  debug.open = node.debugOpen !== false;
+  debug.open = Boolean(node.debugOpen);
   debug.addEventListener("toggle", () => {
     node.debugOpen = debug.open;
     saveCanvasState();
@@ -2540,7 +2629,7 @@ function createModeButton(node, mode, label) {
     node.endpointPath = defaultEndpointForMode(mode);
     applyTaskModelDefaults(node, { modeChanged: true });
     node.cacheStatus = mode === "edit" ? (node.cachedImages?.length ? "ready" : "pending") : "none";
-    node.debugOpen = true;
+    node.debugOpen = mode === "edit";
     updateNode(node);
     saveCanvasState();
     updateCanvasMeta();
@@ -3535,7 +3624,7 @@ function preparePastedNode(source, idMap, offset, createdAt) {
     copy.status = "idle";
     copy.error = "";
     copy.durationMs = null;
-    copy.debugOpen = true;
+    copy.debugOpen = Boolean(copy.debugOpen);
     copy.sessionFiles = [...(copy.sessionFiles || [])];
     copy.cachedImages = [...(copy.cachedImages || [])];
   }
@@ -3649,9 +3738,6 @@ function startNodeDrag(event, nodeId, options = {}) {
 function selectOnly(nodeId, options = {}) {
   selectedNodeIds.clear();
   selectedNodeIds.add(nodeId);
-
-  const node = canvasState.nodes.find((item) => item.id === nodeId);
-  if (options.revealControls && node?.type === "task") node.debugOpen = true;
 
   renderCanvas();
 
@@ -3871,7 +3957,7 @@ function migrateTaskNode(node) {
     status: node.status === "running" ? "idle" : node.status || "idle",
     error: node.error || "",
     durationMs: node.durationMs || null,
-    debugOpen: node.debugOpen !== false,
+    debugOpen: Boolean(node.debugOpen),
     width: Math.max(Number(node.width) || defaultTaskWidth, 420),
     x: node.x || 0,
     y: node.y || 0,
@@ -4100,7 +4186,7 @@ function applySavedState(saved, options = {}) {
     canvasState.viewport = {
       x: Number(saved.viewport.x) || 120,
       y: Number(saved.viewport.y) || 90,
-      zoom: clamp(Number(saved.viewport.zoom) || 1, minZoom, maxZoom)
+      zoom: normalizeZoom(saved.viewport.zoom)
     };
   }
   canvasState.nextZ = Math.max(1, Number(saved.nextZ) || 1, ...canvasState.nodes.map((node) => Number(node.z) || 1));

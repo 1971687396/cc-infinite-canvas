@@ -5,7 +5,11 @@ const legacyStorageKey = "yunwu-image-canvas-v1";
 const minZoom = 0.02;
 const maxZoom = 24;
 const defaultTaskWidth = 420;
+const defaultVideoTaskWidth = 440;
 const defaultImageScale = 0.5;
+const defaultVideoWidth = 480;
+const defaultVideoHeight = 270;
+const defaultVideoScale = 0.75;
 const defaultNoteWidth = 300;
 const defaultNoteHeight = 64;
 const minNoteWidth = 96;
@@ -23,6 +27,7 @@ const maxChatGptWidth = 1400;
 const maxChatGptHeight = 1100;
 
 const addTaskButton = document.querySelector("#addTaskButton");
+const addDreaminaVideoButton = document.querySelector("#addDreaminaVideoButton");
 const addEditTaskButton = document.querySelector("#addEditTaskButton");
 const addGrokTaskButton = document.querySelector("#addGrokTaskButton");
 const addGrokEditTaskButton = document.querySelector("#addGrokEditTaskButton");
@@ -72,6 +77,9 @@ const dreaminaAccountMeta = document.querySelector("#dreaminaAccountMeta");
 const dreaminaInstallButton = document.querySelector("#dreaminaInstallButton");
 const dreaminaLoginButton = document.querySelector("#dreaminaLoginButton");
 const dreaminaRefreshButton = document.querySelector("#dreaminaRefreshButton");
+const dreaminaActionProgress = document.querySelector("#dreaminaActionProgress");
+const dreaminaActionBar = document.querySelector("#dreaminaActionBar");
+const dreaminaActionText = document.querySelector("#dreaminaActionText");
 const copyDreaminaInstallButton = document.querySelector("#copyDreaminaInstallButton");
 const copyDreaminaLoginButton = document.querySelector("#copyDreaminaLoginButton");
 const updateDialog = document.querySelector("#updateDialog");
@@ -82,6 +90,10 @@ const latestVersionText = document.querySelector("#latestVersionText");
 const updateAssetText = document.querySelector("#updateAssetText");
 const updateReleaseNotes = document.querySelector("#updateReleaseNotes");
 const updateRepoText = document.querySelector("#updateRepoText");
+const updateDownloadProgress = document.querySelector("#updateDownloadProgress");
+const updateDownloadBar = document.querySelector("#updateDownloadBar");
+const updateDownloadPercent = document.querySelector("#updateDownloadPercent");
+const updateDownloadBytes = document.querySelector("#updateDownloadBytes");
 const openReleaseButton = document.querySelector("#openReleaseButton");
 const downloadUpdateButton = document.querySelector("#downloadUpdateButton");
 
@@ -154,6 +166,10 @@ const grsaiGenerateEndpoint = "/v1/api/generate";
 const grsaiDefaultSize = "1:1|1K";
 const dreaminaDefaultModel = "dreamina-5.0";
 const dreaminaDefaultSize = "1:1|2k";
+const dreaminaVideoDefaultModel = "dreamina-video-seedance2.0fast";
+const dreaminaVideoDefaultRatio = "16:9";
+const dreaminaVideoDefaultDuration = "5";
+const dreaminaVideoDefaultResolution = "720p";
 const grokModelOptions = [
   ["grok-3-image", "grok-3-image"],
   ["grok-image-image", "grok-image-image"]
@@ -186,6 +202,18 @@ const dreaminaModelOptions = ["5.0", "4.7", "4.6", "4.5", "4.1", "4.0", "3.1", "
   `即梦 ${version}`
 ]);
 const dreaminaRatios = ["21:9", "16:9", "3:2", "4:3", "1:1", "3:4", "2:3", "9:16"];
+const dreaminaVideoModelOptions = [
+  ["dreamina-video-seedance2.0fast", "Seedance 2.0 Fast"],
+  ["dreamina-video-seedance2.0", "Seedance 2.0"],
+  ["dreamina-video-seedance2.0mini", "Seedance 2.0 Mini"],
+  ["dreamina-video-seedance2.0_vip", "Seedance 2.0 VIP"],
+  ["dreamina-video-seedance2.0fast_vip", "Seedance 2.0 Fast VIP"]
+];
+const dreaminaVideoRatioOptions = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"].map((ratio) => [ratio, ratio]);
+const dreaminaVideoResolutionOptions = [
+  ["720p", "720p"],
+  ["1080p", "1080p（VIP）"]
+];
 const taskModelOptions = [
   ["gpt-image-2", "gpt-image-2"],
   [grsaiDefaultModel, grsaiDefaultModel],
@@ -251,6 +279,7 @@ async function init() {
 }
 
 addTaskButton.addEventListener("click", () => addTaskNode("create"));
+addDreaminaVideoButton?.addEventListener("click", () => addDreaminaVideoNode());
 addEditTaskButton?.addEventListener("click", () => addTaskNode("edit"));
 addGrokTaskButton?.addEventListener("click", () => addGrokTaskNode("create"));
 addGrokEditTaskButton?.addEventListener("click", () => addGrokTaskNode("edit"));
@@ -295,8 +324,7 @@ openReleaseButton?.addEventListener("click", () => {
   if (latestUpdateInfo?.releaseUrl) window.open(latestUpdateInfo.releaseUrl, "_blank", "noreferrer");
 });
 downloadUpdateButton?.addEventListener("click", () => {
-  const url = latestUpdateInfo?.asset?.downloadUrl || latestUpdateInfo?.releaseUrl;
-  if (url) window.open(url, "_blank", "noreferrer");
+  downloadLatestUpdate();
 });
 
 async function refreshRuntimeConfig() {
@@ -338,6 +366,21 @@ function addTaskNode(mode = "create", point = null, options = {}) {
 
 function addGrokTaskNode(mode = "create", point = null) {
   return addTaskNode(mode, point, { preset: "grok" });
+}
+
+function addDreaminaVideoNode(point = null) {
+  const center = point || getViewportCenterWorld();
+  const offset = point ? 0 : canvasState.nodes.length % 8;
+  const node = createDefaultVideoTaskNode();
+  node.x = Math.round(center.x - node.width / 2 + offset * 28);
+  node.y = Math.round(center.y - 190 + offset * 28);
+  node.z = ++canvasState.nextZ;
+
+  canvasState.nodes.push(node);
+  selectOnly(node.id, { focusSelector: ".node-prompt" });
+  saveCanvasState();
+  updateCanvasMeta();
+  return node;
 }
 
 function applyTaskNodePreset(node, preset) {
@@ -432,7 +475,12 @@ function isGrsaiModelName(model) {
 }
 
 function isDreaminaModelName(model) {
-  return String(model || "").trim().toLowerCase().startsWith("dreamina-");
+  const normalized = String(model || "").trim().toLowerCase();
+  return normalized.startsWith("dreamina-") && !normalized.startsWith("dreamina-video-");
+}
+
+function isDreaminaVideoModelName(model) {
+  return String(model || "").trim().toLowerCase().startsWith("dreamina-video-");
 }
 
 function dreaminaModelVersion(model) {
@@ -505,6 +553,38 @@ function createDefaultTaskNode(mode = "create") {
   };
 }
 
+function createDefaultVideoTaskNode() {
+  return {
+    id: createId(),
+    type: "video-task",
+    provider: "dreamina",
+    prompt: "",
+    model: dreaminaVideoDefaultModel,
+    n: dreaminaVideoDefaultDuration,
+    size: dreaminaVideoDefaultRatio,
+    quality: dreaminaVideoDefaultResolution,
+    format: "mp4",
+    baseUrl: "",
+    endpointPath: "dreamina-video-cli",
+    mode: "video",
+    extraParams: {},
+    extraParamsText: "{}",
+    cachedImages: [],
+    cacheStatus: "pending",
+    sessionFiles: [],
+    videos: [],
+    status: "idle",
+    error: "",
+    durationMs: null,
+    debugOpen: true,
+    width: defaultVideoTaskWidth,
+    x: 0,
+    y: 0,
+    z: 1,
+    createdAt: new Date().toISOString()
+  };
+}
+
 function addNoteNode(point = null) {
   const center = point || getViewportCenterWorld();
   const offset = point ? 0 : canvasState.nodes.length % 8;
@@ -555,7 +635,9 @@ function addChatGptNode(point = null) {
 
 async function generateNode(nodeId) {
   const node = canvasState.nodes.find((item) => item.id === nodeId);
-  if (!node || node.type !== "task" || node.status === "running") return;
+  if (!node || node.status === "running") return;
+  if (node.type === "video-task") return await generateVideoNode(nodeId);
+  if (node.type !== "task") return;
 
   if (!node.prompt.trim()) {
     showToast("节点提示词不能为空");
@@ -614,6 +696,62 @@ async function generateNode(nodeId) {
   }
 }
 
+async function generateVideoNode(nodeId) {
+  const node = canvasState.nodes.find((item) => item.id === nodeId);
+  if (!node || node.type !== "video-task" || node.status === "running") return;
+
+  if (!node.prompt.trim()) {
+    showToast("视频节点提示词不能为空");
+    return;
+  }
+
+  if (!syncNodeExtraParams(node)) return;
+  if (fileStore.get(node.id)?.images?.length) {
+    await cacheEditFiles(node.id);
+  }
+
+  node.status = "running";
+  node.error = "";
+  node.z = ++canvasState.nextZ;
+  selectedNodeIds.delete(node.id);
+  updateNode(node);
+  saveCanvasState({ history: false });
+  updateCanvasMeta();
+
+  try {
+    const response = await fetch("/api/generate", {
+      method: "POST",
+      ...buildNodeRequest(node)
+    });
+    const data = await response.json();
+    rawResponse.textContent = JSON.stringify(data.raw || data, null, 2);
+
+    if (!response.ok) {
+      throw new Error(data.error || "视频生成失败");
+    }
+
+    const incoming = (data.videos || []).map((video) => normalizeNodeVideo(video, node));
+    if (!incoming.length) {
+      throw new Error("即梦已返回，但没有识别到视频文件");
+    }
+
+    node.videos = dedupeNodeVideos([...(node.videos || []), ...incoming]);
+    createVideoNodesForTask(node, incoming);
+    node.status = "done";
+    node.durationMs = data.durationMs;
+    node.error = "";
+    removeGeneratedTaskNode(node.id);
+  } catch (error) {
+    node.status = "error";
+    node.error = error.message || "视频生成失败";
+    showToast(node.error);
+  } finally {
+    renderCanvas();
+    saveCanvasState();
+    updateCanvasMeta();
+  }
+}
+
 function removeGeneratedTaskNode(nodeId) {
   canvasState.nodes = canvasState.nodes.filter((item) => item.id !== nodeId);
   selectedNodeIds.delete(nodeId);
@@ -622,6 +760,21 @@ function removeGeneratedTaskNode(nodeId) {
 }
 
 function buildNodeRequest(node) {
+  if (node.type === "video-task") {
+    const storedFiles = fileStore.get(node.id);
+    if (storedFiles?.images?.length) {
+      const formData = new FormData();
+      appendNodeFields(formData, node, { includeCachedAssets: true });
+      storedFiles.images.slice(0, 9).forEach((file) => formData.append("image", file));
+      return { body: formData };
+    }
+
+    return {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildNodePayload(node))
+    };
+  }
+
   if (node.mode === "edit") {
     const storedFiles = fileStore.get(node.id);
     const hasUploadedImages = Boolean(storedFiles?.images?.length);
@@ -744,6 +897,40 @@ function getImageKey(image) {
   return image?.sourceUrl || image?.url || image?.filename || "";
 }
 
+function normalizeNodeVideo(video, node) {
+  const generation = buildGenerationSnapshot(node);
+  return {
+    id: createId(),
+    url: video.url,
+    filename: video.filename || "dreamina-video.mp4",
+    sourceUrl: video.sourceUrl || "",
+    prompt: node.prompt,
+    model: node.model,
+    size: node.size,
+    format: video.format || "mp4",
+    width: Number(video.width) || undefined,
+    height: Number(video.height) || undefined,
+    duration: Number(video.duration) || Number(node.n) || undefined,
+    generation,
+    createdAt: new Date().toISOString()
+  };
+}
+
+function getVideoKey(video) {
+  return video?.sourceUrl || video?.url || video?.filename || "";
+}
+
+function dedupeNodeVideos(videos) {
+  const seen = new Set();
+  return videos.filter((video) => {
+    const key = getVideoKey(video);
+    if (!key) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function createImageNodesForTask(taskNode, images) {
   if (!images.length) return;
 
@@ -783,6 +970,45 @@ function createImageNodesForTask(taskNode, images) {
   }
 }
 
+function createVideoNodesForTask(taskNode, videos) {
+  if (!videos.length) return;
+
+  const existingKeys = new Set(
+    canvasState.nodes
+      .filter((node) => node.type === "video")
+      .map((node) => node.sourceVideoKey)
+      .filter(Boolean)
+  );
+
+  let cursorY = taskNode.y;
+  const x = taskNode.x + (taskNode.width || defaultVideoTaskWidth) + 48;
+
+  for (const video of videos) {
+    const key = getVideoKey(video);
+    if (key && existingKeys.has(key)) continue;
+
+    const dimensions = parseVideoDimensions(video, taskNode.size);
+    const node = {
+      id: createId(),
+      type: "video",
+      video,
+      sourceTaskId: taskNode.id,
+      sourceVideoKey: key,
+      originalWidth: dimensions.width,
+      originalHeight: dimensions.height,
+      scale: defaultVideoScale,
+      x,
+      y: cursorY,
+      z: ++canvasState.nextZ,
+      createdAt: new Date().toISOString()
+    };
+
+    canvasState.nodes.push(node);
+    existingKeys.add(key);
+    cursorY += node.originalHeight * node.scale + 32;
+  }
+}
+
 function parseImageSize(size) {
   const match = String(size || "").match(/^(\d+)x(\d+)$/i);
   if (!match) return { width: 512, height: 512 };
@@ -797,6 +1023,18 @@ function parseImageDimensions(image, fallbackSize) {
   const height = Number(image?.height);
   if (width > 0 && height > 0) return { width, height };
   return parseImageSize(image?.size || fallbackSize);
+}
+
+function parseVideoDimensions(video, fallbackRatio = "16:9") {
+  const width = Number(video?.width);
+  const height = Number(video?.height);
+  if (width > 0 && height > 0) return { width, height };
+  const [ratioW, ratioH] = String(fallbackRatio || "16:9").split(":").map((value) => Number(value) || 0);
+  if (ratioW > 0 && ratioH > 0) {
+    const base = 480;
+    return { width: base, height: Math.round((base * ratioH) / ratioW) };
+  }
+  return { width: defaultVideoWidth, height: defaultVideoHeight };
 }
 
 async function cacheEditFiles(nodeId) {
@@ -941,33 +1179,80 @@ function renderDreaminaStatus(data = {}) {
   updateDreaminaButtons();
 }
 
-function updateDreaminaButtons(isBusy = false) {
+function updateDreaminaButtons(isBusy = false, action = "") {
   if (dreaminaInstallButton) {
     dreaminaInstallButton.disabled = isBusy;
-    dreaminaInstallButton.textContent = dreaminaStatus.installed ? "重新安装 CLI" : "安装即梦 CLI";
+    dreaminaInstallButton.textContent =
+      isBusy && action === "install" ? "安装中..." : dreaminaStatus.installed ? "重新安装 CLI" : "安装即梦 CLI";
   }
-  if (dreaminaLoginButton) dreaminaLoginButton.disabled = isBusy || !dreaminaStatus.installed;
+  if (dreaminaLoginButton) {
+    dreaminaLoginButton.disabled = isBusy || !dreaminaStatus.installed;
+    dreaminaLoginButton.textContent = isBusy && action === "login" ? "打开中..." : "登录即梦";
+  }
   if (dreaminaRefreshButton) dreaminaRefreshButton.disabled = isBusy;
 }
 
-function setDreaminaBusy(isBusy) {
-  updateDreaminaButtons(isBusy);
+function setDreaminaBusy(isBusy, action = "") {
+  updateDreaminaButtons(isBusy, action);
 }
 
 async function runDreaminaAction(action) {
   const actionText = action === "install" ? "安装即梦 CLI" : "登录即梦";
-  setDreaminaBusy(true);
+  setDreaminaBusy(true, action);
+  renderDreaminaActionStatus(action);
+  showToast(action === "install" ? "正在安装即梦 CLI..." : "正在打开即梦登录窗口...");
   try {
     const response = await fetch(`/api/dreamina/${action}`, { method: "POST" });
     const data = await readJsonResponse(response);
     if (!response.ok || data.parseError) throw new Error(data.error || `${actionText}启动失败`);
+    finishDreaminaAction(action, data);
     showToast(data.message || `${actionText}窗口已打开`);
-    window.setTimeout(() => refreshDreaminaStatus(), action === "install" ? 8000 : 4000);
+    window.setTimeout(() => refreshDreaminaStatus(), action === "install" ? 500 : 4000);
   } catch (error) {
+    failDreaminaAction(action, error);
     showToast(error.message || `${actionText}启动失败`);
   } finally {
     setDreaminaBusy(false);
   }
+}
+
+function renderDreaminaActionStatus(action) {
+  if (!dreaminaStatusText || !dreaminaAccountMeta) return;
+  if (action === "install") {
+    dreaminaStatusText.textContent = "安装中";
+    dreaminaAccountMeta.textContent = "正在下载并安装官方 Dreamina CLI，请稍候...";
+    setDreaminaActionProgress("正在下载并安装官方 Dreamina CLI，请保持软件开启...", "active");
+    return;
+  }
+  dreaminaStatusText.textContent = "登录中";
+  dreaminaAccountMeta.textContent = "正在打开登录窗口；完成登录后点击“测试连接”。";
+  setDreaminaActionProgress("正在打开即梦登录窗口；如果没有弹出窗口，请稍后再点一次。", "active");
+}
+
+function finishDreaminaAction(action, data = {}) {
+  if (action === "install") {
+    const pathText = data.executable || data.installDir || "";
+    setDreaminaActionProgress(pathText ? `安装完成：${pathText}` : "安装完成，可以点击“登录即梦”。", "done");
+    dreaminaStatusText.textContent = "已安装";
+    dreaminaAccountMeta.textContent = "安装完成，正在刷新检测状态...";
+    return;
+  }
+  setDreaminaActionProgress("登录窗口已打开，完成登录后点击“测试连接”。", "done");
+}
+
+function failDreaminaAction(action, error) {
+  const actionText = action === "install" ? "安装失败" : "登录窗口打开失败";
+  setDreaminaActionProgress(`${actionText}：${error.message || error || "未知错误"}`, "error");
+}
+
+function setDreaminaActionProgress(message, state = "active") {
+  if (!dreaminaActionProgress || !dreaminaActionText) return;
+  dreaminaActionProgress.hidden = false;
+  dreaminaActionProgress.classList.toggle("is-active", state === "active");
+  dreaminaActionProgress.classList.toggle("is-done", state === "done");
+  dreaminaActionProgress.classList.toggle("is-error", state === "error");
+  if (dreaminaActionBar) dreaminaActionBar.style.width = state === "active" ? "" : state === "done" || state === "error" ? "100%" : "0%";
+  dreaminaActionText.textContent = message;
 }
 
 async function copyDreaminaCommand(command) {
@@ -1061,6 +1346,7 @@ async function checkForUpdates(options = {}) {
   updateRepoText.textContent = config.updateRepo || "";
   openReleaseButton.disabled = true;
   downloadUpdateButton.disabled = true;
+  resetUpdateDownloadProgress();
   if (!automatic) {
     checkUpdateButton.disabled = true;
     openUpdateDialog();
@@ -1114,6 +1400,88 @@ async function checkForUpdates(options = {}) {
   }
 }
 
+async function downloadLatestUpdate() {
+  const asset = latestUpdateInfo?.asset;
+  if (!asset?.downloadUrl) {
+    if (latestUpdateInfo?.releaseUrl) window.open(latestUpdateInfo.releaseUrl, "_blank", "noreferrer");
+    return;
+  }
+
+  downloadUpdateButton.disabled = true;
+  openReleaseButton.disabled = true;
+  setUpdateDownloadProgress(0, 0, Number(asset.size) || 0);
+  updateStatus.textContent = "正在下载更新...";
+
+  try {
+    const params = new URLSearchParams({
+      url: asset.downloadUrl,
+      name: asset.name || "cc-infinite-canvas-update.exe"
+    });
+    const response = await fetch(`/api/update/download?${params.toString()}`);
+    if (!response.ok) {
+      const data = await readJsonResponse(response);
+      throw new Error(data.error || "下载更新失败");
+    }
+    if (!response.body) throw new Error("当前环境不支持显示下载进度");
+
+    const total = Number(response.headers.get("content-length")) || Number(asset.size) || 0;
+    const contentType = response.headers.get("content-type") || "application/octet-stream";
+    const reader = response.body.getReader();
+    const chunks = [];
+    let received = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.byteLength;
+      setUpdateDownloadProgress(total ? received / total : 0, received, total);
+    }
+
+    setUpdateDownloadProgress(1, received, total || received);
+    saveDownloadedUpdate(new Blob(chunks, { type: contentType }), asset.name || "cc-infinite-canvas-update.exe");
+    updateStatus.textContent = "下载完成，请运行安装程序完成更新。";
+    showToast("更新下载完成");
+  } catch (error) {
+    updateStatus.textContent = error.message || "下载更新失败";
+    showToast(updateStatus.textContent);
+  } finally {
+    downloadUpdateButton.disabled = !(latestUpdateInfo?.hasUpdate && latestUpdateInfo?.asset?.downloadUrl);
+    openReleaseButton.disabled = !latestUpdateInfo?.releaseUrl;
+  }
+}
+
+function resetUpdateDownloadProgress() {
+  if (updateDownloadProgress) updateDownloadProgress.hidden = true;
+  if (updateDownloadBar) updateDownloadBar.style.width = "0%";
+  if (updateDownloadPercent) updateDownloadPercent.textContent = "0%";
+  if (updateDownloadBytes) updateDownloadBytes.textContent = "-";
+}
+
+function setUpdateDownloadProgress(ratio, received, total) {
+  const safeRatio = clamp(Number(ratio) || 0, 0, 1);
+  if (updateDownloadProgress) updateDownloadProgress.hidden = false;
+  if (updateDownloadBar) updateDownloadBar.style.width = `${Math.round(safeRatio * 100)}%`;
+  if (updateDownloadPercent) updateDownloadPercent.textContent = `${Math.round(safeRatio * 100)}%`;
+  if (updateDownloadBytes) {
+    updateDownloadBytes.textContent = total
+      ? `${formatBytes(received)} / ${formatBytes(total)}`
+      : `${formatBytes(received)} 已下载`;
+  }
+}
+
+function saveDownloadedUpdate(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.rel = "noreferrer";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
 function openUpdateDialog() {
   if (!updateDialog || updateDialog.open) return;
   pauseChatGptHost();
@@ -1164,15 +1532,15 @@ function formatBytes(bytes = 0) {
 }
 
 function applySelectionScale() {
-  const selectedImages = canvasState.nodes.filter((node) => selectedNodeIds.has(node.id) && node.type === "image");
-  if (!selectedImages.length) {
-    showToast("选区里没有图片节点");
+  const scalableNodes = canvasState.nodes.filter((node) => selectedNodeIds.has(node.id) && ["image", "video"].includes(node.type));
+  if (!scalableNodes.length) {
+    showToast("选区里没有可缩放的图片或视频节点");
     return;
   }
 
   const scale = clamp((Number(selectionScaleInput.value) || 50) / 100, 0.05, 4);
-  for (const node of selectedImages) {
-    node.scale = scale;
+  for (const node of scalableNodes) {
+    node.scale = node.type === "video" ? Math.max(scale, 0.1) : scale;
   }
 
   renderCanvas();
@@ -1291,12 +1659,14 @@ function updateSelectionToolbar() {
   }
 
   const selectedImages = selected.filter((node) => node.type === "image");
+  const selectedVideos = selected.filter((node) => node.type === "video");
+  const scalableNodes = [...selectedImages, ...selectedVideos];
   selectionToolbar.hidden = false;
-  selectionMeta.textContent = selectedImages.length
-    ? `已选中 ${selected.length} 项 · ${selectedImages.length} 张图片`
+  selectionMeta.textContent = scalableNodes.length
+    ? `已选中 ${selected.length} 项 · ${selectedImages.length} 张图片 · ${selectedVideos.length} 个视频`
     : `已选中 ${selected.length} 项`;
 
-  const canScaleImages = selectedImages.length > 0;
+  const canScaleImages = scalableNodes.length > 0;
   const canReusePrompt = getSelectedImagesWithPrompt().length > 0;
   selectionScaleInput.disabled = !canScaleImages;
   applySelectionScaleButton.disabled = !canScaleImages;
@@ -1304,7 +1674,8 @@ function updateSelectionToolbar() {
 
   if (canScaleImages && document.activeElement !== selectionScaleInput) {
     const averageScale =
-      selectedImages.reduce((sum, node) => sum + (Number(node.scale) || defaultImageScale), 0) / selectedImages.length;
+      scalableNodes.reduce((sum, node) => sum + (Number(node.scale) || (node.type === "video" ? defaultVideoScale : defaultImageScale)), 0) /
+      scalableNodes.length;
     selectionScaleInput.value = String(Math.round(averageScale * 100));
   }
 }
@@ -1410,7 +1781,7 @@ function bindMinimapEvents() {
 }
 
 function handleCanvasDragOver(event) {
-  if (!hasImageFiles(event.dataTransfer?.items)) return;
+  if (!hasCanvasMediaFiles(event.dataTransfer?.items)) return;
   event.preventDefault();
   event.dataTransfer.dropEffect = "copy";
   canvasViewport.classList.add("is-file-over");
@@ -1422,7 +1793,7 @@ function handleCanvasDragLeave(event) {
 }
 
 async function handleCanvasDrop(event) {
-  const files = Array.from(event.dataTransfer?.files || []).filter((file) => file.type.startsWith("image/"));
+  const files = Array.from(event.dataTransfer?.files || []).filter(isCanvasMediaFile);
   if (!files.length) return;
 
   event.preventDefault();
@@ -1431,7 +1802,7 @@ async function handleCanvasDrop(event) {
   hideCreateMenu();
 
   const point = getWorldPointFromClient(event.clientX, event.clientY);
-  await addLocalImageFilesToCanvas(files, point);
+  await addLocalMediaFilesToCanvas(files, point);
 }
 
 function handleDocumentPaste(event) {
@@ -1491,22 +1862,47 @@ function getCanvasPastePoint() {
   return getViewportCenterWorld();
 }
 
-function hasImageFiles(items) {
-  return Array.from(items || []).some((item) => item.kind === "file" && item.type.startsWith("image/"));
+function hasCanvasMediaFiles(items) {
+  return Array.from(items || []).some(
+    (item) => item.kind === "file" && (item.type.startsWith("image/") || item.type.startsWith("video/") || !item.type)
+  );
+}
+
+function isCanvasMediaFile(file) {
+  return isCanvasImageFile(file) || isCanvasVideoFile(file);
+}
+
+function isCanvasImageFile(file) {
+  return Boolean(file?.type?.startsWith("image/"));
+}
+
+function isCanvasVideoFile(file) {
+  if (file?.type?.startsWith("video/")) return true;
+  const extension = fileExtension(file?.name);
+  return ["mp4", "mov", "webm", "m4v"].includes(extension);
 }
 
 async function addLocalImageFilesToCanvas(files, point) {
+  return await addLocalMediaFilesToCanvas(files.filter(isCanvasImageFile), point);
+}
+
+async function addLocalMediaFilesToCanvas(files, point) {
+  const mediaFiles = files.filter(isCanvasMediaFile);
+  if (!mediaFiles.length) return;
+
   const formData = new FormData();
   formData.append("projectId", currentProjectId);
-  for (const file of files) {
-    formData.append("image", file);
+  for (const file of mediaFiles) {
+    formData.append(isCanvasVideoFile(file) ? "video" : "image", file);
   }
 
-  let dimensions;
+  let metadata;
   try {
-    dimensions = await Promise.all(files.map(readImageFileDimensions));
+    metadata = await Promise.all(mediaFiles.map(readLocalMediaMetadata));
   } catch {
-    dimensions = files.map(() => ({ width: 512, height: 512 }));
+    metadata = mediaFiles.map((file) =>
+      isCanvasVideoFile(file) ? { width: defaultVideoWidth, height: defaultVideoHeight, duration: 0 } : { width: 512, height: 512 }
+    );
   }
 
   try {
@@ -1517,50 +1913,36 @@ async function addLocalImageFilesToCanvas(files, point) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "本地图片缓存失败");
 
-    const assets = (data.assets || []).filter((asset) => asset.field === "image");
-    if (!assets.length) throw new Error("没有识别到可用图片");
+    const assets = (data.assets || []).filter((asset) => ["image", "video"].includes(asset.field));
+    if (!assets.length) throw new Error("没有识别到可用媒体文件");
 
     let cursorX = point.x;
     let cursorY = point.y;
+    let rowHeight = 0;
     const createdIds = [];
+    let imageCount = 0;
+    let videoCount = 0;
 
     for (const [index, asset] of assets.entries()) {
-      const dim = dimensions[index] || { width: 512, height: 512 };
-      const image = {
-        id: createId(),
-        type: "file",
-        url: asset.url || `/${asset.path}`,
-        filename: asset.originalName || asset.filename || "local-image",
-        sourceUrl: "",
-        prompt: "本地图片",
-        model: "local",
-        size: `${dim.width}x${dim.height}`,
-        format: imageFormatFromContentType(asset.contentType),
-        cachedAsset: asset,
-        createdAt: new Date().toISOString()
-      };
+      const dim = metadata[index] || (asset.field === "video" ? { width: defaultVideoWidth, height: defaultVideoHeight } : { width: 512, height: 512 });
+      const isVideo = asset.field === "video";
+      const scale = isVideo ? defaultVideoScale : defaultImageScale;
+      const node = isVideo
+        ? createLocalVideoNode(asset, dim, cursorX, cursorY)
+        : createLocalImageNode(asset, dim, cursorX, cursorY);
 
-      const imageNode = {
-        id: createId(),
-        type: "image",
-        image,
-        sourceTaskId: "",
-        sourceImageKey: asset.filename || image.url,
-        originalWidth: dim.width,
-        originalHeight: dim.height,
-        scale: defaultImageScale,
-        x: Math.round(cursorX),
-        y: Math.round(cursorY),
-        z: ++canvasState.nextZ,
-        createdAt: new Date().toISOString()
-      };
+      canvasState.nodes.push(node);
+      createdIds.push(node.id);
+      if (isVideo) videoCount += 1;
+      else imageCount += 1;
 
-      canvasState.nodes.push(imageNode);
-      createdIds.push(imageNode.id);
-      cursorX += dim.width * defaultImageScale + 32;
+      rowHeight = Math.max(rowHeight, dim.height * scale);
       if (index > 0 && index % 3 === 2) {
         cursorX = point.x;
-        cursorY += dim.height * defaultImageScale + 32;
+        cursorY += rowHeight + 32;
+        rowHeight = 0;
+      } else {
+        cursorX += dim.width * scale + 32;
       }
     }
 
@@ -1568,10 +1950,86 @@ async function addLocalImageFilesToCanvas(files, point) {
     createdIds.forEach((id) => selectedNodeIds.add(id));
     renderCanvas();
     saveCanvasState();
-    showToast(`${createdIds.length} 张本地图片已加入画布`);
+    showToast(localMediaToastText(imageCount, videoCount));
   } catch (error) {
-    showToast(error.message || "拖入图片失败");
+    showToast(error.message || "拖入媒体失败");
   }
+}
+
+function createLocalImageNode(asset, dim, x, y) {
+  const image = {
+    id: createId(),
+    type: "file",
+    url: asset.url || `/${asset.path}`,
+    filename: asset.originalName || asset.filename || "local-image",
+    sourceUrl: "",
+    prompt: "本地图片",
+    model: "local",
+    size: `${dim.width}x${dim.height}`,
+    format: imageFormatFromContentType(asset.contentType),
+    cachedAsset: asset,
+    createdAt: new Date().toISOString()
+  };
+
+  return {
+    id: createId(),
+    type: "image",
+    image,
+    sourceTaskId: "",
+    sourceImageKey: asset.filename || image.url,
+    originalWidth: dim.width,
+    originalHeight: dim.height,
+    scale: defaultImageScale,
+    x: Math.round(x),
+    y: Math.round(y),
+    z: ++canvasState.nextZ,
+    createdAt: new Date().toISOString()
+  };
+}
+
+function createLocalVideoNode(asset, dim, x, y) {
+  const video = {
+    id: createId(),
+    type: "file",
+    url: asset.url || `/${asset.path}`,
+    filename: asset.originalName || asset.filename || "local-video",
+    sourceUrl: "",
+    prompt: "本地视频",
+    model: "local",
+    size: `${dim.width}x${dim.height}`,
+    format: videoFormatFromContentType(asset.contentType, asset.originalName || asset.filename),
+    width: dim.width,
+    height: dim.height,
+    duration: Number(dim.duration) || undefined,
+    cachedAsset: asset,
+    createdAt: new Date().toISOString()
+  };
+
+  return {
+    id: createId(),
+    type: "video",
+    video,
+    sourceTaskId: "",
+    sourceVideoKey: asset.filename || video.url,
+    originalWidth: dim.width,
+    originalHeight: dim.height,
+    scale: defaultVideoScale,
+    x: Math.round(x),
+    y: Math.round(y),
+    z: ++canvasState.nextZ,
+    createdAt: new Date().toISOString()
+  };
+}
+
+function localMediaToastText(imageCount, videoCount) {
+  const parts = [];
+  if (imageCount) parts.push(`${imageCount} 张本地图片`);
+  if (videoCount) parts.push(`${videoCount} 个本地视频`);
+  return `${parts.join("、")}已加入画布`;
+}
+
+function readLocalMediaMetadata(file) {
+  return isCanvasVideoFile(file) ? readVideoFileMetadata(file) : readImageFileDimensions(file);
 }
 
 function readImageFileDimensions(file) {
@@ -1594,11 +2052,51 @@ function readImageFileDimensions(file) {
   });
 }
 
+function readVideoFileMetadata(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    const cleanup = () => URL.revokeObjectURL(url);
+    video.preload = "metadata";
+    video.muted = true;
+    video.onloadedmetadata = () => {
+      const dimensions = {
+        width: video.videoWidth || defaultVideoWidth,
+        height: video.videoHeight || defaultVideoHeight,
+        duration: Number.isFinite(video.duration) ? Math.round(video.duration * 10) / 10 : 0
+      };
+      cleanup();
+      resolve(dimensions);
+    };
+    video.onerror = () => {
+      cleanup();
+      resolve({ width: defaultVideoWidth, height: defaultVideoHeight, duration: 0 });
+    };
+    video.src = url;
+  });
+}
+
 function imageFormatFromContentType(contentType = "") {
   if (contentType.includes("jpeg")) return "jpeg";
   if (contentType.includes("webp")) return "webp";
   if (contentType.includes("gif")) return "gif";
   return "png";
+}
+
+function videoFormatFromContentType(contentType = "", filename = "") {
+  if (contentType.includes("quicktime")) return "mov";
+  if (contentType.includes("webm")) return "webm";
+  if (contentType.includes("x-m4v")) return "m4v";
+  if (contentType.includes("mp4")) return "mp4";
+  return fileExtension(filename) || "mp4";
+}
+
+function fileExtension(filename = "") {
+  const clean = String(filename || "")
+    .split("?")[0]
+    .split("#")[0];
+  if (!clean.includes(".")) return "";
+  return clean.split(".").pop().toLowerCase();
 }
 
 function updateMinimap() {
@@ -1888,6 +2386,8 @@ function updateNode(node) {
 function createCanvasNode(node) {
   if (node.type === "note") return createNoteNode(node);
   if (node.type === "image") return createImageNode(node);
+  if (node.type === "video") return createVideoNode(node);
+  if (node.type === "video-task") return createVideoTaskNode(node);
   if (node.type === "chatgpt") return createChatGptNode(node);
   return createTaskNode(node);
 }
@@ -2225,6 +2725,161 @@ function syncChatGptHostNow() {
   });
 }
 
+function createVideoNode(node) {
+  const selected = selectedNodeIds.has(node.id);
+  const scale = Number(node.scale) || defaultVideoScale;
+  const width = Math.max(1, Number(node.originalWidth) || defaultVideoWidth);
+  const height = Math.max(1, Number(node.originalHeight) || defaultVideoHeight);
+
+  const tile = document.createElement("article");
+  tile.className = ["canvas-node", "video-node", selected ? "is-selected" : ""].filter(Boolean).join(" ");
+  tile.dataset.nodeId = node.id;
+  tile.style.left = `${node.x}px`;
+  tile.style.top = `${node.y}px`;
+  tile.style.width = `${Math.round(width * scale)}px`;
+  tile.style.height = `${Math.round(height * scale)}px`;
+  tile.style.zIndex = node.z;
+
+  const video = document.createElement("video");
+  video.src = node.video?.url || "";
+  video.controls = true;
+  video.playsInline = true;
+  video.preload = "metadata";
+  video.addEventListener("loadedmetadata", () => {
+    if (!video.videoWidth || !video.videoHeight) return;
+    if (node.originalWidth === video.videoWidth && node.originalHeight === video.videoHeight) return;
+    node.originalWidth = video.videoWidth;
+    node.originalHeight = video.videoHeight;
+    tile.style.width = `${Math.round(node.originalWidth * (Number(node.scale) || defaultVideoScale))}px`;
+    tile.style.height = `${Math.round(node.originalHeight * (Number(node.scale) || defaultVideoScale))}px`;
+    saveCanvasState();
+    updateMinimap();
+  });
+
+  tile.append(video);
+  if (selected) {
+    tile.append(createVideoToolbar(node), createVideoInfoPanel(node), createVideoResizeHandle(node));
+  }
+
+  tile.addEventListener("pointerdown", (event) => startNodeDrag(event, node.id));
+  return tile;
+}
+
+function createVideoToolbar(node) {
+  const toolbar = document.createElement("div");
+  toolbar.className = "image-toolbar video-toolbar";
+
+  const scaleInput = document.createElement("input");
+  scaleInput.type = "number";
+  scaleInput.min = "10";
+  scaleInput.max = "400";
+  scaleInput.step = "5";
+  scaleInput.value = String(Math.round((Number(node.scale) || defaultVideoScale) * 100));
+  scaleInput.title = "缩放百分比";
+  scaleInput.addEventListener("pointerdown", (event) => event.stopPropagation());
+  scaleInput.addEventListener("input", () => {
+    node.scale = clamp((Number(scaleInput.value) || 100) / 100, 0.1, 4);
+    updateNode(node);
+    updateSelectionToolbar();
+    saveCanvasState();
+    updateMinimap();
+  });
+
+  const open = document.createElement("a");
+  open.href = node.video?.url || "#";
+  open.target = "_blank";
+  open.rel = "noreferrer";
+  open.textContent = "打开";
+
+  const download = document.createElement("a");
+  download.href = node.video?.url || "#";
+  download.download = node.video?.filename || "dreamina-video.mp4";
+  download.textContent = "下载";
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.textContent = "删除";
+  remove.addEventListener("click", () => deleteNodes([node.id]));
+
+  toolbar.append(scaleInput, open, download, remove);
+  return toolbar;
+}
+
+function createVideoInfoPanel(node) {
+  const panel = document.createElement("div");
+  panel.className = "image-prompt-panel video-info-panel";
+  panel.addEventListener("pointerdown", (event) => event.stopPropagation());
+
+  const text = document.createElement("p");
+  text.className = "image-prompt-text";
+  text.textContent = node.video?.prompt || "即梦视频";
+
+  const meta = document.createElement("p");
+  meta.className = "image-prompt-meta";
+  meta.textContent = [node.video?.model, node.video?.size, node.video?.duration ? `${node.video.duration}s` : ""]
+    .filter(Boolean)
+    .join(" · ");
+
+  panel.append(text, meta);
+  return panel;
+}
+
+function createVideoResizeHandle(node) {
+  const handle = document.createElement("button");
+  handle.type = "button";
+  handle.className = "image-resize-handle video-resize-handle";
+  handle.title = "拖动缩放";
+  handle.setAttribute("aria-label", "拖动缩放视频");
+  handle.addEventListener("pointerdown", (event) => startVideoResize(event, node.id));
+  return handle;
+}
+
+function startVideoResize(event, nodeId) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  const node = canvasState.nodes.find((item) => item.id === nodeId);
+  if (!node || node.type !== "video") return;
+
+  const start = {
+    x: event.clientX,
+    y: event.clientY,
+    scale: Number(node.scale) || defaultVideoScale,
+    width: Math.max(1, Number(node.originalWidth) || defaultVideoWidth),
+    height: Math.max(1, Number(node.originalHeight) || defaultVideoHeight),
+    zoom: canvasState.viewport.zoom
+  };
+
+  const move = (moveEvent) => {
+    const dx = (moveEvent.clientX - start.x) / start.zoom;
+    const dy = (moveEvent.clientY - start.y) / start.zoom;
+    const targetScale = Math.max(
+      (start.width * start.scale + dx) / start.width,
+      (start.height * start.scale + dy) / start.height
+    );
+    node.scale = clamp(targetScale, 0.1, 4);
+
+    const tile = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === node.id);
+    if (tile) {
+      tile.style.width = `${Math.round(start.width * node.scale)}px`;
+      tile.style.height = `${Math.round(start.height * node.scale)}px`;
+    }
+    updateMinimap();
+  };
+
+  const stop = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", stop);
+    updateNode(node);
+    updateSelectionToolbar();
+    saveCanvasState();
+    updateMinimap();
+  };
+
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", stop, { once: true });
+}
+
 function createImageNode(node) {
   const selected = selectedNodeIds.has(node.id);
   const scale = Number(node.scale) || defaultImageScale;
@@ -2444,6 +3099,224 @@ function createTaskNode(node) {
 
   tile.addEventListener("pointerdown", (event) => startNodeDrag(event, node.id));
   return tile;
+}
+
+function createVideoTaskNode(node) {
+  const selected = selectedNodeIds.has(node.id);
+
+  const tile = document.createElement("article");
+  tile.className = [
+    "canvas-node",
+    "task-node",
+    "video-task-node",
+    `status-${node.status || "idle"}`,
+    selected ? "is-selected" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
+  tile.dataset.nodeId = node.id;
+  tile.style.left = `${node.x}px`;
+  tile.style.top = `${node.y}px`;
+  tile.style.width = `${node.width || defaultVideoTaskWidth}px`;
+  tile.style.zIndex = node.z;
+
+  if (selected) {
+    tile.append(createVideoTaskHeader(node), createPromptField(node), createVideoTaskSettings(node), createVideoReferenceFields(node));
+  }
+
+  tile.append(createVideoTaskStatusArea(node));
+
+  if (selected) {
+    tile.append(createErrorLine(node));
+  }
+
+  tile.addEventListener("pointerdown", (event) => startNodeDrag(event, node.id));
+  return tile;
+}
+
+function createVideoTaskHeader(node) {
+  const header = document.createElement("div");
+  header.className = "task-header video-task-header";
+
+  const status = document.createElement("span");
+  status.className = "task-status";
+  status.textContent = statusText(node.status);
+
+  const title = document.createElement("strong");
+  title.className = "video-task-title";
+  title.textContent = "即梦视频";
+
+  const meta = document.createElement("span");
+  meta.className = "node-meta";
+  meta.textContent = [videoModelLabel(node.model), node.size, `${node.n || dreaminaVideoDefaultDuration}s`, node.quality].filter(Boolean).join(" · ");
+
+  header.append(status, title, meta, createTaskActions(node));
+  return header;
+}
+
+function createVideoTaskSettings(node) {
+  const settings = document.createElement("div");
+  settings.className = "node-config-grid video-config-grid";
+  settings.append(
+    createSelectField("模型", node, "model", dreaminaVideoModelOptions, {
+      onChange: (value) => {
+        if (!String(value).includes("_vip") && node.quality === "1080p") node.quality = "720p";
+        updateNode(node);
+      }
+    }),
+    createSelectField("比例", node, "size", dreaminaVideoRatioOptions),
+    createNumberField("时长（秒）", node, "n", { min: 4, max: 15, step: 1 }),
+    createSelectField("清晰度", node, "quality", dreaminaVideoResolutionOptions)
+  );
+
+  const advanced = document.createElement("details");
+  advanced.className = "node-advanced node-field-full";
+  advanced.open = Boolean(node.debugOpen);
+  advanced.addEventListener("toggle", () => {
+    node.debugOpen = advanced.open;
+    saveCanvasState();
+  });
+  const summary = document.createElement("summary");
+  summary.textContent = "高级";
+  const extraParams = document.createElement("textarea");
+  extraParams.className = "node-extra-json";
+  extraParams.rows = 3;
+  extraParams.spellcheck = false;
+  extraParams.value = node.extraParamsText ?? JSON.stringify(node.extraParams || {}, null, 2);
+  extraParams.addEventListener("pointerdown", (event) => event.stopPropagation());
+  extraParams.addEventListener("input", () => {
+    node.extraParamsText = extraParams.value;
+    saveCanvasState();
+  });
+  advanced.append(summary, createField("额外 JSON 参数", extraParams, "node-field-full"));
+  settings.append(advanced);
+  return settings;
+}
+
+function createVideoReferenceFields(node) {
+  const panel = document.createElement("div");
+  panel.className = "edit-assets video-reference-assets";
+
+  const imageInput = document.createElement("input");
+  imageInput.type = "file";
+  imageInput.accept = "image/png,image/jpeg,image/webp";
+  imageInput.multiple = true;
+  imageInput.addEventListener("pointerdown", (event) => event.stopPropagation());
+  imageInput.addEventListener("change", () => {
+    let files = Array.from(imageInput.files || []);
+    const stored = fileStore.get(node.id) || {};
+    const remaining = Math.max(0, 9 - (node.cachedImages?.length || 0) - (stored.images?.length || 0));
+    if (files.length > remaining) showToast("即梦视频最多使用 9 张参考图片");
+    files = files.slice(0, remaining);
+    const nextFiles = [...(stored.images || []), ...files];
+    fileStore.set(node.id, { ...stored, images: nextFiles });
+    node.sessionFiles = [...(node.sessionFiles || []), ...files.map((file) => file.name)];
+    node.cacheStatus = files.length ? "caching" : "pending";
+    updateNode(node);
+    saveCanvasState();
+    if (files.length) cacheEditFiles(node.id);
+  });
+
+  const referenceActions = document.createElement("div");
+  referenceActions.className = "reference-actions";
+
+  const useSelected = document.createElement("button");
+  useSelected.type = "button";
+  useSelected.textContent = "使用选中图片";
+  useSelected.addEventListener("click", () => useSelectedCanvasImagesAsReference(node.id));
+
+  const pickFromCanvas = document.createElement("button");
+  pickFromCanvas.type = "button";
+  pickFromCanvas.textContent = referencePickTargetNodeId === node.id ? "点击画布图片" : "从画布选择";
+  pickFromCanvas.addEventListener("click", () => {
+    referencePickTargetNodeId = node.id;
+    showToast("请点击画布中的图片作为视频参考图");
+    updateNode(node);
+  });
+
+  referenceActions.append(useSelected, pickFromCanvas);
+  panel.append(
+    createField("参考图片（最多 9 张，可选）", imageInput, "node-field-full"),
+    referenceActions,
+    createVideoReferenceThumbnails(node),
+    createVideoReferenceSummary(node)
+  );
+  return panel;
+}
+
+function createVideoReferenceThumbnails(node) {
+  const strip = document.createElement("div");
+  strip.className = "reference-thumbs";
+  const images = node.cachedImages || [];
+  if (!images.length) {
+    strip.hidden = true;
+    return strip;
+  }
+
+  for (const [index, image] of images.entries()) {
+    const item = document.createElement("div");
+    item.className = "reference-thumb";
+
+    const preview = document.createElement("span");
+    preview.className = "reference-thumb-preview";
+    const img = document.createElement("img");
+    img.src = image.url || `/${image.path}`;
+    img.alt = image.originalName || image.filename || `参考图 ${index + 1}`;
+    preview.append(img);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "reference-thumb-remove";
+    remove.textContent = "×";
+    remove.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      node.cachedImages = (node.cachedImages || []).filter((_, itemIndex) => itemIndex !== index);
+      node.cacheStatus = node.cachedImages.length ? "ready" : "pending";
+      updateNode(node);
+      saveCanvasState();
+    });
+
+    item.append(preview, remove);
+    strip.append(item);
+  }
+  return strip;
+}
+
+function createVideoReferenceSummary(node) {
+  const summary = document.createElement("p");
+  summary.className = "asset-summary";
+  const cached = node.cachedImages?.length || 0;
+  const session = (fileStore.get(node.id)?.images?.length || 0) + (node.sessionFiles?.length || 0);
+  summary.textContent = cached || session ? `${cached} 张已缓存参考图，${session} 张待缓存/本次选择` : "未选择参考图时将使用文生视频。";
+  return summary;
+}
+
+function createVideoTaskStatusArea(node) {
+  const area = document.createElement("div");
+  area.className = "node-image-area video-task-status-area";
+  if (node.status === "running") {
+    const loading = document.createElement("div");
+    loading.className = "node-loading";
+    const text = document.createElement("span");
+    text.textContent = "即梦视频生成中";
+    const progress = document.createElement("div");
+    progress.className = "node-progress";
+    progress.append(document.createElement("span"));
+    loading.append(text, progress);
+    area.append(loading);
+    return area;
+  }
+
+  const placeholder = document.createElement("div");
+  placeholder.className = "node-placeholder";
+  placeholder.textContent = node.error || "待生成视频";
+  area.append(placeholder);
+  return area;
+}
+
+function videoModelLabel(model) {
+  return dreaminaVideoModelOptions.find(([value]) => value === model)?.[1] || String(model || "").replace(/^dreamina-video-/u, "");
 }
 
 function createTaskHeader(node) {
@@ -2960,24 +3833,35 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
     .map((id) => canvasState.nodes.find((node) => node.id === id))
     .filter((node) => node?.type === "image" && node.image?.url);
 
-  if (!target || target.type !== "task") return;
+  if (!target || !["task", "video-task"].includes(target.type)) return;
   if (!imageNodes.length) {
     showToast("没有可用的画布图片");
     return;
   }
 
   try {
-    const files = await Promise.all(imageNodes.map(imageNodeToFile));
+    let files = await Promise.all(imageNodes.map(imageNodeToFile));
     const stored = fileStore.get(target.id) || {};
+    if (target.type === "video-task") {
+      const remaining = Math.max(0, 9 - (target.cachedImages?.length || 0) - (stored.images?.length || 0));
+      if (!remaining) {
+        showToast("即梦视频最多使用 9 张参考图片");
+        return;
+      }
+      if (files.length > remaining) showToast("即梦视频最多使用 9 张参考图片，已自动截取");
+      files = files.slice(0, remaining);
+    }
     const nextFiles = [...(stored.images || []), ...files];
     fileStore.set(target.id, {
       ...stored,
       images: nextFiles
     });
 
-    target.mode = "edit";
-    target.endpointPath = defaultEndpointForMode("edit");
-    applyTaskModelDefaults(target, { modeChanged: true });
+    if (target.type === "task") {
+      target.mode = "edit";
+      target.endpointPath = defaultEndpointForMode("edit");
+      applyTaskModelDefaults(target, { modeChanged: true });
+    }
     target.sessionFiles = [...(target.sessionFiles || []), ...files.map((file) => file.name)];
     target.cacheStatus = "caching";
     target.debugOpen = true;
@@ -2988,7 +3872,7 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
 
     await cacheEditFiles(target.id);
     renderCanvas();
-    showToast(`${files.length} 张画布图片已设为参考图`);
+    showToast(`${files.length} 张画布图片已设为${target.type === "video-task" ? "视频" : ""}参考图`);
   } catch (error) {
     showToast(error.message || "设置参考图失败");
   }
@@ -3370,6 +4254,7 @@ function createNumberField(label, node, key, options = {}) {
   input.type = "number";
   input.min = options.min ?? 1;
   input.max = options.max ?? 10;
+  if (options.step) input.step = options.step;
   input.value = node[key] || "1";
   input.addEventListener("pointerdown", (event) => event.stopPropagation());
   input.addEventListener("input", () => {
@@ -3439,6 +4324,7 @@ function createContextMenu() {
 
   const options = [
     ["生图节点", () => addTaskNode("create", pendingCreatePoint)],
+    ["即梦视频", () => addDreaminaVideoNode(pendingCreatePoint)],
     ["ChatGPT 节点", () => addChatGptNode(pendingCreatePoint)],
     ["文字节点", () => addNoteNode(pendingCreatePoint)]
   ];
@@ -3510,8 +4396,9 @@ function duplicateNode(nodeId) {
     createdAt: new Date().toISOString()
   };
 
-  if (node.type === "task") {
+  if (node.type === "task" || node.type === "video-task") {
     copy.images = [];
+    copy.videos = [];
     copy.status = "idle";
     copy.error = "";
     copy.durationMs = null;
@@ -3572,7 +4459,7 @@ function pasteNodesFromClipboard() {
   const pasted = nodeClipboard.nodes.map((source) => {
     const copy = preparePastedNode(source, idMap, offset, now);
     const stored = nodeClipboard.files.get(source.id);
-    if (stored && copy.type === "task") {
+    if (stored && (copy.type === "task" || copy.type === "video-task")) {
       fileStore.set(copy.id, {
         images: [...(stored.images || [])],
         mask: stored.mask || null
@@ -3619,8 +4506,9 @@ function preparePastedNode(source, idMap, offset, createdAt) {
     copy.sourceTaskId = idMap.get(copy.sourceTaskId);
   }
 
-  if (copy.type === "task") {
+  if (copy.type === "task" || copy.type === "video-task") {
     copy.images = [];
+    copy.videos = [];
     copy.status = "idle";
     copy.error = "";
     copy.durationMs = null;
@@ -3661,6 +4549,7 @@ function deleteNodes(nodeIds) {
 
   for (const id of ids) {
     selectedNodeIds.delete(id);
+    fileStore.delete(id);
   }
   if (referencePickTargetNodeId && ids.has(referencePickTargetNodeId)) {
     referencePickTargetNodeId = null;
@@ -3779,19 +4668,27 @@ function getNodeBounds(node) {
   const fallbackWidth =
     node.type === "image"
       ? Math.max(1, Number(node.originalWidth) || 512) * (Number(node.scale) || 1)
+      : node.type === "video"
+        ? Math.max(1, Number(node.originalWidth) || defaultVideoWidth) * (Number(node.scale) || defaultVideoScale)
       : node.type === "note"
         ? clamp(Number(node.width) || defaultNoteWidth, minNoteWidth, maxNoteWidth)
         : node.type === "chatgpt"
           ? clamp(Number(node.width) || defaultChatGptWidth, minChatGptWidth, maxChatGptWidth)
-          : node.width || defaultTaskWidth;
+          : node.type === "video-task"
+            ? node.width || defaultVideoTaskWidth
+            : node.width || defaultTaskWidth;
   const fallbackHeight =
     node.type === "image"
       ? Math.max(1, Number(node.originalHeight) || 512) * (Number(node.scale) || 1)
+      : node.type === "video"
+        ? Math.max(1, Number(node.originalHeight) || defaultVideoHeight) * (Number(node.scale) || defaultVideoScale)
       : node.type === "note"
         ? clamp(Number(node.height) || defaultNoteHeight, minNoteHeight, maxNoteHeight)
         : node.type === "chatgpt"
           ? clamp(Number(node.height) || defaultChatGptHeight, minChatGptHeight, maxChatGptHeight)
-          : 360;
+          : node.type === "video-task"
+            ? 340
+            : 360;
   const width = (tile ? tile.offsetWidth : fallbackWidth) * fixedScale;
   const height = (tile ? tile.offsetHeight : fallbackHeight) * fixedScale;
   return { x: node.x, y: node.y, width, height };
@@ -3822,10 +4719,12 @@ function clearCanvas() {
 
 function updateCanvasMeta() {
   const taskNodes = canvasState.nodes.filter((node) => node.type === "task");
+  const videoTaskNodes = canvasState.nodes.filter((node) => node.type === "video-task");
   const imageNodes = canvasState.nodes.filter((node) => node.type === "image");
+  const videoNodes = canvasState.nodes.filter((node) => node.type === "video");
   const noteNodes = canvasState.nodes.filter((node) => node.type === "note");
   const chatNodes = canvasState.nodes.filter((node) => node.type === "chatgpt");
-  const running = taskNodes.filter((node) => node.status === "running").length;
+  const running = [...taskNodes, ...videoTaskNodes].filter((node) => node.status === "running").length;
   if (running) {
     requestMeta.textContent = `${running} 个节点生成中`;
     return;
@@ -3834,11 +4733,12 @@ function updateCanvasMeta() {
     requestMeta.textContent = "等待添加节点";
     return;
   }
-  requestMeta.textContent = `${taskNodes.length} 个任务 · ${imageNodes.length} 张图 · ${noteNodes.length} 个文字 · ${chatNodes.length} 个 ChatGPT`;
+  requestMeta.textContent = `${taskNodes.length} 个生图 · ${videoTaskNodes.length} 个视频任务 · ${imageNodes.length} 张图 · ${videoNodes.length} 个视频 · ${noteNodes.length} 个文字 · ${chatNodes.length} 个 ChatGPT`;
 }
 
 function isRunnableTask(node) {
-  if (node.type !== "task" || node.status === "running" || !node.prompt.trim()) return false;
+  if (!["task", "video-task"].includes(node.type) || node.status === "running" || !node.prompt.trim()) return false;
+  if (node.type === "video-task") return true;
   if (node.mode !== "edit") return true;
   return Boolean(fileStore.get(node.id)?.images?.length || node.cachedImages?.length);
 }
@@ -3896,6 +4796,10 @@ function migrateNode(node) {
     };
   }
 
+  if (node.type === "video") {
+    return migrateVideoNode(node);
+  }
+
   if (node.type === "chatgpt") {
     return {
       ...node,
@@ -3917,6 +4821,10 @@ function migrateNode(node) {
     return migrateTaskNode(node);
   }
 
+  if (node.type === "video-task") {
+    return migrateVideoTaskNode(node);
+  }
+
   return migrateTaskNode({
     ...node,
     type: "task",
@@ -3925,6 +4833,25 @@ function migrateNode(node) {
     images: node.url ? [normalizeNodeImage({ url: node.url, filename: node.filename }, node)] : [],
     status: node.url ? "done" : "idle"
   });
+}
+
+function migrateVideoNode(node) {
+  const dimensions = parseVideoDimensions(node.video, node.size);
+  return {
+    ...node,
+    id: node.id || createId(),
+    type: "video",
+    video: node.video || {},
+    sourceTaskId: node.sourceTaskId || "",
+    sourceVideoKey: node.sourceVideoKey || getVideoKey(node.video),
+    originalWidth: Number(node.originalWidth) || dimensions.width || defaultVideoWidth,
+    originalHeight: Number(node.originalHeight) || dimensions.height || defaultVideoHeight,
+    scale: clamp(Number(node.scale) || defaultVideoScale, 0.1, 4),
+    x: node.x || 0,
+    y: node.y || 0,
+    z: node.z || 1,
+    createdAt: node.createdAt || new Date().toISOString()
+  };
 }
 
 function migrateTaskNode(node) {
@@ -3968,7 +4895,42 @@ function migrateTaskNode(node) {
   return migrated;
 }
 
+function migrateVideoTaskNode(node) {
+  const extraParams = isPlainObject(node.extraParams) ? node.extraParams : {};
+  return {
+    ...node,
+    id: node.id || createId(),
+    type: "video-task",
+    provider: "dreamina",
+    prompt: node.prompt || "",
+    model: isDreaminaVideoModelName(node.model) ? node.model : dreaminaVideoDefaultModel,
+    n: String(node.n || dreaminaVideoDefaultDuration),
+    size: dreaminaVideoRatioOptions.some(([value]) => value === node.size) ? node.size : dreaminaVideoDefaultRatio,
+    quality: dreaminaVideoResolutionOptions.some(([value]) => value === node.quality) ? node.quality : dreaminaVideoDefaultResolution,
+    format: "mp4",
+    baseUrl: "",
+    endpointPath: "dreamina-video-cli",
+    mode: "video",
+    extraParams,
+    extraParamsText: node.extraParamsText || JSON.stringify(extraParams, null, 2),
+    cachedImages: node.cachedImages || [],
+    cacheStatus: node.cacheStatus || "pending",
+    sessionFiles: node.sessionFiles || [],
+    videos: dedupeNodeVideos(node.videos || []),
+    status: node.status === "running" ? "idle" : node.status || "idle",
+    error: node.error || "",
+    durationMs: node.durationMs || null,
+    debugOpen: Boolean(node.debugOpen),
+    width: Math.max(Number(node.width) || defaultVideoTaskWidth, 380),
+    x: node.x || 0,
+    y: node.y || 0,
+    z: node.z || 1,
+    createdAt: node.createdAt || new Date().toISOString()
+  };
+}
+
 function providerForModel(model) {
+  if (isDreaminaVideoModelName(model)) return "dreamina";
   if (isGrokModelName(model)) return "grok";
   if (isGrsaiModelName(model)) return "grsai";
   if (isDreaminaModelName(model)) return "dreamina";
@@ -4011,6 +4973,48 @@ function materializeTaskImageNodes() {
 
       imageKeys.add(key);
       cursorY += (dimensions.height || 512) * defaultImageScale + 32;
+    }
+  }
+
+  if (additions.length) canvasState.nodes.push(...additions);
+}
+
+function materializeTaskVideoNodes() {
+  const videoKeys = new Set(
+    canvasState.nodes
+      .filter((node) => node.type === "video")
+      .map((node) => node.sourceVideoKey)
+      .filter(Boolean)
+  );
+
+  const additions = [];
+  for (const task of canvasState.nodes) {
+    if (task.type !== "video-task" || !task.videos?.length) continue;
+
+    let cursorY = task.y;
+    const x = task.x + (task.width || defaultVideoTaskWidth) + 48;
+    for (const video of task.videos) {
+      const key = getVideoKey(video);
+      if (key && videoKeys.has(key)) continue;
+
+      const dimensions = parseVideoDimensions(video, task.size);
+      additions.push({
+        id: createId(),
+        type: "video",
+        video,
+        sourceTaskId: task.id,
+        sourceVideoKey: key,
+        originalWidth: dimensions.width || defaultVideoWidth,
+        originalHeight: dimensions.height || defaultVideoHeight,
+        scale: defaultVideoScale,
+        x,
+        y: cursorY,
+        z: ++canvasState.nextZ,
+        createdAt: new Date().toISOString()
+      });
+
+      videoKeys.add(key);
+      cursorY += (dimensions.height || defaultVideoHeight) * defaultVideoScale + 32;
     }
   }
 
@@ -4181,7 +5185,10 @@ function applySavedState(saved, options = {}) {
   if (!saved || typeof saved !== "object") return;
 
   if (Array.isArray(saved.nodes)) canvasState.nodes = saved.nodes.map(migrateNode);
-  if (options.materializeImages !== false) materializeTaskImageNodes();
+  if (options.materializeImages !== false) {
+    materializeTaskImageNodes();
+    materializeTaskVideoNodes();
+  }
   if (saved.viewport) {
     canvasState.viewport = {
       x: Number(saved.viewport.x) || 120,

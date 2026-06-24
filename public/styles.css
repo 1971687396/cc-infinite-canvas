@@ -587,8 +587,18 @@ button.compact,
   padding: 0;
 }
 
-.image-node.is-selected {
+.image-node.is-selected,
+.video-node.is-selected {
   box-shadow: 0 0 0 3px rgba(37, 111, 116, 0.24);
+}
+
+.video-node {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+  padding: 0;
 }
 
 .chatgpt-node {
@@ -758,12 +768,22 @@ button.compact,
   cursor: nwse-resize;
 }
 
-.image-node img {
+.image-node img,
+.video-node video {
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: fill;
   user-select: none;
+}
+
+.image-node img {
+  object-fit: fill;
+}
+
+.video-node video {
+  border-radius: 4px;
+  background: #111418;
+  object-fit: contain;
 }
 
 .image-toolbar {
@@ -785,17 +805,22 @@ button.compact,
 .image-node.is-selected .image-toolbar,
 .image-node.is-selected .image-prompt-panel,
 .image-node.is-selected .image-resize-handle,
+.video-node.is-selected .video-toolbar,
+.video-node.is-selected .video-info-panel,
+.video-node.is-selected .video-resize-handle,
 .note-node.is-selected .note-toolbar,
 .note-node.is-selected .note-resize-handle {
   transform: scale(var(--screen-scale));
   transform-origin: left top;
 }
 
-.image-node.is-selected .image-toolbar {
+.image-node.is-selected .image-toolbar,
+.video-node.is-selected .video-toolbar {
   top: calc(-42px * var(--screen-scale));
 }
 
-.image-node.is-selected .image-resize-handle {
+.image-node.is-selected .image-resize-handle,
+.video-node.is-selected .video-resize-handle {
   right: calc(-8px * var(--screen-scale));
   bottom: calc(-8px * var(--screen-scale));
   transform-origin: center;
@@ -1719,6 +1744,65 @@ pre {
   flex-wrap: wrap;
 }
 
+.dreamina-action-progress {
+  display: grid;
+  gap: 7px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f8faf7;
+}
+
+.dreamina-action-progress[hidden] {
+  display: none;
+}
+
+.dreamina-action-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(37, 111, 116, 0.14);
+}
+
+.dreamina-action-track span {
+  display: block;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 160ms ease;
+}
+
+.dreamina-action-progress.is-active .dreamina-action-track span {
+  width: 42%;
+  animation: progressSlide 1200ms ease-in-out infinite;
+}
+
+.dreamina-action-progress.is-done .dreamina-action-track span {
+  width: 100%;
+}
+
+.dreamina-action-progress.is-error {
+  border-color: rgba(154, 63, 32, 0.35);
+  background: #fff7f3;
+}
+
+.dreamina-action-progress.is-error .dreamina-action-track span {
+  width: 100%;
+  background: var(--warning);
+}
+
+.dreamina-action-progress.is-error #dreaminaActionText {
+  color: var(--warning);
+}
+
+#dreaminaActionText {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.4;
+}
+
 .dreamina-help {
   display: grid;
   grid-template-columns: 18px 1fr;
@@ -1803,6 +1887,40 @@ pre {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.update-download-progress {
+  display: grid;
+  gap: 7px;
+}
+
+.update-download-progress[hidden] {
+  display: none;
+}
+
+.update-download-track {
+  height: 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(37, 111, 116, 0.14);
+}
+
+.update-download-track span {
+  display: block;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 160ms ease;
+}
+
+.update-download-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
 }
 
 .update-notes {

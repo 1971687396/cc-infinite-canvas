@@ -25,6 +25,7 @@
             <button id="newProjectButton" type="button" class="secondary compact">新建画布</button>
             <button id="saveProjectButton" type="button" class="secondary compact">保存画布</button>
             <button id="addTaskButton" type="button" class="secondary compact">添加生图节点</button>
+            <button id="addDreaminaVideoButton" type="button" class="secondary compact">添加即梦视频</button>
             <button id="generateAllButton" type="button" class="secondary compact">生成全部</button>
             <button id="addNoteButton" type="button" class="secondary compact">添加标注</button>
             <button id="addChatGptButton" type="button" class="secondary compact">添加 ChatGPT</button>
@@ -59,7 +60,7 @@
     <div id="selectionToolbar" class="selection-toolbar" hidden>
       <span id="selectionMeta">已选中 0 项</span>
       <label>
-        <span>图片缩放</span>
+        <span>图片/视频缩放</span>
         <input id="selectionScaleInput" type="number" min="5" max="400" step="5" value="50" />
       </label>
       <button id="applySelectionScaleButton" type="button">应用</button>
@@ -134,11 +135,17 @@
             </div>
           </div>
           <div id="dreaminaAccountMeta" class="dreamina-account-meta muted"></div>
+          <div id="dreaminaActionProgress" class="dreamina-action-progress" hidden>
+            <div class="dreamina-action-track">
+              <span id="dreaminaActionBar"></span>
+            </div>
+            <span id="dreaminaActionText">等待操作</span>
+          </div>
           <div class="dreamina-help">
             <span class="dreamina-help-icon" aria-hidden="true">i</span>
             <div>
               <strong>如何安装即梦 CLI？</strong>
-              <p>点击上方按钮会打开官方安装或登录窗口；如果无法启动，也可以复制命令到 PowerShell 7、Git Bash 或 WSL 执行。</p>
+              <p>Windows 会直接在应用内下载安装；登录会打开系统命令窗口。其他系统或兜底场景可以复制命令到终端执行。</p>
               <div class="dreamina-help-actions">
                 <button id="copyDreaminaInstallButton" type="button" class="secondary compact">复制安装命令</button>
                 <button id="copyDreaminaLoginButton" type="button" class="secondary compact">复制登录命令</button>
@@ -180,6 +187,16 @@
               <dd id="updateAssetText">-</dd>
             </div>
           </dl>
+        </div>
+
+        <div id="updateDownloadProgress" class="update-download-progress settings-field-full" hidden>
+          <div class="update-download-track">
+            <span id="updateDownloadBar"></span>
+          </div>
+          <div class="update-download-meta">
+            <span id="updateDownloadPercent">0%</span>
+            <span id="updateDownloadBytes">-</span>
+          </div>
         </div>
 
         <pre id="updateReleaseNotes" class="update-notes settings-field-full" hidden></pre>

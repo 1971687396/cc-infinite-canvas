@@ -1,6 +1,6 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createReadStream, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -21,8 +21,16 @@ const grsaiDefaultBaseUrl = "https://grsaiapi.com";
 const grsaiGenerateEndpoint = "/v1/api/generate";
 const grsaiResultEndpoint = "/v1/api/result";
 const grsaiDefaultModel = "nano-banana-2";
+const dreaminaDownloadBase = "https://lf3-static.bytednsdoc.com/obj/eden-cn/psj_hupthlyk/ljhwZthlaukjlkulzlp/dreamina_cli_beta";
+const dreaminaSkillUrl = `${dreaminaDownloadBase}/SKILL.md`;
+const dreaminaVersionUrl = "https://lf3-static.bytednsdoc.com/obj/eden-cn/psj_hupthlyk/ljhwZthlaukjlkulzlp/version.json";
+const dreaminaWindowsBinaryUrl = `${dreaminaDownloadBase}/dreamina_cli_windows_amd64.exe`;
 const dreaminaModelVersions = new Set(["3.0", "3.1", "4.0", "4.1", "4.5", "4.6", "4.7", "5.0"]);
 const dreaminaRatios = new Set(["21:9", "16:9", "3:2", "4:3", "1:1", "3:4", "2:3", "9:16"]);
+const dreaminaVideoModelVersions = new Set(["seedance2.0", "seedance2.0fast", "seedance2.0_vip", "seedance2.0fast_vip", "seedance2.0mini"]);
+const dreaminaVideoRatios = new Set(["1:1", "3:4", "16:9", "4:3", "9:16", "21:9"]);
+const dreaminaVideoExtensions = new Set([".mp4", ".mov", ".webm", ".m4v"]);
+const maxMultipartBytes = 512 * 1024 * 1024;
 const modelKeyModels = ["gpt-image-2", "grok-image-image"];
 const serverHost = "127.0.0.1";
 
@@ -52,7 +60,11 @@ const mimeTypes = new Map([
   [".jpeg", "image/jpeg"],
   [".gif", "image/gif"],
   [".webp", "image/webp"],
-  [".svg", "image/svg+xml"]
+  [".svg", "image/svg+xml"],
+  [".mp4", "video/mp4"],
+  [".mov", "video/quicktime"],
+  [".webm", "video/webm"],
+  [".m4v", "video/x-m4v"]
 ]);
 
 const server = http.createServer(async (req, res) => {
@@ -88,6 +100,10 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/update/check") {
       return await handleUpdateCheck(res);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/update/download") {
+      return await handleUpdateDownload(res, url);
     }
 
     if (req.method === "GET" && url.pathname === "/api/projects") {
@@ -226,7 +242,12 @@ function isGrsaiImageModel(model) {
 }
 
 function isDreaminaImageModel(model) {
-  return normalizeModelName(model).startsWith("dreamina-");
+  const normalized = normalizeModelName(model);
+  return normalized.startsWith("dreamina-") && !normalized.startsWith("dreamina-video-");
+}
+
+function isDreaminaVideoModel(model) {
+  return normalizeModelName(model).startsWith("dreamina-video-");
 }
 
 function applyModelRequestDefaults(payload, mode = "create") {
@@ -401,6 +422,90 @@ function selectReleaseAsset(assets) {
   );
 }
 
+async function handleUpdateDownload(res, requestUrl) {
+  let assetUrl;
+  let filename;
+  try {
+    assetUrl = validateUpdateAssetUrl(requestUrl.searchParams.get("url"));
+    filename = sanitizeDownloadFilename(requestUrl.searchParams.get("name") || path.basename(new URL(assetUrl).pathname));
+  } catch (error) {
+    return sendJson(res, 400, { error: error.message || "Invalid update download URL." });
+  }
+
+  let upstream;
+  try {
+    upstream = await fetch(assetUrl, {
+      headers: {
+        Accept: "application/octet-stream",
+        "User-Agent": `cc-infinite-canvas/${config.version}`
+      },
+      redirect: "follow",
+      signal: AbortSignal.timeout(10 * 60 * 1000)
+    });
+  } catch (error) {
+    return sendJson(res, 502, { error: `Unable to download update: ${error.message || error}` });
+  }
+
+  if (!upstream.ok || !upstream.body) {
+    const text = await upstream.text().catch(() => "");
+    return sendJson(res, upstream.status || 502, {
+      error: readUpstreamError(tryParseJson(text), text) || `Update download failed with HTTP ${upstream.status}.`
+    });
+  }
+
+  const headers = {
+    "Content-Type": upstream.headers.get("content-type") || "application/octet-stream",
+    "Content-Disposition": `attachment; filename="${filename}"`,
+    "Cache-Control": "no-store",
+    "Access-Control-Expose-Headers": "Content-Length, Content-Disposition"
+  };
+  const contentLength = upstream.headers.get("content-length");
+  if (contentLength) headers["Content-Length"] = contentLength;
+  res.writeHead(200, headers);
+
+  try {
+    for await (const chunk of upstream.body) {
+      if (!res.write(Buffer.from(chunk))) {
+        await new Promise((resolve) => res.once("drain", resolve));
+      }
+    }
+    res.end();
+  } catch (error) {
+    res.destroy(error);
+  }
+}
+
+function validateUpdateAssetUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) throw new Error("更新文件地址为空。");
+
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error("更新文件地址无效。");
+  }
+
+  const repo = sanitizeRepoName(config.updateRepo).toLowerCase();
+  const pathname = decodeURIComponent(parsed.pathname).toLowerCase();
+  if (parsed.protocol !== "https:" || parsed.hostname.toLowerCase() !== "github.com") {
+    throw new Error("只允许下载 GitHub Release 附件。");
+  }
+  if (!repo || !pathname.startsWith(`/${repo}/releases/download/`)) {
+    throw new Error("更新文件不属于当前配置的 GitHub 仓库。");
+  }
+  return parsed.href;
+}
+
+function sanitizeDownloadFilename(value) {
+  const name = String(value || "")
+    .replace(/[<>:"/\\|?*\x00-\x1F]/gu, "_")
+    .replace(/^\.+/u, "")
+    .trim()
+    .slice(0, 120);
+  return name || "cc-infinite-canvas-update.exe";
+}
+
 function normalizeVersion(value) {
   return String(value || "0.0.0").trim().replace(/^v/i, "") || "0.0.0";
 }
@@ -455,7 +560,16 @@ async function handleDreaminaStatus(res) {
 
 async function handleDreaminaInstall(res) {
   try {
-    launchDreaminaTerminal(dreaminaInstallCommand(), "cc infinite canvas - Install Dreamina CLI");
+    if (process.platform === "win32") {
+      const result = await installDreaminaWindows();
+      return sendJson(res, 200, {
+        ok: true,
+        ...result,
+        message: `即梦 CLI 已安装到 ${result.executable}，现在可以点击“登录即梦”。`
+      });
+    }
+
+    await launchDreaminaTerminal(dreaminaInstallCommand(), "cc infinite canvas - Install Dreamina CLI");
     sendJson(res, 202, {
       ok: true,
       message: "已打开即梦 CLI 安装窗口，安装完成后回到这里点击“登录即梦”或“测试连接”。"
@@ -473,7 +587,7 @@ async function handleDreaminaLogin(res) {
     }
 
     const executable = await dreaminaShellExecutable();
-    launchDreaminaTerminal(dreaminaLoginCommand(executable), "cc infinite canvas - Dreamina Login");
+    await launchDreaminaTerminal(dreaminaLoginCommand(executable), "cc infinite canvas - Dreamina Login");
     sendJson(res, 202, {
       ok: true,
       message: "已打开即梦登录窗口，登录完成后回到这里点击“测试连接”。"
@@ -668,6 +782,10 @@ async function handleGenerate(req, res) {
     return sendJson(res, 400, { error: "Prompt is required." });
   }
 
+  if (body.mode === "video" || isDreaminaVideoModel(body.model)) {
+    return await handleDreaminaVideoGenerate(res, body, prompt);
+  }
+
   if (body.mode === "edit" || isMultipart) {
     return await handleEdit(res, body);
   }
@@ -788,7 +906,7 @@ async function handleCacheAssets(req, res) {
   await mkdir(projectAssetDir(projectId), { recursive: true });
 
   for (const file of files) {
-    if (!["image", "mask"].includes(file.name)) continue;
+    if (!["image", "mask", "video"].includes(file.name)) continue;
     const saved = await saveUploadedAsset(file, projectId);
     assets.push({
       field: file.name,
@@ -804,6 +922,10 @@ async function handleCacheAssets(req, res) {
 }
 
 async function handleCreate(res, body, prompt) {
+  if (isDreaminaVideoModel(body.model || config.defaultModel)) {
+    return await handleDreaminaVideoGenerate(res, body, prompt);
+  }
+
   if (isDreaminaImageModel(body.model || config.defaultModel)) {
     return await handleDreaminaGenerate(res, body, prompt);
   }
@@ -1085,6 +1207,87 @@ async function handleDreaminaGenerate(res, body, prompt, imageFiles = []) {
   }
 }
 
+async function handleDreaminaVideoGenerate(res, body, prompt) {
+  const projectId = normalizeProjectId(body.projectId || "default");
+  const files = Array.isArray(body.files) ? body.files : [];
+  const uploadedImages = files.filter((file) => file.name === "image" && String(file.contentType || "").startsWith("image/"));
+  const cachedImages = await loadCachedAssets(parseCachedAssetRefs(body.cachedImages), projectId);
+  const imageFiles = [...cachedImages, ...uploadedImages]
+    .filter((file) => String(file.contentType || "").startsWith("image/"))
+    .slice(0, 9);
+  const command = imageFiles.length ? "multimodal2video" : "text2video";
+  const startedAt = Date.now();
+  let inputDir = "";
+
+  try {
+    const extraParams = parseExtraParamsValue(body.extraParams);
+    const modelVersion = dreaminaVideoModelVersion(extraParams.model_version || body.model);
+    const duration = parseDreaminaVideoDuration(extraParams.duration || body.n);
+    const ratio = parseDreaminaVideoRatio(extraParams.ratio || body.size);
+    const videoResolution = parseDreaminaVideoResolution(
+      extraParams.video_resolution || extraParams.resolution || body.quality,
+      modelVersion
+    );
+    const session = normalizeDreaminaSession(extraParams.session);
+
+    await mkdir(projectOutputDir(projectId), { recursive: true });
+    const args = [
+      command,
+      `--prompt=${prompt}`,
+      `--model_version=${modelVersion}`,
+      `--duration=${duration}`,
+      `--ratio=${ratio}`,
+      `--video_resolution=${videoResolution}`
+    ];
+    if (session !== null) args.push(`--session=${session}`);
+
+    if (imageFiles.length) {
+      inputDir = await mkdtemp(path.join(tmpdir(), "cc-dreamina-video-"));
+      const imagePaths = await writeDreaminaInputFiles(imageFiles, inputDir);
+      imagePaths.forEach((imagePath) => args.push(`--image=${imagePath}`));
+    }
+
+    args.push("--poll=30");
+    const submitResult = await runDreamina(args, { timeoutMs: 180000 });
+    const submitted = parseDreaminaJson(submitResult.stdout);
+    const finalData = await resolveDreaminaResult(submitted, projectOutputDir(projectId), {
+      attempts: 90,
+      waitMs: 4000
+    });
+    const videos = await dreaminaResultVideos(finalData, projectId);
+    if (!videos.length) {
+      return sendJson(res, 502, {
+        error: "Dreamina task completed without a downloadable video.",
+        upstream: finalData
+      });
+    }
+
+    sendJson(res, 200, {
+      durationMs: Date.now() - startedAt,
+      request: {
+        provider: "dreamina-cli",
+        command,
+        modelVersion,
+        duration,
+        ratio,
+        videoResolution,
+        referenceCount: imageFiles.length
+      },
+      videos,
+      raw: finalData
+    });
+  } catch (error) {
+    sendJson(res, dreaminaErrorStatus(error), {
+      error: dreaminaErrorMessage(error),
+      upstream: error.data || undefined
+    });
+  } finally {
+    if (inputDir && isPathInside(inputDir, tmpdir())) {
+      await rm(inputDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+}
+
 function dreaminaModelVersion(model) {
   const version = normalizeModelName(model).replace(/^dreamina-/, "");
   if (!dreaminaModelVersions.has(version)) {
@@ -1099,6 +1302,31 @@ function parseDreaminaSize(value, modelVersion, mode) {
   const allowed = mode === "edit" || Number(modelVersion) >= 4 ? new Set(["2k", "4k"]) : new Set(["1k", "2k"]);
   const fallback = allowed.has("2k") ? "2k" : [...allowed][0];
   return { ratio, resolutionType: allowed.has(rawResolution) ? rawResolution : fallback };
+}
+
+function dreaminaVideoModelVersion(model) {
+  const version = normalizeModelName(model || "dreamina-video-seedance2.0fast").replace(/^dreamina-video-/, "");
+  if (!dreaminaVideoModelVersions.has(version)) {
+    throw new Error(`Unsupported Dreamina video model version: ${version || model}`);
+  }
+  return version;
+}
+
+function parseDreaminaVideoDuration(value) {
+  const duration = Number.parseInt(value, 10);
+  if (!Number.isFinite(duration)) return 5;
+  return Math.min(15, Math.max(4, duration));
+}
+
+function parseDreaminaVideoRatio(value) {
+  const ratio = String(value || "16:9").trim();
+  return dreaminaVideoRatios.has(ratio) ? ratio : "16:9";
+}
+
+function parseDreaminaVideoResolution(value, modelVersion) {
+  const resolution = String(value || "720p").trim().toLowerCase();
+  if (resolution === "1080p" && String(modelVersion || "").includes("vip")) return "1080p";
+  return "720p";
 }
 
 function normalizeDreaminaSession(value) {
@@ -1119,9 +1347,11 @@ async function writeDreaminaInputFiles(files, directory) {
   return paths;
 }
 
-async function resolveDreaminaResult(initialData, downloadDir) {
+async function resolveDreaminaResult(initialData, downloadDir, options = {}) {
   let current = initialData;
-  for (let attempt = 0; attempt < 48; attempt += 1) {
+  const attempts = Number(options.attempts) || 48;
+  const waitMs = Number(options.waitMs) || 2500;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     const status = normalizeModelName(current?.gen_status);
     if (status === "fail" || status === "failed") {
       const error = new Error(current?.fail_reason || "Dreamina generation failed.");
@@ -1136,7 +1366,7 @@ async function resolveDreaminaResult(initialData, downloadDir) {
       throw error;
     }
 
-    if (status === "success" && dreaminaLocalImageEntries(current).length) return current;
+    if (status === "success" && (dreaminaLocalImageEntries(current).length || dreaminaLocalVideoEntries(current).length)) return current;
 
     const query = await runDreamina(
       ["query_result", `--submit_id=${submitId}`, `--download_dir=${downloadDir}`],
@@ -1144,7 +1374,7 @@ async function resolveDreaminaResult(initialData, downloadDir) {
     );
     current = parseDreaminaJson(query.stdout);
     if (normalizeModelName(current?.gen_status) === "success") return current;
-    await delay(2500);
+    await delay(waitMs);
   }
 
   const error = new Error("Dreamina task is still running after waiting for the result.");
@@ -1180,6 +1410,106 @@ async function dreaminaResultImages(data, projectId) {
 
   if (images.length) return images;
   return await normalizeAndPersistImages(data, "png", projectId);
+}
+
+function dreaminaLocalVideoEntries(data) {
+  const entries = [];
+  collectDreaminaVideoEntries(data, entries, new Set());
+  const seen = new Set();
+  return entries.filter((item) => {
+    const key = item.path || item.url || item.download_url || item.video_url || "";
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function collectDreaminaVideoEntries(value, entries, visited) {
+  if (!value || typeof value !== "object") return;
+  if (visited.has(value)) return;
+  visited.add(value);
+
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectDreaminaVideoEntries(item, entries, visited));
+    return;
+  }
+
+  const pathValue = typeof value.path === "string" ? value.path : "";
+  const urlValue = ["url", "download_url", "video_url", "cover_url"]
+    .map((key) => (typeof value[key] === "string" ? value[key] : ""))
+    .find((candidate) => isVideoReference(candidate));
+  if (isVideoReference(pathValue) || urlValue) {
+    entries.push({ ...value, url: urlValue || value.url });
+  }
+
+  for (const nested of Object.values(value)) {
+    collectDreaminaVideoEntries(nested, entries, visited);
+  }
+}
+
+function isVideoReference(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  try {
+    const parsed = /^https?:\/\//i.test(text) ? new URL(text).pathname : text.split(/[?#]/)[0];
+    return dreaminaVideoExtensions.has(path.extname(parsed).toLowerCase());
+  } catch {
+    return dreaminaVideoExtensions.has(path.extname(text.split(/[?#]/)[0]).toLowerCase());
+  }
+}
+
+async function dreaminaResultVideos(data, projectId) {
+  const outputRoot = projectOutputDir(projectId);
+  const videos = [];
+  for (const item of dreaminaLocalVideoEntries(data)) {
+    const rawPath = String(item.path || "").trim();
+    if (rawPath) {
+      const resolved = path.resolve(rawPath);
+      if (isPathInside(resolved, outputRoot)) {
+        try {
+          const fileStat = await stat(resolved);
+          if (!fileStat.isFile()) continue;
+          const filename = path.basename(resolved);
+          videos.push({
+            type: "file",
+            url: projectPublicPath(projectId, "outputs", filename),
+            filename,
+            width: Number(item.width) || undefined,
+            height: Number(item.height) || undefined,
+            duration: Number(item.duration || item.duration_s || item.duration_sec) || undefined,
+            format: path.extname(filename).replace(".", "").toLowerCase()
+          });
+          continue;
+        } catch {
+          // Ignore incomplete downloads and continue checking other result files.
+        }
+      }
+    }
+
+    const url = String(item.url || item.download_url || item.video_url || "").trim();
+    if (/^https?:\/\//i.test(url) && isVideoReference(url)) {
+      videos.push({
+        type: "url",
+        url,
+        filename: videoFilenameFromUrl(url),
+        width: Number(item.width) || undefined,
+        height: Number(item.height) || undefined,
+        duration: Number(item.duration || item.duration_s || item.duration_sec) || undefined,
+        format: path.extname(new URL(url).pathname).replace(".", "").toLowerCase()
+      });
+    }
+  }
+
+  return videos;
+}
+
+function videoFilenameFromUrl(url) {
+  try {
+    const filename = path.basename(new URL(url).pathname);
+    return filename || "dreamina-video.mp4";
+  } catch {
+    return "dreamina-video.mp4";
+  }
 }
 
 function grsaiGenerateUrl(body) {
@@ -1259,6 +1589,68 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function runProcess(executable, args, options = {}) {
+  const timeoutMs = Number(options.timeoutMs) || 60000;
+  const maxOutputBytes = Number(options.maxOutputBytes) || 1024 * 1024;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, args, {
+      cwd: options.cwd || __dirname,
+      windowsHide: true,
+      shell: false,
+      env: { ...process.env, ...(options.env || {}) }
+    });
+    const stdout = [];
+    const stderr = [];
+    let outputBytes = 0;
+    let settled = false;
+    let timer = null;
+
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback(value);
+    };
+
+    const collect = (target) => (chunk) => {
+      outputBytes += chunk.length;
+      if (outputBytes > maxOutputBytes) {
+        child.kill();
+        const error = new Error(`${executable} returned too much output.`);
+        error.code = "EOUTPUTLIMIT";
+        finish(reject, error);
+        return;
+      }
+      target.push(chunk);
+    };
+
+    child.stdout.on("data", collect(stdout));
+    child.stderr.on("data", collect(stderr));
+    child.on("error", (error) => finish(reject, error));
+    child.on("close", (code) => {
+      const result = {
+        code,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8")
+      };
+      if (code === 0) return finish(resolve, result);
+      const error = new Error(result.stderr.trim() || result.stdout.trim() || `${executable} exited with code ${code}.`);
+      error.code = "EPROCESS";
+      error.exitCode = code;
+      error.result = result;
+      finish(reject, error);
+    });
+
+    timer = setTimeout(() => {
+      child.kill();
+      const error = new Error(`${executable} timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
+      error.code = "ETIMEDOUT";
+      finish(reject, error);
+    }, timeoutMs);
+  });
+}
+
 async function runDreamina(args, options = {}) {
   const candidates = dreaminaExecutableCandidates();
   let missingError = null;
@@ -1286,20 +1678,92 @@ async function dreaminaShellExecutable() {
   return process.platform === "win32" ? "dreamina.exe" : "dreamina";
 }
 
-function dreaminaInstallCommand() {
-  if (process.platform === "win32") {
-    return [
-      "$ErrorActionPreference = 'Continue'",
-      "$env:Path = \"$env:USERPROFILE\\bin;$env:Path\"",
-      "Write-Host 'Installing Dreamina CLI...'",
-      "if (-not (Get-Command bash -ErrorAction SilentlyContinue)) { Write-Host 'bash was not found. Please install Git for Windows or WSL first, then run this again.'; return }",
-      "curl.exe -L https://jimeng.jianying.com/cli | bash",
-      "$env:Path = \"$env:USERPROFILE\\bin;$env:Path\"",
-      "Write-Host ''",
-      "Write-Host 'Done. Return to cc infinite canvas and click Login Dreamina or Test connection.'"
-    ].join("; ");
-  }
+async function installDreaminaWindows() {
+  if (process.platform !== "win32") throw new Error("Windows native Dreamina installer is only available on Windows.");
+  if (process.arch !== "x64") throw new Error(`暂不支持当前 Windows 架构: ${process.arch}`);
 
+  const installDir = path.join(homedir(), "bin");
+  const configDir = path.join(homedir(), ".dreamina_cli");
+  const skillDir = path.join(configDir, "dreamina");
+  const executable = path.join(installDir, "dreamina.exe");
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cc-dreamina-install-"));
+
+  try {
+    await mkdir(installDir, { recursive: true });
+    await mkdir(skillDir, { recursive: true });
+
+    const tempExecutable = path.join(tempDir, "dreamina.exe");
+    const tempSkill = path.join(tempDir, "SKILL.md");
+    const tempVersion = path.join(tempDir, "version.json");
+
+    await downloadFileToPath(dreaminaWindowsBinaryUrl, tempExecutable);
+    await downloadFileToPath(dreaminaSkillUrl, tempSkill);
+    await downloadFileToPath(dreaminaVersionUrl, tempVersion);
+
+    await rename(tempExecutable, executable);
+    await rename(tempSkill, path.join(skillDir, "SKILL.md"));
+    await rename(tempVersion, path.join(configDir, "version.json"));
+    await ensureWindowsUserPath(installDir);
+    ensureCurrentProcessPath(installDir);
+
+    return { installDir, executable };
+  } finally {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function downloadFileToPath(url, destination) {
+  const response = await fetch(url, {
+    headers: {
+      "user-agent": `cc-infinite-canvas/${config.version || "local"}`
+    }
+  });
+  if (!response.ok) {
+    throw new Error(`下载失败 (${response.status}): ${url}`);
+  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (!buffer.length) throw new Error(`下载内容为空: ${url}`);
+  await writeFile(destination, buffer);
+}
+
+async function ensureWindowsUserPath(installDir) {
+  const currentUserPath = await readWindowsUserPath();
+  if (windowsPathContains(currentUserPath, installDir)) return;
+  const nextPath = currentUserPath ? `${currentUserPath};${installDir}` : installDir;
+  await runProcess("reg.exe", ["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ", "/d", nextPath, "/f"], {
+    timeoutMs: 20000
+  });
+}
+
+async function readWindowsUserPath() {
+  try {
+    const result = await runProcess("reg.exe", ["query", "HKCU\\Environment", "/v", "Path"], { timeoutMs: 10000 });
+    const line = result.stdout.split(/\r?\n/u).find((item) => /\bPath\b/u.test(item) && /\bREG_/u.test(item));
+    return String(line || "").replace(/^\s*Path\s+REG_\w+\s+/iu, "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function ensureCurrentProcessPath(installDir) {
+  const key = Object.keys(process.env).find((name) => name.toLowerCase() === "path") || "Path";
+  const current = process.env[key] || "";
+  if (windowsPathContains(current, installDir)) return;
+  process.env[key] = `${installDir};${current}`;
+}
+
+function windowsPathContains(value, entry) {
+  const normalizedEntry = normalizeWindowsPathSegment(entry);
+  return String(value || "")
+    .split(";")
+    .some((segment) => normalizeWindowsPathSegment(segment) === normalizedEntry);
+}
+
+function normalizeWindowsPathSegment(value) {
+  return String(value || "").trim().replace(/[\\/]+$/u, "").toLowerCase();
+}
+
+function dreaminaInstallCommand() {
   return [
     "set -e",
     "curl -s https://jimeng.jianying.com/cli | bash",
@@ -1311,28 +1775,26 @@ function dreaminaInstallCommand() {
 function dreaminaLoginCommand(executable) {
   if (process.platform === "win32") {
     return [
-      "$ErrorActionPreference = 'Continue'",
-      "$env:Path = \"$env:USERPROFILE\\bin;$env:Path\"",
-      "Write-Host 'Starting Dreamina login...'",
-      `& ${quotePowerShell(executable)} login`,
-      "Write-Host ''",
-      "Write-Host 'After login, return to cc infinite canvas and click Test connection.'"
-    ].join("; ");
+      "@echo off",
+      "chcp 65001 >nul",
+      "set \"PATH=%USERPROFILE%\\bin;%PATH%\"",
+      "echo Starting Dreamina login...",
+      `${quoteCmdArgument(executable)} login`,
+      "echo.",
+      "echo After login, return to cc infinite canvas and click Test connection.",
+      "pause"
+    ].join("\r\n");
   }
 
   return `${quotePosix(executable)} login; echo; echo 'After login, return to cc infinite canvas and click Test connection.'`;
 }
 
-function launchDreaminaTerminal(command, title) {
+async function launchDreaminaTerminal(command, title) {
   if (process.platform === "win32") {
-    const windowTitle = String(title || "cc infinite canvas").replace(/'/g, "''");
-    const child = spawn("powershell.exe", [
-      "-NoExit",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      `$Host.UI.RawUI.WindowTitle = '${windowTitle}'; ${command}`
-    ], {
+    const scriptPath = path.join(tmpdir(), `cc-dreamina-${Date.now()}-${Math.random().toString(16).slice(2)}.cmd`);
+    const script = `@echo off\r\ntitle ${sanitizeCmdTitle(title || "cc infinite canvas")}\r\n${command}\r\n`;
+    await writeFile(scriptPath, script, "utf8");
+    const child = spawn("cmd.exe", ["/c", "start", "", scriptPath], {
       cwd: __dirname,
       detached: true,
       stdio: "ignore",
@@ -1355,8 +1817,12 @@ function launchDreaminaTerminal(command, title) {
   child.unref();
 }
 
-function quotePowerShell(value) {
-  return `'${String(value || "").replace(/'/g, "''")}'`;
+function quoteCmdArgument(value) {
+  return `"${String(value || "").replace(/"/g, "")}"`;
+}
+
+function sanitizeCmdTitle(value) {
+  return String(value || "cc infinite canvas").replace(/[&|<>^"]/gu, "").trim() || "cc infinite canvas";
 }
 
 function quotePosix(value) {
@@ -1527,7 +1993,7 @@ async function readMultipartBody(req, contentType) {
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 90 * 1024 * 1024) {
+    if (size > maxMultipartBytes) {
       throw new Error("Uploaded files are too large.");
     }
     chunks.push(chunk);
@@ -1575,7 +2041,7 @@ function parseMultipartBuffer(buffer, boundary) {
 }
 
 async function saveUploadedAsset(file, projectId = "default") {
-  const extension = extensionFromMime(file.contentType) || extensionFromUrl(file.filename);
+  const extension = extensionFromMime(file.contentType) || extensionFromUrl(file.filename) || "png";
   const filename = createOutputFilename(extension);
   const fullPath = path.join(projectAssetDir(projectId), filename);
 
@@ -1841,7 +2307,7 @@ function looksLikeImageBase64(value) {
 async function saveBase64Image(value, preferredFormat, projectId = "default") {
   const mimeMatch = value.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,/);
   const mime = mimeMatch?.[1] || mimeFromFormat(preferredFormat);
-  const extension = extensionFromMime(mime);
+  const extension = extensionFromMime(mime) || "png";
   const clean = value.replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, "").replace(/\s/g, "");
   const filename = createOutputFilename(extension);
   const fullPath = path.join(projectOutputDir(projectId), filename);
@@ -1896,13 +2362,17 @@ function extensionFromMime(mime) {
   if (mime === "image/webp") return "webp";
   if (mime === "image/gif") return "gif";
   if (mime === "image/svg+xml") return "svg";
-  return "png";
+  if (mime === "video/mp4") return "mp4";
+  if (mime === "video/quicktime") return "mov";
+  if (mime === "video/webm") return "webm";
+  if (mime === "video/x-m4v") return "m4v";
+  return "";
 }
 
 function extensionFromUrl(url) {
   try {
     const ext = path.extname(new URL(url).pathname).replace(".", "").toLowerCase();
-    return ["png", "jpg", "jpeg", "webp", "gif", "svg"].includes(ext) ? ext : "";
+    return ["png", "jpg", "jpeg", "webp", "gif", "svg", "mp4", "mov", "webm", "m4v"].includes(ext) ? ext : "";
   } catch {
     return "";
   }

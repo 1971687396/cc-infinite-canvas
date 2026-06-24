@@ -26,11 +26,11 @@ npm start
 
 `.env.local` 已在 `.gitignore` 里，不会被 Git 跟踪。
 
-画布工程会自动保存到 `cache/canvases/<画布ID>/project.json`，生成图片和素材会保存在同一画布目录下的 `outputs/` 与 `assets/`。
+画布工程会自动保存到 `cache/canvases/<画布ID>/project.json`，生成图片、视频和拖入素材会保存在同一画布目录下的 `outputs/` 与 `assets/`。
 
-如需使用即梦模型，可以先在应用“设置”里点击“安装即梦 CLI”，安装后点击“登录即梦”，最后点击“测试连接”检查状态。
+如需使用即梦模型，可以先在应用“设置”里点击“安装即梦 CLI”，安装后点击“登录即梦”，最后点击“测试连接”检查状态。Windows 会由应用直接下载官方 CLI 到 `%USERPROFILE%\bin`，不需要用户安装 Git Bash 或 WSL。
 
-如果按钮无法启动，也可以在 PowerShell 7、Git Bash 或 WSL 中手动执行安装命令：
+其他系统或兜底场景，也可以在终端中手动执行安装命令：
 
 ```bash
 curl -s https://jimeng.jianying.com/cli | bash

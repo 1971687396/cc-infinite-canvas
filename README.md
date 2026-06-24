@@ -47,6 +47,7 @@
 - 图片节点默认以 50% 尺寸显示，选中后可以用右下角手柄自由缩放，也可以在工具条里输入缩放百分比
 - 选中图片后会在图片下方显示来源提示词，并可一键复用提示词创建新的生图节点
 - 本地图片可以直接拖入画布，会写入本地缓存并生成独立图片节点
+- 本地视频可以直接拖入画布，会写入本地缓存并生成可播放、可缩放的独立视频节点
 - 编辑节点支持使用已选中的画布图片，或点击画布图片，快速设为图生图参考图
 - 右下角小地图会显示画布内容和当前视口，点击或拖动可以快速定位
 - 顶部“设置”可以修改 Yunwu 平台总 Key、模型专用 Key、Base URL、默认模型和生图/编辑接口路径，保存后写入本地 `.env.local`
@@ -60,7 +61,7 @@
 
 ## Dreamina（即梦）CLI
 
-Dreamina 模型通过本机官方 CLI 调用，不使用 API Key。可以在应用“设置”里直接点击“安装即梦 CLI”和“登录即梦”，也可以手动执行安装命令：
+Dreamina 模型通过本机官方 CLI 调用，不使用 API Key。可以在应用“设置”里直接点击“安装即梦 CLI”和“登录即梦”。Windows 会由应用直接下载官方 `dreamina_cli_windows_amd64.exe` 到 `%USERPROFILE%\bin`，不依赖 PowerShell、Git Bash 或 WSL。其他系统也可以手动执行安装命令：
 
 ```bash
 curl -s https://jimeng.jianying.com/cli | bash
@@ -69,16 +70,19 @@ curl -s https://jimeng.jianying.com/cli | bash
 安装后的命令名为 `dreamina`。应用会优先读取 `DREAMINA_CLI_PATH`，Windows 下也会自动检查 `%USERPROFILE%\bin\dreamina.exe`。
 
 - 设置页会显示 CLI 安装状态、OAuth 登录状态、版本和剩余积分，并提供安装、登录、测试连接按钮
+- Windows 登录按钮使用系统自带 `cmd.exe` 打开 `dreamina login`，避免 PowerShell 执行策略或环境限制
 - 文生图可选择 Dreamina 3.0 至 5.0；图生图使用 4.0 及以上版本
 - 节点会按模型和模式自动切换 1K/2K/4K 与支持的画面比例
 - 图生图支持最多 10 张画布或本地参考图片
+- 顶部“添加即梦视频”会创建独立视频节点，可选择 Seedance 2.0 系列模型、比例、时长和清晰度
+- 即梦视频节点支持最多 9 张画布或本地参考图片；未选择参考图时会使用文生视频
 - 异步任务完成后，CLI 会把结果直接下载到当前画布的 `outputs/` 目录并自动创建图片节点
 - `extraParams` 中可以填写非负整数 `session`，用于选择 Dreamina 会话
 
 ## 本地缓存
 
 - 画布会自动保存到 `缓存目录/canvases/<画布ID>/project.json`
-- 每个画布的生成结果和本地拖入图片会分别保存到该画布目录下的 `outputs/` 和 `assets/`
+- 每个画布的生成结果和本地拖入图片、视频会分别保存到该画布目录下的 `outputs/` 和 `assets/`
 - 文件缓存位置可以在“设置”里修改，也可以通过 `.env.local` 的 `CC_CANVAS_CACHE_DIR` 设置
 - 启动服务后重新打开页面，会优先恢复上次打开的画布
 - 浏览器 `localStorage` 仍作为即时备份；每个画布会使用独立的本地备份键

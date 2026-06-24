@@ -38,7 +38,7 @@
 
 ## 画布
 
-- 顶部“添加生图节点”会创建统一图片节点，节点内可切换创建/编辑模式，并可选择 `gpt-image-2`、`grok-3-image` 或 `grok-image-image`
+- 顶部“添加生图节点”会创建统一图片节点，节点内可切换创建/编辑模式，并可选择 GPT、Grok、Grsai 或 Dreamina（即梦）模型
 - 选择 Grok 模型时会自动使用 Grok 专用 Key、Grok 默认参数和 Grok 尺寸列表；选择 `gpt-image-2` 时使用 GPT 专用 Key 或平台总 Key，并切回 GPT 尺寸列表
 - 提示词、模型、尺寸、质量、格式、接口路径、Base URL 和额外 JSON 参数都在每个节点内部编辑
 - 顶部“检查更新”会读取 GitHub Releases，比较当前版本和最新版本，并优先下载 Release 附件中的 `.exe`
@@ -57,6 +57,23 @@
 - 结果图片支持打开和下载，节点支持复制和删除
 - 画布支持平移、滚轮缩放、复位视图、清空画布；按住空格拖动画布时会临时忽略节点选择
 - 选中节点后可以按 `Delete` 或 `Backspace` 删除，按 `Ctrl+Z` 撤销最近一次画布改动
+
+## Dreamina（即梦）CLI
+
+Dreamina 模型通过本机官方 CLI 调用，不使用 API Key。可以在应用“设置”里直接点击“安装即梦 CLI”和“登录即梦”，也可以手动执行安装命令：
+
+```bash
+curl -s https://jimeng.jianying.com/cli | bash
+```
+
+安装后的命令名为 `dreamina`。应用会优先读取 `DREAMINA_CLI_PATH`，Windows 下也会自动检查 `%USERPROFILE%\bin\dreamina.exe`。
+
+- 设置页会显示 CLI 安装状态、OAuth 登录状态、版本和剩余积分，并提供安装、登录、测试连接按钮
+- 文生图可选择 Dreamina 3.0 至 5.0；图生图使用 4.0 及以上版本
+- 节点会按模型和模式自动切换 1K/2K/4K 与支持的画面比例
+- 图生图支持最多 10 张画布或本地参考图片
+- 异步任务完成后，CLI 会把结果直接下载到当前画布的 `outputs/` 目录并自动创建图片节点
+- `extraParams` 中可以填写非负整数 `session`，用于选择 Dreamina 会话
 
 ## 本地缓存
 
@@ -81,6 +98,7 @@ YUNWU_MODEL_KEY_GPT_IMAGE_2=
 YUNWU_MODEL_KEY_GROK_IMAGE_IMAGE=
 CC_CANVAS_CACHE_DIR=D:\ccCanvasCache
 CC_CANVAS_UPDATE_REPO=1971687396/cc-infinite-canvas
+DREAMINA_CLI_PATH=C:\Users\你的用户名\bin\dreamina.exe
 PORT=3000
 ```
 

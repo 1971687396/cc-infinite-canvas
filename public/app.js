@@ -67,6 +67,13 @@ const settingsEditEndpoint = document.querySelector("#settingsEditEndpoint");
 const settingsDefaultModel = document.querySelector("#settingsDefaultModel");
 const settingsCacheDir = document.querySelector("#settingsCacheDir");
 const settingsStatus = document.querySelector("#settingsStatus");
+const dreaminaStatusText = document.querySelector("#dreaminaStatusText");
+const dreaminaAccountMeta = document.querySelector("#dreaminaAccountMeta");
+const dreaminaInstallButton = document.querySelector("#dreaminaInstallButton");
+const dreaminaLoginButton = document.querySelector("#dreaminaLoginButton");
+const dreaminaRefreshButton = document.querySelector("#dreaminaRefreshButton");
+const copyDreaminaInstallButton = document.querySelector("#copyDreaminaInstallButton");
+const copyDreaminaLoginButton = document.querySelector("#copyDreaminaLoginButton");
 const updateDialog = document.querySelector("#updateDialog");
 const closeUpdateButton = document.querySelector("#closeUpdateButton");
 const updateStatus = document.querySelector("#updateStatus");
@@ -145,6 +152,8 @@ const grsaiDefaultModel = "nano-banana-2";
 const grsaiDefaultBaseUrl = "https://grsaiapi.com";
 const grsaiGenerateEndpoint = "/v1/api/generate";
 const grsaiDefaultSize = "1:1|1K";
+const dreaminaDefaultModel = "dreamina-5.0";
+const dreaminaDefaultSize = "1:1|2k";
 const grokModelOptions = [
   ["grok-3-image", "grok-3-image"],
   ["grok-image-image", "grok-image-image"]
@@ -172,10 +181,16 @@ const grsaiSizeOptions = [
   ["1:8|1K", "1:8 (1K)"],
   ["8:1|1K", "8:1 (1K)"]
 ];
+const dreaminaModelOptions = ["5.0", "4.7", "4.6", "4.5", "4.1", "4.0", "3.1", "3.0"].map((version) => [
+  `dreamina-${version}`,
+  `即梦 ${version}`
+]);
+const dreaminaRatios = ["21:9", "16:9", "3:2", "4:3", "1:1", "3:4", "2:3", "9:16"];
 const taskModelOptions = [
   ["gpt-image-2", "gpt-image-2"],
   [grsaiDefaultModel, grsaiDefaultModel],
-  ...grokModelOptions
+  ...grokModelOptions,
+  ...dreaminaModelOptions
 ];
 
 const fileStore = new Map();
@@ -206,6 +221,7 @@ let lastHistorySnapshot = "";
 let currentProjectId = "default";
 let currentProjectName = "未命名画布";
 let projectList = [];
+let dreaminaStatus = { installed: false, loggedIn: false };
 let canvasState = {
   nodes: [],
   viewport: { x: 120, y: 90, zoom: 1 },
@@ -229,6 +245,7 @@ async function init() {
   await refreshProjectList();
   const preferredProjectId = localStorage.getItem(currentProjectStorageKey) || projectList[0]?.id || "default";
   await loadProjectById(preferredProjectId, { initial: true });
+  refreshDreaminaStatus();
   checkForUpdates({ automatic: true });
 }
 
@@ -266,6 +283,11 @@ settingsButton.addEventListener("click", openSettingsDialog);
 checkUpdateButton?.addEventListener("click", () => checkForUpdates());
 closeSettingsButton.addEventListener("click", () => closeSettingsDialog());
 settingsDialog.addEventListener("close", resumeChatGptHost);
+dreaminaInstallButton?.addEventListener("click", () => runDreaminaAction("install"));
+dreaminaLoginButton?.addEventListener("click", () => runDreaminaAction("login"));
+dreaminaRefreshButton?.addEventListener("click", () => refreshDreaminaStatus({ notify: true }));
+copyDreaminaInstallButton?.addEventListener("click", () => copyDreaminaCommand("curl -s https://jimeng.jianying.com/cli | bash"));
+copyDreaminaLoginButton?.addEventListener("click", () => copyDreaminaCommand("dreamina login"));
 closeUpdateButton?.addEventListener("click", () => closeUpdateDialog());
 updateDialog?.addEventListener("close", resumeChatGptHost);
 openReleaseButton?.addEventListener("click", () => {
@@ -327,13 +349,32 @@ function applyTaskNodePreset(node, preset) {
 function applyTaskModelDefaults(node, options = {}) {
   const wasGrok = node.provider === "grok";
   const wasGrsai = node.provider === "grsai";
+  const wasDreamina = node.provider === "dreamina";
   const isGrok = isGrokModelName(node.model);
   const isGrsai = isGrsaiModelName(node.model);
-  node.provider = isGrok ? "grok" : isGrsai ? "grsai" : "";
+  const isDreamina = isDreaminaModelName(node.model);
+  node.provider = isGrok ? "grok" : isGrsai ? "grsai" : isDreamina ? "dreamina" : "";
 
-  if (isGrsai) {
+  if (isDreamina) {
+    if (node.mode === "edit" && Number(dreaminaModelVersion(node.model)) < 4) {
+      node.model = dreaminaDefaultModel;
+    }
+    if (!isSizeAllowedForModel(node.size, node.model, node.mode)) {
+      node.size = defaultSizeForModel(node.model, node.mode);
+    }
+    node.n = "1";
+    node.quality = "";
+    node.format = "png";
+    node.background = "";
+    node.moderation = "";
+    node.baseUrl = "";
+    node.endpointPath = "dreamina-cli";
+    node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
+    delete node.extraParams.response_format;
+    delete node.extraParams.replyType;
+  } else if (isGrsai) {
     node.model = isGrsaiModelName(node.model) ? node.model : grsaiDefaultModel;
-    if (!isSizeAllowedForModel(node.size, node.model)) {
+    if (!isSizeAllowedForModel(node.size, node.model, node.mode)) {
       node.size = defaultSizeForModel(node.model, node.mode);
     }
     node.quality = "";
@@ -345,9 +386,13 @@ function applyTaskModelDefaults(node, options = {}) {
     delete node.extraParams.response_format;
   } else if (isGrok) {
     node.model = isGrokModelName(node.model) ? node.model : grokDefaultModel;
+    if (wasGrsai || wasDreamina) {
+      node.baseUrl = config.baseUrl || "https://yunwu.ai";
+      node.endpointPath = defaultEndpointForMode(node.mode);
+    }
     if (node.mode === "edit") {
       node.size = "";
-    } else if (!isSizeAllowedForModel(node.size, node.model)) {
+    } else if (!isSizeAllowedForModel(node.size, node.model, node.mode)) {
       node.size = defaultSizeForModel(node.model, node.mode);
     }
     node.quality = "";
@@ -360,15 +405,15 @@ function applyTaskModelDefaults(node, options = {}) {
     }
   } else {
     node.model = node.model || config.defaultModel || "gpt-image-2";
-    if (!isSizeAllowedForModel(node.size, node.model)) {
+    if (!isSizeAllowedForModel(node.size, node.model, node.mode)) {
       node.size = defaultSizeForModel(node.model, node.mode);
     }
-    if (wasGrok || wasGrsai || options.modelChanged) {
+    if (wasGrok || wasGrsai || wasDreamina || options.modelChanged) {
       node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
       delete node.extraParams.response_format;
       delete node.extraParams.replyType;
     }
-    if (wasGrsai && options.modelChanged) {
+    if ((wasGrsai || wasDreamina) && options.modelChanged) {
       node.baseUrl = config.baseUrl || "https://yunwu.ai";
       node.endpointPath = defaultEndpointForMode(node.mode);
     }
@@ -386,24 +431,41 @@ function isGrsaiModelName(model) {
   return String(model || "").trim().toLowerCase().startsWith("nano-banana");
 }
 
+function isDreaminaModelName(model) {
+  return String(model || "").trim().toLowerCase().startsWith("dreamina-");
+}
+
+function dreaminaModelVersion(model) {
+  return String(model || "").trim().toLowerCase().replace(/^dreamina-/, "");
+}
+
 function isGrsaiBaseUrl(value) {
   return /grsai/i.test(String(value || ""));
 }
 
-function sizeOptionsForModel(model) {
+function sizeOptionsForModel(model, mode = "create") {
+  if (isDreaminaModelName(model)) return dreaminaSizeOptionsForModel(model, mode);
   if (isGrsaiModelName(model)) return grsaiSizeOptions;
   return isGrokModelName(model) ? grokSizeOptions : gptSizeOptions;
 }
 
+function dreaminaSizeOptionsForModel(model, mode = "create") {
+  const resolutions = mode === "edit" || Number(dreaminaModelVersion(model)) >= 4 ? ["2k", "4k"] : ["1k", "2k"];
+  return dreaminaRatios.flatMap((ratio) =>
+    resolutions.map((resolution) => [`${ratio}|${resolution}`, `${ratio} (${resolution.toUpperCase()})`])
+  );
+}
+
 function defaultSizeForModel(model, mode = "create") {
+  if (isDreaminaModelName(model)) return dreaminaDefaultSize;
   if (isGrsaiModelName(model)) return grsaiDefaultSize;
   if (isGrokModelName(model)) return mode === "create" ? grokDefaultSize : "";
   return "auto";
 }
 
-function isSizeAllowedForModel(size, model) {
+function isSizeAllowedForModel(size, model, mode = "create") {
   if (!size) return true;
-  return sizeOptionsForModel(model).some(([value]) => value === size);
+  return sizeOptionsForModel(model, mode).some(([value]) => value === size);
 }
 
 function createDefaultTaskNode(mode = "create") {
@@ -640,6 +702,8 @@ function normalizeNodeImage(image, node) {
     prompt: node.prompt,
     model: node.model,
     size: node.size,
+    width: Number(image.width) || undefined,
+    height: Number(image.height) || undefined,
     format: node.format || "",
     generation,
     createdAt: new Date().toISOString()
@@ -697,7 +761,7 @@ function createImageNodesForTask(taskNode, images) {
     const key = getImageKey(image);
     if (key && existingKeys.has(key)) continue;
 
-    const dimensions = parseImageSize(image.size || taskNode.size);
+    const dimensions = parseImageDimensions(image, taskNode.size);
     const node = {
       id: createId(),
       type: "image",
@@ -726,6 +790,13 @@ function parseImageSize(size) {
     width: Number(match[1]) || 512,
     height: Number(match[2]) || 512
   };
+}
+
+function parseImageDimensions(image, fallbackSize) {
+  const width = Number(image?.width);
+  const height = Number(image?.height);
+  if (width > 0 && height > 0) return { width, height };
+  return parseImageSize(image?.size || fallbackSize);
 }
 
 async function cacheEditFiles(nodeId) {
@@ -798,10 +869,11 @@ function syncNodeExtraParams(node) {
   }
 }
 
-function setKeyStatus(hasApiKey) {
-  keyStatus.classList.toggle("ready", hasApiKey);
-  keyStatus.classList.toggle("missing", !hasApiKey);
-  keyStatus.textContent = hasApiKey ? "Key 已配置" : "Key 未配置";
+function setKeyStatus(hasApiKey, dreaminaReady = false) {
+  const ready = Boolean(hasApiKey || dreaminaReady);
+  keyStatus.classList.toggle("ready", ready);
+  keyStatus.classList.toggle("missing", !ready);
+  keyStatus.textContent = hasApiKey ? "Key 已配置" : dreaminaReady ? "即梦已登录" : "Key 未配置";
 }
 
 function openSettingsDialog() {
@@ -823,11 +895,96 @@ function openSettingsDialog() {
   settingsStatus.textContent = keyCount ? `Key 已配置（${keyCount} 个）` : "Key 未配置";
   pauseChatGptHost();
   settingsDialog.showModal();
+  refreshDreaminaStatus();
 }
 
 function closeSettingsDialog() {
   if (settingsDialog.open) settingsDialog.close();
   else resumeChatGptHost();
+}
+
+async function refreshDreaminaStatus(options = {}) {
+  if (!dreaminaStatusText) return null;
+  dreaminaStatusText.textContent = "检测中";
+  setDreaminaBusy(true);
+  try {
+    const response = await fetch("/api/dreamina/status");
+    const data = await readJsonResponse(response);
+    renderDreaminaStatus(data);
+    if (options.notify) showToast(data.loggedIn ? "即梦登录状态正常" : data.error || "即梦尚未登录");
+    return data;
+  } catch (error) {
+    const data = { installed: false, loggedIn: false, error: error.message || "即梦状态读取失败" };
+    renderDreaminaStatus(data);
+    if (options.notify) showToast(data.error);
+    return data;
+  } finally {
+    setDreaminaBusy(false);
+  }
+}
+
+function renderDreaminaStatus(data = {}) {
+  const installed = Boolean(data.installed);
+  const loggedIn = Boolean(data.loggedIn);
+  dreaminaStatus = { ...data, installed, loggedIn };
+  dreaminaStatusText.textContent = !installed ? "未安装" : loggedIn ? "已登录" : "未登录";
+
+  const meta = [];
+  if (data.version) meta.push(`v${data.version}`);
+  if (Number.isFinite(data.totalCredit)) meta.push(`余额 ${data.totalCredit}`);
+  if (data.vipLevel) meta.push(data.vipLevel);
+  if (!meta.length && data.error) meta.push(data.error);
+  dreaminaAccountMeta.textContent = meta.join(" · ");
+
+  config.dreaminaLoggedIn = loggedIn;
+  setKeyStatus(Boolean(config.hasAnyKey ?? config.hasApiKey), loggedIn);
+  updateDreaminaButtons();
+}
+
+function updateDreaminaButtons(isBusy = false) {
+  if (dreaminaInstallButton) {
+    dreaminaInstallButton.disabled = isBusy;
+    dreaminaInstallButton.textContent = dreaminaStatus.installed ? "重新安装 CLI" : "安装即梦 CLI";
+  }
+  if (dreaminaLoginButton) dreaminaLoginButton.disabled = isBusy || !dreaminaStatus.installed;
+  if (dreaminaRefreshButton) dreaminaRefreshButton.disabled = isBusy;
+}
+
+function setDreaminaBusy(isBusy) {
+  updateDreaminaButtons(isBusy);
+}
+
+async function runDreaminaAction(action) {
+  const actionText = action === "install" ? "安装即梦 CLI" : "登录即梦";
+  setDreaminaBusy(true);
+  try {
+    const response = await fetch(`/api/dreamina/${action}`, { method: "POST" });
+    const data = await readJsonResponse(response);
+    if (!response.ok || data.parseError) throw new Error(data.error || `${actionText}启动失败`);
+    showToast(data.message || `${actionText}窗口已打开`);
+    window.setTimeout(() => refreshDreaminaStatus(), action === "install" ? 8000 : 4000);
+  } catch (error) {
+    showToast(error.message || `${actionText}启动失败`);
+  } finally {
+    setDreaminaBusy(false);
+  }
+}
+
+async function copyDreaminaCommand(command) {
+  try {
+    await navigator.clipboard.writeText(command);
+    showToast("命令已复制");
+  } catch {
+    const input = document.createElement("textarea");
+    input.value = command;
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    document.body.append(input);
+    input.select();
+    document.execCommand("copy");
+    input.remove();
+    showToast("命令已复制");
+  }
 }
 
 async function saveSettings(event) {
@@ -869,7 +1026,7 @@ async function saveSettings(event) {
       modelKeys: data.modelKeys,
       cacheDir: data.cacheDir
     };
-    setKeyStatus(config.hasAnyKey ?? config.hasApiKey);
+    setKeyStatus(config.hasAnyKey ?? config.hasApiKey, config.dreaminaLoggedIn);
     await refreshProjectList();
     settingsApiKey.value = "";
     settingsGptImageKey.value = "";
@@ -1113,6 +1270,7 @@ function applyGenerationToTask(task, generation) {
   task.moderation = generation.moderation || "";
   task.extraParams = isPlainObject(generation.extraParams) ? clonePlainValue(generation.extraParams) : {};
   task.extraParamsText = JSON.stringify(task.extraParams, null, 2);
+  applyTaskModelDefaults(task, { modeChanged: true, modelChanged: true });
   task.cachedImages = Array.isArray(generation.cachedImages) ? dedupeAssetRefs(clonePlainValue(generation.cachedImages)) : [];
   task.cachedMask = generation.cachedMask ? clonePlainValue(generation.cachedMask) : null;
   task.sessionFiles = [];
@@ -2254,16 +2412,20 @@ function createDebugPanel(node) {
   const settings = document.createElement("div");
   settings.className = "node-config-grid";
   const modelField = createTaskModelField(node);
-  settings.append(
-    modelField,
-    createNumberField("数量", node, "n", { min: 1, max: 10 }),
-    createSelectField("尺寸", node, "size", sizeOptionsForModel(node.model)),
-    createSelectField("质量", node, "quality", qualityOptions),
-    createSelectField("格式", node, "format", formatOptions),
-    createTextField("接口路径", node, "endpointPath")
-  );
+  if (isDreaminaModelName(node.model)) {
+    settings.append(modelField, createSelectField("尺寸", node, "size", sizeOptionsForModel(node.model, node.mode)));
+  } else {
+    settings.append(
+      modelField,
+      createNumberField("数量", node, "n", { min: 1, max: 10 }),
+      createSelectField("尺寸", node, "size", sizeOptionsForModel(node.model, node.mode)),
+      createSelectField("质量", node, "quality", qualityOptions),
+      createSelectField("格式", node, "format", formatOptions),
+      createTextField("接口路径", node, "endpointPath")
+    );
+  }
 
-  if (node.mode === "edit") {
+  if (node.mode === "edit" && !isDreaminaModelName(node.model)) {
     settings.append(
       createSelectField("背景", node, "background", backgroundOptions),
       createSelectField("审核", node, "moderation", moderationOptions)
@@ -2276,7 +2438,9 @@ function createDebugPanel(node) {
   advancedSummary.textContent = "高级";
   const advancedGrid = document.createElement("div");
   advancedGrid.className = "node-config-grid";
-  advancedGrid.append(createTextField("Base URL", node, "baseUrl", "node-field-full"));
+  if (!isDreaminaModelName(node.model)) {
+    advancedGrid.append(createTextField("Base URL", node, "baseUrl", "node-field-full"));
+  }
 
   const extraParams = document.createElement("textarea");
   extraParams.className = "node-extra-json";
@@ -2306,7 +2470,7 @@ function createImageArea(node, selected) {
     loading.className = "node-loading";
 
     const text = document.createElement("span");
-    text.textContent = "生成中";
+    text.textContent = isDreaminaModelName(node.model) ? "即梦生成中" : "生成中";
 
     const progress = document.createElement("div");
     progress.className = "node-progress";
@@ -2394,8 +2558,13 @@ function createEditAssetFields(node) {
   imageInput.multiple = true;
   imageInput.addEventListener("pointerdown", (event) => event.stopPropagation());
   imageInput.addEventListener("change", () => {
-    const files = Array.from(imageInput.files || []);
+    let files = Array.from(imageInput.files || []);
     const stored = fileStore.get(node.id) || {};
+    if (isDreaminaModelName(node.model)) {
+      const remaining = Math.max(0, 10 - (node.cachedImages?.length || 0) - (stored.images?.length || 0));
+      if (files.length > remaining) showToast("即梦图生图最多使用 10 张参考图片");
+      files = files.slice(0, remaining);
+    }
     const nextFiles = [...(stored.images || []), ...files];
     fileStore.set(node.id, { ...stored, images: nextFiles });
     node.sessionFiles = [...(node.sessionFiles || []), ...files.map((file) => file.name)];
@@ -2446,13 +2615,11 @@ function createEditAssetFields(node) {
 
   referenceActions.append(useSelected, pickFromCanvas);
 
-  panel.append(
-    createField("参考图片", imageInput, "node-field-full"),
-    createField("蒙版 PNG", maskInput, "node-field-full"),
-    referenceActions,
-    thumbnails,
-    summary
-  );
+  panel.append(createField(isDreaminaModelName(node.model) ? "参考图片（最多 10 张）" : "参考图片", imageInput, "node-field-full"));
+  if (!isDreaminaModelName(node.model)) {
+    panel.append(createField("蒙版 PNG", maskInput, "node-field-full"));
+  }
+  panel.append(referenceActions, thumbnails, summary);
 
   return panel;
 }
@@ -3625,7 +3792,7 @@ function migrateNode(node) {
   }
 
   if (node.type === "image") {
-    const dimensions = parseImageSize(node.image?.size || node.size);
+    const dimensions = parseImageDimensions(node.image, node.size);
     return {
       ...node,
       id: node.id || createId(),
@@ -3718,6 +3885,7 @@ function migrateTaskNode(node) {
 function providerForModel(model) {
   if (isGrokModelName(model)) return "grok";
   if (isGrsaiModelName(model)) return "grsai";
+  if (isDreaminaModelName(model)) return "dreamina";
   return "";
 }
 
@@ -3739,7 +3907,7 @@ function materializeTaskImageNodes() {
       const key = getImageKey(image);
       if (key && imageKeys.has(key)) continue;
 
-      const dimensions = parseImageSize(image.size || task.size);
+      const dimensions = parseImageDimensions(image, task.size);
       additions.push({
         id: createId(),
         type: "image",

@@ -121,6 +121,32 @@
           <input id="settingsCacheDir" type="text" autocomplete="off" placeholder="例如 D:\ccCanvasCache" />
         </label>
 
+        <section class="dreamina-settings settings-field-full" aria-label="即梦 CLI">
+          <div class="dreamina-settings-head">
+            <div>
+              <strong>即梦 CLI</strong>
+              <span id="dreaminaStatusText">检测中</span>
+            </div>
+            <div class="dreamina-settings-actions">
+              <button id="dreaminaInstallButton" type="button" class="secondary compact">安装即梦 CLI</button>
+              <button id="dreaminaLoginButton" type="button" class="secondary compact">登录即梦</button>
+              <button id="dreaminaRefreshButton" type="button" class="secondary compact">测试连接</button>
+            </div>
+          </div>
+          <div id="dreaminaAccountMeta" class="dreamina-account-meta muted"></div>
+          <div class="dreamina-help">
+            <span class="dreamina-help-icon" aria-hidden="true">i</span>
+            <div>
+              <strong>如何安装即梦 CLI？</strong>
+              <p>点击上方按钮会打开官方安装或登录窗口；如果无法启动，也可以复制命令到 PowerShell 7、Git Bash 或 WSL 执行。</p>
+              <div class="dreamina-help-actions">
+                <button id="copyDreaminaInstallButton" type="button" class="secondary compact">复制安装命令</button>
+                <button id="copyDreaminaLoginButton" type="button" class="secondary compact">复制登录命令</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <div class="settings-actions">
           <span id="settingsStatus" class="muted"></span>
           <button id="saveSettingsButton" type="submit">保存设置</button>
@@ -173,6 +199,8 @@
       <option value="nano-banana-2"></option>
       <option value="grok-image-image"></option>
       <option value="grok-3-image"></option>
+      <option value="dreamina-5.0"></option>
+      <option value="dreamina-4.7"></option>
     </datalist>
 
     <script src="/app.js" type="module"></script>

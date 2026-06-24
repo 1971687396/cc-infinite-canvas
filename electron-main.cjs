@@ -106,6 +106,10 @@ function createMainWindow() {
     }
   });
 
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    return { action: "deny" };
+  });
   mainWindow.loadURL(appUrl);
   mainWindow.on("closed", () => {
     mainWindow = null;
@@ -340,5 +344,16 @@ ipcMain.on("chatgpt:reload", () => {
   chatGptView?.webContents.reloadIgnoringCache();
 });
 ipcMain.on("open-external", (_event, url) => {
-  shell.openExternal(normalizeChatGptUrl(url));
+  const externalUrl = normalizeExternalUrl(url);
+  if (externalUrl) shell.openExternal(externalUrl);
 });
+
+function normalizeExternalUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    if (parsed.protocol === "https:" || parsed.protocol === "http:") return parsed.href;
+  } catch {
+    // Ignore invalid renderer URLs.
+  }
+  return "";
+}

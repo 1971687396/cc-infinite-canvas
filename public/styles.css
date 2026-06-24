@@ -1665,6 +1665,91 @@ pre {
   padding: 0 10px;
 }
 
+.dreamina-settings {
+  display: grid;
+  gap: 10px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.dreamina-settings-head,
+.dreamina-settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dreamina-settings-head {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dreamina-settings-head > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.dreamina-settings-head strong {
+  font-size: 14px;
+}
+
+.dreamina-settings-head span,
+.dreamina-account-meta {
+  font-size: 12px;
+}
+
+.dreamina-settings-actions,
+.dreamina-help-actions {
+  flex-wrap: wrap;
+}
+
+.dreamina-help {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #24444b;
+  border: 1px solid #4f7b82;
+  border-radius: 6px;
+  color: #eef8f7;
+}
+
+.dreamina-help strong {
+  font-size: 13px;
+}
+
+.dreamina-help p {
+  margin: 5px 0 0;
+  color: #d7eceb;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.dreamina-help code {
+  color: #ffffff;
+  font-weight: 750;
+}
+
+.dreamina-help-icon {
+  display: grid;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.dreamina-help-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .update-summary {
   display: grid;
   gap: 12px;

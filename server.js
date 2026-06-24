@@ -1,6 +1,8 @@
 import http from "node:http";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createReadStream, readFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +21,8 @@ const grsaiDefaultBaseUrl = "https://grsaiapi.com";
 const grsaiGenerateEndpoint = "/v1/api/generate";
 const grsaiResultEndpoint = "/v1/api/result";
 const grsaiDefaultModel = "nano-banana-2";
+const dreaminaModelVersions = new Set(["3.0", "3.1", "4.0", "4.1", "4.5", "4.6", "4.7", "5.0"]);
+const dreaminaRatios = new Set(["21:9", "16:9", "3:2", "4:3", "1:1", "3:4", "2:3", "9:16"]);
 const modelKeyModels = ["gpt-image-2", "grok-image-image"];
 const serverHost = "127.0.0.1";
 
@@ -68,6 +72,18 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/settings") {
       return await handleSaveSettings(req, res);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/dreamina/status") {
+      return await handleDreaminaStatus(res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/dreamina/install") {
+      return await handleDreaminaInstall(res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/dreamina/login") {
+      return await handleDreaminaLogin(res);
     }
 
     if (req.method === "GET" && url.pathname === "/api/update/check") {
@@ -207,6 +223,10 @@ function isGrokImageModel(model) {
 
 function isGrsaiImageModel(model) {
   return normalizeModelName(model).startsWith("nano-banana");
+}
+
+function isDreaminaImageModel(model) {
+  return normalizeModelName(model).startsWith("dreamina-");
 }
 
 function applyModelRequestDefaults(payload, mode = "create") {
@@ -426,6 +446,97 @@ async function handleSaveSettings(req, res) {
 
   await writeSettingsEnv(nextSettings);
   sendJson(res, 200, publicSettings());
+}
+
+async function handleDreaminaStatus(res) {
+  const status = await readDreaminaStatus();
+  sendJson(res, status.installed ? 200 : 404, status);
+}
+
+async function handleDreaminaInstall(res) {
+  try {
+    launchDreaminaTerminal(dreaminaInstallCommand(), "cc infinite canvas - Install Dreamina CLI");
+    sendJson(res, 202, {
+      ok: true,
+      message: "已打开即梦 CLI 安装窗口，安装完成后回到这里点击“登录即梦”或“测试连接”。"
+    });
+  } catch (error) {
+    sendJson(res, 500, { error: dreaminaErrorMessage(error) });
+  }
+}
+
+async function handleDreaminaLogin(res) {
+  try {
+    const status = await readDreaminaStatus();
+    if (!status.installed) {
+      return sendJson(res, 404, { error: "未检测到 Dreamina CLI，请先点击“安装即梦 CLI”。" });
+    }
+
+    const executable = await dreaminaShellExecutable();
+    launchDreaminaTerminal(dreaminaLoginCommand(executable), "cc infinite canvas - Dreamina Login");
+    sendJson(res, 202, {
+      ok: true,
+      message: "已打开即梦登录窗口，登录完成后回到这里点击“测试连接”。"
+    });
+  } catch (error) {
+    sendJson(res, 500, { error: dreaminaErrorMessage(error) });
+  }
+}
+
+async function readDreaminaStatus() {
+  let version = "";
+  let buildVersion = "";
+  try {
+    const versionResult = await runDreamina(["version"], { timeoutMs: 20000 });
+    const versionData = parseDreaminaJson(versionResult.stdout);
+    buildVersion = String(versionData?.version || extractDreaminaVersion(versionResult.stdout) || "");
+    version = (await readDreaminaInstalledVersion()) || buildVersion;
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return {
+        installed: false,
+        loggedIn: false,
+        version: "",
+        error: "Dreamina CLI is not installed or is not available in PATH."
+      };
+    }
+    return { installed: true, loggedIn: false, version: "", error: dreaminaErrorMessage(error) };
+  }
+
+  try {
+    const creditResult = await runDreamina(["user_credit"], { timeoutMs: 30000 });
+    const credit = parseDreaminaJson(creditResult.stdout);
+    return {
+      installed: true,
+      loggedIn: true,
+      version,
+      buildVersion,
+      totalCredit: Number.isFinite(Number(credit?.total_credit)) ? Number(credit.total_credit) : null,
+      vipLevel: String(credit?.vip_level || "")
+    };
+  } catch (error) {
+    return {
+      installed: true,
+      loggedIn: false,
+      version,
+      buildVersion,
+      error: dreaminaErrorMessage(error)
+    };
+  }
+}
+
+async function readDreaminaInstalledVersion() {
+  try {
+    const raw = await readFile(path.join(homedir(), ".dreamina_cli", "version.json"), "utf8");
+    return String(JSON.parse(raw)?.version || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+
+function extractDreaminaVersion(text) {
+  return String(text || "").match(/\b\d+\.\d+\.\d+\b/u)?.[0] || "";
 }
 
 function sanitizeOptionalText(value) {
@@ -693,6 +804,10 @@ async function handleCacheAssets(req, res) {
 }
 
 async function handleCreate(res, body, prompt) {
+  if (isDreaminaImageModel(body.model || config.defaultModel)) {
+    return await handleDreaminaGenerate(res, body, prompt);
+  }
+
   if (isGrsaiImageModel(body.model || config.defaultModel)) {
     return await handleGrsaiGenerate(res, body, prompt);
   }
@@ -832,6 +947,10 @@ async function handleEdit(res, body) {
     return sendJson(res, 400, { error: "At least one image file is required for edit mode." });
   }
 
+  if (isDreaminaImageModel(modelName)) {
+    return await handleDreaminaGenerate(res, body, body.prompt, requestImages.slice(0, 10));
+  }
+
   if (isGrsaiImageModel(modelName)) {
     return await handleGrsaiGenerate(res, body, body.prompt, requestImages);
   }
@@ -903,6 +1022,164 @@ async function handleEdit(res, body) {
     images: resultImages,
     raw: upstreamData
   });
+}
+
+async function handleDreaminaGenerate(res, body, prompt, imageFiles = []) {
+  const projectId = normalizeProjectId(body.projectId || "default");
+  const mode = imageFiles.length ? "edit" : "create";
+  const command = mode === "edit" ? "image2image" : "text2image";
+  const startedAt = Date.now();
+  let inputDir = "";
+
+  try {
+    const modelVersion = dreaminaModelVersion(body.model);
+    const size = parseDreaminaSize(body.size, modelVersion, mode);
+    const extraParams = parseExtraParamsValue(body.extraParams);
+    const session = normalizeDreaminaSession(extraParams.session);
+
+    await mkdir(projectOutputDir(projectId), { recursive: true });
+    const args = [command, `--prompt=${prompt}`, `--model_version=${modelVersion}`, `--ratio=${size.ratio}`];
+    if (size.resolutionType) args.push(`--resolution_type=${size.resolutionType}`);
+    if (session !== null) args.push(`--session=${session}`);
+
+    if (mode === "edit") {
+      inputDir = await mkdtemp(path.join(tmpdir(), "cc-dreamina-"));
+      const imagePaths = await writeDreaminaInputFiles(imageFiles, inputDir);
+      imagePaths.forEach((imagePath) => args.push(`--images=${imagePath}`));
+    }
+
+    args.push("--poll=30");
+    const submitResult = await runDreamina(args, { timeoutMs: 90000 });
+    const submitted = parseDreaminaJson(submitResult.stdout);
+    const finalData = await resolveDreaminaResult(submitted, projectOutputDir(projectId));
+    const images = await dreaminaResultImages(finalData, projectId);
+    if (!images.length) {
+      return sendJson(res, 502, {
+        error: "Dreamina task completed without a downloadable image.",
+        upstream: finalData
+      });
+    }
+
+    sendJson(res, 200, {
+      durationMs: Date.now() - startedAt,
+      request: {
+        provider: "dreamina-cli",
+        command,
+        modelVersion,
+        ratio: size.ratio,
+        resolutionType: size.resolutionType,
+        referenceCount: imageFiles.length
+      },
+      images,
+      raw: finalData
+    });
+  } catch (error) {
+    sendJson(res, dreaminaErrorStatus(error), {
+      error: dreaminaErrorMessage(error),
+      upstream: error.data || undefined
+    });
+  } finally {
+    if (inputDir && isPathInside(inputDir, tmpdir())) {
+      await rm(inputDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+}
+
+function dreaminaModelVersion(model) {
+  const version = normalizeModelName(model).replace(/^dreamina-/, "");
+  if (!dreaminaModelVersions.has(version)) {
+    throw new Error(`Unsupported Dreamina model version: ${version || model}`);
+  }
+  return version;
+}
+
+function parseDreaminaSize(value, modelVersion, mode) {
+  const [rawRatio = "1:1", rawResolution = ""] = String(value || "1:1|2k").toLowerCase().split("|");
+  const ratio = dreaminaRatios.has(rawRatio) ? rawRatio : "1:1";
+  const allowed = mode === "edit" || Number(modelVersion) >= 4 ? new Set(["2k", "4k"]) : new Set(["1k", "2k"]);
+  const fallback = allowed.has("2k") ? "2k" : [...allowed][0];
+  return { ratio, resolutionType: allowed.has(rawResolution) ? rawResolution : fallback };
+}
+
+function normalizeDreaminaSession(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const session = Number.parseInt(value, 10);
+  return Number.isInteger(session) && session >= 0 ? session : null;
+}
+
+async function writeDreaminaInputFiles(files, directory) {
+  const paths = [];
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    const extension = extensionFromMime(file.contentType) || extensionFromUrl(file.filename) || ".png";
+    const filePath = path.join(directory, `reference-${index + 1}.${String(extension).replace(/^\./, "")}`);
+    await writeFile(filePath, file.data);
+    paths.push(filePath);
+  }
+  return paths;
+}
+
+async function resolveDreaminaResult(initialData, downloadDir) {
+  let current = initialData;
+  for (let attempt = 0; attempt < 48; attempt += 1) {
+    const status = normalizeModelName(current?.gen_status);
+    if (status === "fail" || status === "failed") {
+      const error = new Error(current?.fail_reason || "Dreamina generation failed.");
+      error.data = current;
+      throw error;
+    }
+
+    const submitId = String(current?.submit_id || "").trim();
+    if (!submitId) {
+      const error = new Error("Dreamina CLI response did not include submit_id.");
+      error.data = current;
+      throw error;
+    }
+
+    if (status === "success" && dreaminaLocalImageEntries(current).length) return current;
+
+    const query = await runDreamina(
+      ["query_result", `--submit_id=${submitId}`, `--download_dir=${downloadDir}`],
+      { timeoutMs: 60000 }
+    );
+    current = parseDreaminaJson(query.stdout);
+    if (normalizeModelName(current?.gen_status) === "success") return current;
+    await delay(2500);
+  }
+
+  const error = new Error("Dreamina task is still running after waiting for the result.");
+  error.data = current;
+  throw error;
+}
+
+function dreaminaLocalImageEntries(data) {
+  return Array.isArray(data?.result_json?.images) ? data.result_json.images.filter((item) => item?.path) : [];
+}
+
+async function dreaminaResultImages(data, projectId) {
+  const outputRoot = projectOutputDir(projectId);
+  const images = [];
+  for (const item of dreaminaLocalImageEntries(data)) {
+    const resolved = path.resolve(String(item.path || ""));
+    if (!isPathInside(resolved, outputRoot)) continue;
+    try {
+      const fileStat = await stat(resolved);
+      if (!fileStat.isFile()) continue;
+      const filename = path.basename(resolved);
+      images.push({
+        type: "file",
+        url: projectPublicPath(projectId, "outputs", filename),
+        filename,
+        width: Number(item.width) || undefined,
+        height: Number(item.height) || undefined
+      });
+    } catch {
+      // Ignore incomplete downloads and continue checking other result files.
+    }
+  }
+
+  if (images.length) return images;
+  return await normalizeAndPersistImages(data, "png", projectId);
 }
 
 function grsaiGenerateUrl(body) {
@@ -980,6 +1257,215 @@ function hasImageCandidates(data) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runDreamina(args, options = {}) {
+  const candidates = dreaminaExecutableCandidates();
+  let missingError = null;
+  for (const executable of candidates) {
+    try {
+      return await spawnDreamina(executable, args, options);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      missingError = error;
+    }
+  }
+  throw missingError || Object.assign(new Error("Dreamina CLI was not found."), { code: "ENOENT" });
+}
+
+async function dreaminaShellExecutable() {
+  for (const executable of dreaminaExecutableCandidates()) {
+    if (!path.isAbsolute(executable)) continue;
+    try {
+      const info = await stat(executable);
+      if (info.isFile()) return executable;
+    } catch {
+      // Fall back to PATH resolution below.
+    }
+  }
+  return process.platform === "win32" ? "dreamina.exe" : "dreamina";
+}
+
+function dreaminaInstallCommand() {
+  if (process.platform === "win32") {
+    return [
+      "$ErrorActionPreference = 'Continue'",
+      "$env:Path = \"$env:USERPROFILE\\bin;$env:Path\"",
+      "Write-Host 'Installing Dreamina CLI...'",
+      "if (-not (Get-Command bash -ErrorAction SilentlyContinue)) { Write-Host 'bash was not found. Please install Git for Windows or WSL first, then run this again.'; return }",
+      "curl.exe -L https://jimeng.jianying.com/cli | bash",
+      "$env:Path = \"$env:USERPROFILE\\bin;$env:Path\"",
+      "Write-Host ''",
+      "Write-Host 'Done. Return to cc infinite canvas and click Login Dreamina or Test connection.'"
+    ].join("; ");
+  }
+
+  return [
+    "set -e",
+    "curl -s https://jimeng.jianying.com/cli | bash",
+    "echo",
+    "echo 'Done. Return to cc infinite canvas and click Login Dreamina or Test connection.'"
+  ].join("; ");
+}
+
+function dreaminaLoginCommand(executable) {
+  if (process.platform === "win32") {
+    return [
+      "$ErrorActionPreference = 'Continue'",
+      "$env:Path = \"$env:USERPROFILE\\bin;$env:Path\"",
+      "Write-Host 'Starting Dreamina login...'",
+      `& ${quotePowerShell(executable)} login`,
+      "Write-Host ''",
+      "Write-Host 'After login, return to cc infinite canvas and click Test connection.'"
+    ].join("; ");
+  }
+
+  return `${quotePosix(executable)} login; echo; echo 'After login, return to cc infinite canvas and click Test connection.'`;
+}
+
+function launchDreaminaTerminal(command, title) {
+  if (process.platform === "win32") {
+    const windowTitle = String(title || "cc infinite canvas").replace(/'/g, "''");
+    const child = spawn("powershell.exe", [
+      "-NoExit",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      `$Host.UI.RawUI.WindowTitle = '${windowTitle}'; ${command}`
+    ], {
+      cwd: __dirname,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: false,
+      shell: false,
+      env: { ...process.env, NO_COLOR: "1" }
+    });
+    child.unref();
+    return;
+  }
+
+  const shell = process.env.SHELL || "bash";
+  const child = spawn(shell, ["-lc", command], {
+    cwd: __dirname,
+    detached: true,
+    stdio: "ignore",
+    shell: false,
+    env: { ...process.env, NO_COLOR: "1" }
+  });
+  child.unref();
+}
+
+function quotePowerShell(value) {
+  return `'${String(value || "").replace(/'/g, "''")}'`;
+}
+
+function quotePosix(value) {
+  return `'${String(value || "").replace(/'/g, "'\\''")}'`;
+}
+
+function dreaminaExecutableCandidates() {
+  const configured = sanitizeOptionalText(process.env.DREAMINA_CLI_PATH);
+  const candidates = [configured];
+  if (process.platform === "win32") candidates.push(path.join(homedir(), "bin", "dreamina.exe"), "dreamina.exe");
+  else candidates.push(path.join(homedir(), ".local", "bin", "dreamina"), "dreamina");
+  return [...new Set(candidates.filter(Boolean))];
+}
+
+function spawnDreamina(executable, args, options = {}) {
+  const timeoutMs = Number(options.timeoutMs) || 60000;
+  const maxOutputBytes = Number(options.maxOutputBytes) || 4 * 1024 * 1024;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, args, {
+      cwd: __dirname,
+      windowsHide: true,
+      shell: false,
+      env: { ...process.env, NO_COLOR: "1" }
+    });
+    const stdout = [];
+    const stderr = [];
+    let outputBytes = 0;
+    let settled = false;
+    let timer = null;
+
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback(value);
+    };
+
+    const collect = (target) => (chunk) => {
+      outputBytes += chunk.length;
+      if (outputBytes > maxOutputBytes) {
+        child.kill();
+        const error = new Error("Dreamina CLI returned too much output.");
+        error.code = "EOUTPUTLIMIT";
+        finish(reject, error);
+        return;
+      }
+      target.push(chunk);
+    };
+
+    child.stdout.on("data", collect(stdout));
+    child.stderr.on("data", collect(stderr));
+    child.on("error", (error) => finish(reject, error));
+    child.on("close", (code) => {
+      const result = {
+        code,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8")
+      };
+      if (code === 0) return finish(resolve, result);
+      const error = new Error(result.stderr.trim() || result.stdout.trim() || `Dreamina CLI exited with code ${code}.`);
+      error.code = "EDREAMINA";
+      error.exitCode = code;
+      error.result = result;
+      finish(reject, error);
+    });
+
+    timer = setTimeout(() => {
+      child.kill();
+      const error = new Error(`Dreamina CLI timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
+      error.code = "ETIMEDOUT";
+      finish(reject, error);
+    }, timeoutMs);
+  });
+}
+
+function parseDreaminaJson(output) {
+  const text = String(output || "").trim();
+  if (!text) throw new Error("Dreamina CLI returned an empty response.");
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Some CLI builds print a short status line before the JSON payload.
+  }
+
+  const starts = [text.indexOf("{"), text.indexOf("[")].filter((index) => index >= 0).sort((a, b) => a - b);
+  for (const start of starts) {
+    for (let end = text.length; end > start; end -= 1) {
+      try {
+        return JSON.parse(text.slice(start, end));
+      } catch {
+        // Keep narrowing until the complete JSON value is found.
+      }
+    }
+  }
+  throw new Error(`Dreamina CLI returned an unreadable response: ${text.slice(0, 800)}`);
+}
+
+function dreaminaErrorStatus(error) {
+  if (error?.code === "ENOENT") return 503;
+  const message = dreaminaErrorMessage(error);
+  if (/login|oauth|unauthorized|未登录|登录态|授权/iu.test(message)) return 401;
+  if (/invalid|unsupported|required|参数/iu.test(message)) return 400;
+  return 502;
+}
+
+function dreaminaErrorMessage(error) {
+  const message = String(error?.message || error || "Dreamina CLI failed.").trim();
+  return message.slice(0, 1600);
 }
 
 function loadEnvFile(filePath) {

@@ -26,4 +26,14 @@ npm start
 
 `.env.local` 已在 `.gitignore` 里，不会被 Git 跟踪。
 
-画布工程会自动保存到 `cache/project.json`，生成图片会保存在 `outputs/`。
+画布工程会自动保存到 `cache/canvases/<画布ID>/project.json`，生成图片和素材会保存在同一画布目录下的 `outputs/` 与 `assets/`。
+
+如需使用即梦模型，可以先在应用“设置”里点击“安装即梦 CLI”，安装后点击“登录即梦”，最后点击“测试连接”检查状态。
+
+如果按钮无法启动，也可以在 PowerShell 7、Git Bash 或 WSL 中手动执行安装命令：
+
+```bash
+curl -s https://jimeng.jianying.com/cli | bash
+```
+
+安装后运行 `dreamina login` 完成 OAuth 登录，再回到应用设置页点击“测试连接”。

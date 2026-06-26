@@ -3610,6 +3610,8 @@ function createReferenceThumbnails(node) {
     img.src = image.url || `/${image.path}`;
     img.alt = image.originalName || image.filename || `参考图 ${index + 1}`;
     button.append(img);
+    const annotationOverlay = createReferenceAnnotationOverlay(image.maskAnnotation);
+    if (annotationOverlay) button.append(annotationOverlay);
 
     const remove = document.createElement("button");
     remove.type = "button";
@@ -3626,6 +3628,158 @@ function createReferenceThumbnails(node) {
   }
 
   return strip;
+}
+
+function createReferenceAnnotationOverlay(annotation) {
+  const normalized = normalizeMaskAnnotation(annotation);
+  if (!normalized.actions.length) return null;
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.classList.add("reference-annotation-overlay");
+  svg.setAttribute("viewBox", `0 0 ${Math.max(1, normalized.width)} ${Math.max(1, normalized.height)}`);
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+
+  for (const action of normalized.actions) {
+    const element = createAnnotationSvgElement(action);
+    if (element) svg.append(element);
+  }
+
+  return svg;
+}
+
+function createAnnotationSvgElement(action) {
+  if (!action?.tool) return null;
+  const size = Math.max(8, Number(action.size) || 24);
+  const strokeWidth = Math.max(3, size * 0.18);
+  const fill = "rgba(230, 64, 48, 0.36)";
+  const stroke = "rgba(230, 64, 48, 0.86)";
+
+  if (action.tool === "brush") {
+    const points = annotationPoints(action.points);
+    if (!points.length) return null;
+    if (points.length === 1) {
+      const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      circle.setAttribute("cx", points[0].x);
+      circle.setAttribute("cy", points[0].y);
+      circle.setAttribute("r", size / 2);
+      circle.setAttribute("fill", "rgba(230, 64, 48, 0.42)");
+      return circle;
+    }
+    const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    polyline.setAttribute("points", points.map((point) => `${point.x},${point.y}`).join(" "));
+    polyline.setAttribute("fill", "none");
+    polyline.setAttribute("stroke", "rgba(230, 64, 48, 0.42)");
+    polyline.setAttribute("stroke-width", size);
+    polyline.setAttribute("stroke-linecap", "round");
+    polyline.setAttribute("stroke-linejoin", "round");
+    return polyline;
+  }
+
+  const start = annotationPoint(action.start);
+  const end = annotationPoint(action.end);
+  if (!start || !end) return null;
+  const x = Math.min(start.x, end.x);
+  const y = Math.min(start.y, end.y);
+  const width = Math.abs(end.x - start.x);
+  const height = Math.abs(end.y - start.y);
+
+  if (action.tool === "rect") {
+    const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    rect.setAttribute("x", x);
+    rect.setAttribute("y", y);
+    rect.setAttribute("width", Math.max(1, width));
+    rect.setAttribute("height", Math.max(1, height));
+    rect.setAttribute("fill", fill);
+    rect.setAttribute("stroke", stroke);
+    rect.setAttribute("stroke-width", strokeWidth);
+    return rect;
+  }
+
+  if (action.tool === "ellipse") {
+    const ellipse = document.createElementNS("http://www.w3.org/2000/svg", "ellipse");
+    ellipse.setAttribute("cx", x + width / 2);
+    ellipse.setAttribute("cy", y + height / 2);
+    ellipse.setAttribute("rx", Math.max(1, width / 2));
+    ellipse.setAttribute("ry", Math.max(1, height / 2));
+    ellipse.setAttribute("fill", fill);
+    ellipse.setAttribute("stroke", stroke);
+    ellipse.setAttribute("stroke-width", strokeWidth);
+    return ellipse;
+  }
+
+  if (action.tool === "arrow") {
+    const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.setAttribute("x1", start.x);
+    line.setAttribute("y1", start.y);
+    line.setAttribute("x2", end.x);
+    line.setAttribute("y2", end.y);
+    line.setAttribute("stroke", stroke);
+    line.setAttribute("stroke-width", Math.max(5, size * 0.45));
+    line.setAttribute("stroke-linecap", "round");
+    const head = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+    head.setAttribute("points", arrowHeadPointString(start, end, size));
+    head.setAttribute("fill", stroke);
+    group.append(line, head);
+    return group;
+  }
+
+  return null;
+}
+
+function normalizeMaskAnnotation(annotation) {
+  if (!annotation || typeof annotation !== "object") return { version: 1, width: 1, height: 1, actions: [] };
+  return {
+    version: 1,
+    width: Math.max(1, Number(annotation.width) || 1),
+    height: Math.max(1, Number(annotation.height) || 1),
+    actions: Array.isArray(annotation.actions) ? annotation.actions.map(normalizeAnnotationAction).filter(Boolean) : []
+  };
+}
+
+function normalizeAnnotationAction(action) {
+  if (!action || typeof action !== "object") return null;
+  const tool = String(action.tool || "");
+  const size = Math.max(8, Number(action.size) || 24);
+  if (tool === "brush") {
+    const points = annotationPoints(action.points);
+    return points.length ? { tool, size, points } : null;
+  }
+  if (["rect", "ellipse", "arrow"].includes(tool)) {
+    const start = annotationPoint(action.start);
+    const end = annotationPoint(action.end);
+    return start && end ? { tool, size, start, end } : null;
+  }
+  return null;
+}
+
+function annotationPoint(point) {
+  if (!point || typeof point !== "object") return null;
+  const x = Number(point.x);
+  const y = Number(point.y);
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+}
+
+function annotationPoints(points) {
+  if (!Array.isArray(points)) return [];
+  return points.map(annotationPoint).filter(Boolean);
+}
+
+function arrowHeadPointString(start, end, size) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const angle = Math.atan2(dy, dx);
+  const headLength = Math.max(18, size * 1.8);
+  const headAngle = Math.PI / 7;
+  const left = {
+    x: end.x - headLength * Math.cos(angle - headAngle),
+    y: end.y - headLength * Math.sin(angle - headAngle)
+  };
+  const right = {
+    x: end.x - headLength * Math.cos(angle + headAngle),
+    y: end.y - headLength * Math.sin(angle + headAngle)
+  };
+  return `${end.x},${end.y} ${left.x},${left.y} ${right.x},${right.y}`;
 }
 
 function removeReferenceImage(nodeId, index) {
@@ -3667,8 +3821,30 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
   const title = document.createElement("strong");
   title.textContent = "局部重绘标注";
 
+  const toolGroup = document.createElement("div");
+  toolGroup.className = "mask-editor-tools";
+  const tools = [
+    ["brush", "画笔"],
+    ["rect", "框"],
+    ["ellipse", "圈"],
+    ["arrow", "箭头"]
+  ];
+  let activeTool = "brush";
+  const toolButtons = tools.map(([tool, label]) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.className = tool === activeTool ? "active" : "";
+    button.addEventListener("click", () => {
+      activeTool = tool;
+      toolButtons.forEach((item) => item.classList.toggle("active", item === button));
+    });
+    toolGroup.append(button);
+    return button;
+  });
+
   const brushLabel = document.createElement("label");
-  brushLabel.textContent = "笔刷";
+  brushLabel.textContent = "粗细";
   const brush = document.createElement("input");
   brush.type = "range";
   brush.min = "8";
@@ -3682,13 +3858,13 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
 
   const save = document.createElement("button");
   save.type = "button";
-  save.textContent = "保存蒙版";
+  save.textContent = "保存标注";
 
   const close = document.createElement("button");
   close.type = "button";
   close.textContent = "关闭";
 
-  toolbar.append(title, brushLabel, clear, save, close);
+  toolbar.append(title, toolGroup, brushLabel, clear, save, close);
 
   const stage = document.createElement("div");
   stage.className = "mask-editor-stage";
@@ -3700,7 +3876,10 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
   const overlayCanvas = document.createElement("canvas");
   overlayCanvas.className = "mask-editor-canvas";
 
-  stage.append(image, overlayCanvas);
+  const previewCanvas = document.createElement("canvas");
+  previewCanvas.className = "mask-editor-canvas mask-editor-preview";
+
+  stage.append(image, overlayCanvas, previewCanvas);
   editor.append(toolbar, stage);
   overlay.append(editor);
   document.body.append(overlay);
@@ -3708,7 +3887,13 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
   const maskCanvas = document.createElement("canvas");
   const maskContext = maskCanvas.getContext("2d");
   const overlayContext = overlayCanvas.getContext("2d");
+  const previewContext = previewCanvas.getContext("2d");
   let isDrawing = false;
+  let startPoint = null;
+  let hasMarks = false;
+  let wasCleared = false;
+  let currentAction = null;
+  let annotationActions = clonePlainValue(normalizeMaskAnnotation(imageRef.maskAnnotation).actions);
 
   const closeEditor = () => overlay.remove();
   close.addEventListener("click", closeEditor);
@@ -3718,10 +3903,12 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
 
   const resetMaskCanvas = () => {
     overlayContext.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    previewContext.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
     maskContext.globalCompositeOperation = "source-over";
     maskContext.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
     maskContext.fillStyle = "#ffffff";
     maskContext.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+    hasMarks = false;
   };
 
   const initializeMaskEditor = () => {
@@ -3741,13 +3928,15 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
     overlayCanvas.height = naturalHeight;
     overlayCanvas.style.width = `${displayWidth}px`;
     overlayCanvas.style.height = `${displayHeight}px`;
+    previewCanvas.width = naturalWidth;
+    previewCanvas.height = naturalHeight;
+    previewCanvas.style.width = `${displayWidth}px`;
+    previewCanvas.style.height = `${displayHeight}px`;
     maskCanvas.width = naturalWidth;
     maskCanvas.height = naturalHeight;
     resetMaskCanvas();
+    replayAnnotationActions();
   };
-
-  image.addEventListener("load", initializeMaskEditor);
-  if (image.complete && image.naturalWidth) initializeMaskEditor();
 
   const pointFromEvent = (event) => {
     const rect = overlayCanvas.getBoundingClientRect();
@@ -3760,45 +3949,259 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
   const drawPoint = (event) => {
     const point = pointFromEvent(event);
     const radius = Number(brush.value) / 2;
+    if (currentAction?.tool === "brush") currentAction.points.push(point);
 
+    overlayContext.save();
     overlayContext.globalCompositeOperation = "source-over";
     overlayContext.fillStyle = "rgba(230, 64, 48, 0.42)";
     overlayContext.beginPath();
     overlayContext.arc(point.x, point.y, radius, 0, Math.PI * 2);
     overlayContext.fill();
+    overlayContext.restore();
 
+    maskContext.save();
     maskContext.globalCompositeOperation = "destination-out";
     maskContext.beginPath();
     maskContext.arc(point.x, point.y, radius, 0, Math.PI * 2);
     maskContext.fill();
+    maskContext.restore();
+    hasMarks = true;
+    wasCleared = false;
   };
+
+  const shapeFromEvent = (event) => ({
+    tool: activeTool,
+    start: startPoint,
+    end: pointFromEvent(event),
+    size: Number(brush.value)
+  });
+
+  const replayAnnotationActions = () => {
+    for (const action of annotationActions) {
+      drawAnnotationAction(overlayContext, action, "overlay");
+      drawAnnotationAction(maskContext, action, "mask");
+    }
+    hasMarks = annotationActions.length > 0;
+  };
+
+  const drawAnnotationAction = (context, action, target, preview = false) => {
+    const normalized = normalizeAnnotationAction(action);
+    if (!normalized) return;
+    if (normalized.tool === "brush") {
+      drawBrushAction(context, normalized, target, preview);
+      return;
+    }
+    if (target === "mask") eraseShapeFromMask(normalized);
+    else drawShape(context, normalized, preview);
+  };
+
+  const drawBrushAction = (context, action, target, preview = false) => {
+    const points = annotationPoints(action.points);
+    if (!points.length) return;
+    const size = Math.max(8, Number(action.size) || 24);
+
+    context.save();
+    context.globalCompositeOperation = target === "mask" ? "destination-out" : "source-over";
+    context.strokeStyle = target === "mask" ? "#000000" : preview ? "rgba(230, 64, 48, 0.24)" : "rgba(230, 64, 48, 0.42)";
+    context.fillStyle = context.strokeStyle;
+    context.lineWidth = size;
+    context.lineCap = "round";
+    context.lineJoin = "round";
+
+    if (points.length === 1) {
+      context.beginPath();
+      context.arc(points[0].x, points[0].y, size / 2, 0, Math.PI * 2);
+      context.fill();
+    } else {
+      context.beginPath();
+      context.moveTo(points[0].x, points[0].y);
+      for (const point of points.slice(1)) context.lineTo(point.x, point.y);
+      context.stroke();
+    }
+
+    context.restore();
+  };
+
+  const drawShape = (context, shape, preview = false) => {
+    if (!shape?.start || !shape?.end) return;
+    const x = Math.min(shape.start.x, shape.end.x);
+    const y = Math.min(shape.start.y, shape.end.y);
+    const width = Math.abs(shape.end.x - shape.start.x);
+    const height = Math.abs(shape.end.y - shape.start.y);
+    const lineWidth = Math.max(8, Number(shape.size) || 24);
+
+    context.save();
+    context.globalCompositeOperation = "source-over";
+    context.fillStyle = preview ? "rgba(230, 64, 48, 0.24)" : "rgba(230, 64, 48, 0.36)";
+    context.strokeStyle = "rgba(230, 64, 48, 0.86)";
+    context.lineWidth = Math.max(3, lineWidth * 0.18);
+    context.lineCap = "round";
+    context.lineJoin = "round";
+
+    if (shape.tool === "rect") {
+      context.beginPath();
+      context.rect(x, y, Math.max(1, width), Math.max(1, height));
+      context.fill();
+      context.stroke();
+    } else if (shape.tool === "ellipse") {
+      context.beginPath();
+      context.ellipse(x + width / 2, y + height / 2, Math.max(1, width / 2), Math.max(1, height / 2), 0, 0, Math.PI * 2);
+      context.fill();
+      context.stroke();
+    } else if (shape.tool === "arrow") {
+      drawArrowShape(context, shape.start, shape.end, lineWidth);
+    }
+
+    context.restore();
+  };
+
+  const eraseShapeFromMask = (shape) => {
+    if (!shape?.start || !shape?.end) return;
+    const x = Math.min(shape.start.x, shape.end.x);
+    const y = Math.min(shape.start.y, shape.end.y);
+    const width = Math.abs(shape.end.x - shape.start.x);
+    const height = Math.abs(shape.end.y - shape.start.y);
+    const lineWidth = Math.max(8, Number(shape.size) || 24);
+
+    maskContext.save();
+    maskContext.globalCompositeOperation = "destination-out";
+    maskContext.fillStyle = "#000000";
+    maskContext.strokeStyle = "#000000";
+    maskContext.lineWidth = lineWidth;
+    maskContext.lineCap = "round";
+    maskContext.lineJoin = "round";
+
+    if (shape.tool === "rect") {
+      maskContext.fillRect(x, y, Math.max(1, width), Math.max(1, height));
+    } else if (shape.tool === "ellipse") {
+      maskContext.beginPath();
+      maskContext.ellipse(x + width / 2, y + height / 2, Math.max(1, width / 2), Math.max(1, height / 2), 0, 0, Math.PI * 2);
+      maskContext.fill();
+    } else if (shape.tool === "arrow") {
+      drawArrowShape(maskContext, shape.start, shape.end, lineWidth);
+    }
+
+    maskContext.restore();
+  };
+
+  const drawArrowShape = (context, start, end, lineWidth) => {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const length = Math.hypot(dx, dy);
+    if (length < 2) return;
+    const angle = Math.atan2(dy, dx);
+    const headLength = Math.max(18, lineWidth * 1.8);
+    const headAngle = Math.PI / 7;
+
+    context.beginPath();
+    context.moveTo(start.x, start.y);
+    context.lineTo(end.x, end.y);
+    context.stroke();
+
+    context.beginPath();
+    context.moveTo(end.x, end.y);
+    context.lineTo(end.x - headLength * Math.cos(angle - headAngle), end.y - headLength * Math.sin(angle - headAngle));
+    context.lineTo(end.x - headLength * Math.cos(angle + headAngle), end.y - headLength * Math.sin(angle + headAngle));
+    context.closePath();
+    context.fill();
+  };
+
+  const drawShapePreview = (event) => {
+    previewContext.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+    drawShape(previewContext, shapeFromEvent(event), true);
+  };
+
+  const commitShape = (event) => {
+    const shape = normalizeAnnotationAction(shapeFromEvent(event));
+    if (!shape) return;
+    const distance = Math.hypot(shape.end.x - shape.start.x, shape.end.y - shape.start.y);
+    if (distance < 2) return;
+    previewContext.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+    drawShape(overlayContext, shape);
+    eraseShapeFromMask(shape);
+    annotationActions.push(shape);
+    hasMarks = true;
+    wasCleared = false;
+  };
+
+  image.addEventListener("load", initializeMaskEditor);
+  if (image.complete && image.naturalWidth) initializeMaskEditor();
 
   overlayCanvas.addEventListener("pointerdown", (event) => {
     event.preventDefault();
     isDrawing = true;
+    startPoint = pointFromEvent(event);
     overlayCanvas.setPointerCapture?.(event.pointerId);
-    drawPoint(event);
+    if (activeTool === "brush") {
+      currentAction = { tool: "brush", size: Number(brush.value), points: [] };
+      annotationActions.push(currentAction);
+      drawPoint(event);
+    } else {
+      currentAction = null;
+      drawShapePreview(event);
+    }
   });
 
   overlayCanvas.addEventListener("pointermove", (event) => {
     if (!isDrawing) return;
-    drawPoint(event);
+    if (activeTool === "brush") drawPoint(event);
+    else drawShapePreview(event);
   });
 
-  const stopDrawing = () => {
+  const stopDrawing = (event) => {
+    if (isDrawing && activeTool !== "brush" && event?.type === "pointerup") commitShape(event);
     isDrawing = false;
+    startPoint = null;
+    currentAction = null;
+    previewContext.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
   };
   overlayCanvas.addEventListener("pointerup", stopDrawing);
   overlayCanvas.addEventListener("pointercancel", stopDrawing);
-  clear.addEventListener("click", resetMaskCanvas);
+  clear.addEventListener("click", () => {
+    annotationActions = [];
+    currentAction = null;
+    wasCleared = true;
+    resetMaskCanvas();
+  });
   save.addEventListener("click", () => {
-    maskCanvas.toBlob((blob) => {
+    if (!hasMarks && !wasCleared) {
+      showToast("请先标注需要局部重绘的区域");
+      return;
+    }
+
+    save.disabled = true;
+    save.textContent = "保存中";
+    maskCanvas.toBlob(async (blob) => {
       if (!blob) {
+        save.disabled = false;
+        save.textContent = "保存标注";
         showToast("蒙版生成失败");
         return;
       }
 
+      if (!hasMarks && wasCleared) {
+        imageRef.maskAnnotation = null;
+        const stored = fileStore.get(node.id) || {};
+        delete stored.mask;
+        if (stored.images?.length) fileStore.set(node.id, stored);
+        else fileStore.delete(node.id);
+        node.sessionMask = "";
+        node.cachedMask = null;
+        node.cacheStatus = node.cachedImages?.length ? "ready" : "pending";
+        updateNode(node);
+        saveCanvasState();
+        closeEditor();
+        showToast("局部重绘标注已清空");
+        return;
+      }
+
       const file = new File([blob], `mask-${Date.now()}.png`, { type: "image/png" });
+      imageRef.maskAnnotation = {
+        version: 1,
+        width: maskCanvas.width,
+        height: maskCanvas.height,
+        actions: clonePlainValue(annotationActions.map(normalizeAnnotationAction).filter(Boolean))
+      };
       const stored = fileStore.get(node.id) || {};
       fileStore.set(node.id, { ...stored, mask: file });
       node.sessionMask = file.name;
@@ -3806,7 +4209,7 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
       if (node.cachedImages?.length || stored.images?.length) node.cacheStatus = "caching";
       updateNode(node);
       saveCanvasState();
-      cacheEditFiles(node.id);
+      await cacheEditFiles(node.id);
       closeEditor();
       showToast("局部重绘蒙版已保存");
     }, "image/png");

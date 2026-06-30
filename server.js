@@ -1066,14 +1066,15 @@ function normalizeAssistantContext(context) {
   if (!isPlainObject(context)) return {};
   return {
     project: isPlainObject(context.project) ? context.project : {},
-    selection: Array.isArray(context.selection) ? context.selection.slice(0, 24) : [],
+    selection: Array.isArray(context.selection) ? context.selection.slice(0, 80) : [],
     canvas: isPlainObject(context.canvas) ? context.canvas : {},
-    recentNodes: Array.isArray(context.recentNodes) ? context.recentNodes.slice(0, 40) : []
+    recentNodes: Array.isArray(context.recentNodes) ? context.recentNodes.slice(0, 80) : []
   };
 }
 
 function buildAssistantMessages(messages, context, mode = "chat") {
-  const contextText = JSON.stringify(context, null, 2).slice(0, 16000);
+  const contextLimit = mode === "action_plan" ? 48000 : 16000;
+  const contextText = JSON.stringify(context, null, 2).slice(0, contextLimit);
   const baseMessages = [
     {
       role: "system",
@@ -1095,7 +1096,7 @@ function buildAssistantMessages(messages, context, mode = "chat") {
     baseMessages.push({
       role: "system",
       content:
-        "本轮必须只返回 JSON，不要使用 Markdown。JSON 格式：{\"summary\":\"一句话说明计划\",\"actions\":[...]}。允许的 action.type 只有：create_task、create_video_task、create_note、move_node、move_nodes、update_task、set_node_scale。禁止删除节点、禁止直接运行生成。最多 20 个动作。坐标使用画布世界坐标。修改已有节点时必须使用上下文里的真实 id。create_task 字段可含 mode、prompt、model、size、n、quality、format、x、y；create_video_task 字段可含 prompt、model、size、n、quality、x、y；create_note 字段可含 text、x、y、fontSize、color、width、height；move_node 字段为 id、x、y；move_nodes 字段为 items:[{id,x,y}]；update_task 字段为 id、prompt、model、size、n、quality、format、mode；set_node_scale 字段为 id、scale。"
+        "本轮必须只返回 JSON，不要使用 Markdown。JSON 格式：{\"summary\":\"一句话说明计划\",\"actions\":[...]}。允许的 action.type 只有：create_task、create_video_task、create_note、move_node、move_nodes、organize_nodes、organize_groups、update_task、update_note、update_notes、set_node_scale。禁止删除节点、禁止直接运行生成。最多 20 个动作。坐标使用画布世界坐标，必须根据节点 width/height 留出 48px 以上间距，避免重叠。修改已有节点时必须使用上下文里的真实 id。整理、排版、对齐但不需要分类时使用 organize_nodes，不要手写大量 move_node。用户要求分类、归类、分组、按人物/道具/场景/风格/用途整理，或要求标注/标题时，优先使用 organize_groups，让你根据节点的 prompt、filename、model、sourceTaskId 和上下文判断分组；如果不确定，放入“未分类”。用户要求修改文字标注的颜色、字号、内容时使用 update_note 或 update_notes；如果目标是“选中的文字标注”，update_notes 使用 scope:\"selected\"；如果目标是“全部文字标注”，使用 scope:\"all\"；如果目标是“人物名字/标题/分组名/某类标注”等模糊对象，必须根据 note.text、上下文和选中状态自行判断并返回具体 ids，不要让前端猜。颜色优先返回 #RRGGBB，也可返回中文颜色名。create_task 字段可含 mode、prompt、model、size、n、quality、format、x、y；create_video_task 字段可含 prompt、model、size、n、quality、x、y；create_note 字段可含 text、x、y、fontSize、color、width、height；move_node 字段为 id、x、y；move_nodes 字段为 items:[{id,x,y}]；organize_nodes 字段为 ids:[id]、columns、gap、normalizeMedia、maxMediaLongSide；organize_groups 字段为 groups:[{title,ids,columns}]、originX、originY、gap、groupGap、orientation、normalizeMedia、maxMediaLongSide、labelFontSize、labelColor，其中 orientation 可为 horizontal 或 vertical，labelFontSize 建议 40-64；update_task 字段为 id、prompt、model、size、n、quality、format、mode；update_note 字段为 id、text、color、fontSize、width、height；update_notes 字段为 ids、scope、color、fontSize、width、height；set_node_scale 字段为 id、scale。"
     });
   }
 

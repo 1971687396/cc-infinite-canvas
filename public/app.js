@@ -453,6 +453,18 @@ function toggleTheme() {
   applyTheme(next);
 }
 
+function currentCanvasTheme() {
+  return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+}
+
+function defaultNoteColorForTheme(theme = currentCanvasTheme()) {
+  return theme === "dark" ? "#f8fafc" : "#202124";
+}
+
+function noteDisplayColor(node) {
+  return normalizeAssistantColor(node?.color, defaultNoteColorForTheme());
+}
+
 settingsForm.addEventListener("submit", saveSettings);
 applySelectionScaleButton.addEventListener("click", applySelectionScale);
 reusePromptButton.addEventListener("click", reusePromptFromSelection);
@@ -711,7 +723,7 @@ function addNoteNode(point = null) {
     type: "note",
     text: "",
     fontSize: 22,
-    color: "#202124",
+    color: defaultNoteColorForTheme(),
     width: defaultNoteWidth,
     height: defaultNoteHeight,
     x: Math.round(center.x - defaultNoteWidth / 2 + offset * 22),
@@ -2326,7 +2338,7 @@ async function sendAssistantPrompt(content, options = {}) {
   const attachments = Array.isArray(options.attachments)
     ? cloneAssistantAttachments(options.attachments)
     : consumeAssistantPendingImages();
-  const mode = options.mode || "chat";
+  const mode = options.mode || inferAssistantMessageMode(content);
   assistantMessages.push({
     id: createId(),
     role: "user",
@@ -2337,8 +2349,24 @@ async function sendAssistantPrompt(content, options = {}) {
     createdAt: new Date().toISOString()
   });
   saveAssistantChat();
-  setAssistantBusy(true);
   renderAssistantPendingAttachments();
+
+  const localPlan = options.localPlan === true ? createLocalAssistantPlan(content, mode) : null;
+  if (localPlan) {
+    assistantMessages.push({
+      id: createId(),
+      role: "assistant",
+      content: localPlan.summary,
+      plan: localPlan,
+      retryOf: options.retryOf || "",
+      createdAt: new Date().toISOString()
+    });
+    saveAssistantChat();
+    renderAssistantMessages();
+    return;
+  }
+
+  setAssistantBusy(true);
   renderAssistantMessages();
   assistantAbortController = new AbortController();
 
@@ -2350,7 +2378,7 @@ async function sendAssistantPrompt(content, options = {}) {
         model: config.assistantModel || assistantDefaultModel,
         mode,
         messages: buildAssistantRequestMessages(options.requestMessages || assistantMessages),
-        context: buildAssistantContext()
+        context: buildAssistantContext({ compact: mode === "action_plan" })
       }),
       signal: assistantAbortController.signal
     });
@@ -2535,6 +2563,74 @@ function canRetryAssistantMessage(message) {
   return message.role === "assistant" && Boolean(findAssistantRetrySource(message.id));
 }
 
+function inferAssistantMessageMode(content) {
+  return isAssistantActionInstruction(content) ? "action_plan" : "chat";
+}
+
+function isAssistantActionInstruction(content) {
+  const text = String(content || "").trim();
+  if (!text) return false;
+  const hasActionWord = /(整理|排版|布局|排列|对齐|分组|归类|分类|标注|文字|颜色|改色|改为|修改|变成|移动|挪动|摆放|创建|新建|添加|生成.*节点|补充.*节点|缩放|放大|缩小|执行|应用)/u.test(text);
+  if (!hasActionWord) return false;
+  const asksForAdvice = /(怎么|如何|怎样|建议|分析|评价|是否|能不能|可不可以|思路|方案|为什么)/u.test(text);
+  const explicitExecution = /(生成计划|应用|执行|直接|自动|立即|现在|把|将|整理一下|排版一下|分类|归类|分组|标注|改为|修改|变成|改色|创建|新建|添加|移动|挪动|缩放|放大|缩小)/u.test(text);
+  const hasCommandTone = /(帮我|请|把|将|给我|直接|自动|现在|立即|需要|想要|生成计划|应用|执行)/u.test(text);
+  if (asksForAdvice && !explicitExecution) return false;
+  return hasCommandTone || !asksForAdvice;
+}
+
+function createLocalAssistantPlan(content, mode) {
+  if (mode !== "action_plan" || !isAssistantLayoutInstruction(content)) return null;
+  const targets = assistantLayoutTargetNodes();
+  if (targets.length < 2) return null;
+  const bounds = computeNodesBounds(targets) || { x: getViewportCenterWorld().x, y: getViewportCenterWorld().y, width: 0, height: 0 };
+  const columns = inferAssistantLayoutColumns(content, targets.length);
+  const normalizeMedia = !/(不缩放|不要缩放|保持大小|保持原大小|只移动)/u.test(String(content || ""));
+  return {
+    summary: selectedNodeIds.size
+      ? `已为选中的 ${targets.length} 个节点生成整理计划，应用后会按整齐间距重新排版。`
+      : `已为画布中的 ${targets.length} 个节点生成整理计划，应用后会按整齐间距重新排版。`,
+    actions: [
+      {
+        type: "organize_nodes",
+        ids: targets.map((node) => node.id),
+        columns,
+        gap: 56,
+        originX: Math.round(bounds.x),
+        originY: Math.round(bounds.y),
+        normalizeMedia,
+        maxMediaLongSide: 280
+      }
+    ]
+  };
+}
+
+function isAssistantLayoutInstruction(content) {
+  const text = String(content || "");
+  return /(整理|排版|布局|排列|对齐|分组|归类|摆放|规整|整齐|收纳)/u.test(text);
+}
+
+function assistantLayoutTargetNodes() {
+  const allowedTypes = new Set(["image", "video", "note", "task", "video-task"]);
+  const selected = canvasState.nodes.filter((node) => selectedNodeIds.has(node.id) && allowedTypes.has(node.type || "task"));
+  const source = selected.length ? selected : canvasState.nodes.filter((node) => allowedTypes.has(node.type || "task"));
+  return source
+    .slice()
+    .sort((a, b) => (Number(a.x) || 0) - (Number(b.x) || 0) || (Number(a.y) || 0) - (Number(b.y) || 0))
+    .slice(0, 80);
+}
+
+function inferAssistantLayoutColumns(content, count) {
+  const text = String(content || "");
+  if (/(一列|纵向|竖排|竖着|从上到下)/u.test(text)) return 1;
+  if (/(一排|横向|横排|横着|从左到右)/u.test(text)) return Math.min(count, 8);
+  if (/(两列|2列|二列)/u.test(text)) return 2;
+  if (/(三列|3列)/u.test(text)) return 3;
+  if (/(四列|4列)/u.test(text)) return 4;
+  if (/(五列|5列)/u.test(text)) return 5;
+  return clamp(Math.ceil(Math.sqrt(count * 1.2)), 2, 6);
+}
+
 function renderAssistantMessages() {
   if (!assistantMessagesEl) return;
   assistantMessagesEl.replaceChildren();
@@ -2664,7 +2760,27 @@ function formatAssistantPlanAction(action = {}) {
   if (type === "move_node") return `移动节点：${action.id || "-"}`;
   if (type === "move_nodes") return `移动多个节点：${Array.isArray(action.items) ? action.items.length : 0} 个`;
   if (type === "update_task") return `修改任务节点：${action.id || "-"}`;
+  if (type === "update_note") return `修改文字标注：${action.id || "-"}`;
+  if (type === "update_notes") {
+    const scope = String(action.scope || "").toLowerCase();
+    if (scope === "all") return "批量修改文字标注：全部文字标注";
+    if (scope === "selected" || scope === "selection") return "批量修改文字标注：选中文字标注";
+    const count = Array.isArray(action.ids) ? action.ids.length : Array.isArray(action.items) ? action.items.length : 0;
+    return `批量修改文字标注：${count} 个文字标注`;
+  }
   if (type === "set_node_scale") return `调整图片/视频缩放：${action.id || "-"}`;
+  if (type === "organize_nodes") {
+    const count = Array.isArray(action.ids) ? action.ids.length : Array.isArray(action.items) ? action.items.length : 0;
+    return `整理节点：${count} 个，${action.columns || "自动"} 列规整排版`;
+  }
+  if (type === "organize_groups") {
+    const groups = Array.isArray(action.groups) ? action.groups : Array.isArray(action.items) ? action.items : [];
+    const count = groups.reduce((sum, group) => {
+      const ids = Array.isArray(group?.ids) ? group.ids : Array.isArray(group?.items) ? group.items : [];
+      return sum + ids.length;
+    }, 0);
+    return `分组整理：${groups.length} 组，${count} 个节点`;
+  }
   return `未知动作：${type || "-"}`;
 }
 
@@ -2705,7 +2821,11 @@ function applyAssistantAction(action, touchedIds) {
   if (type === "move_node") return applyAssistantMoveNode(action, touchedIds);
   if (type === "move_nodes") return applyAssistantMoveNodes(action, touchedIds);
   if (type === "update_task") return applyAssistantUpdateTask(action, touchedIds);
+  if (type === "update_note") return applyAssistantUpdateNote(action, touchedIds);
+  if (type === "update_notes") return applyAssistantUpdateNotes(action, touchedIds);
   if (type === "set_node_scale") return applyAssistantSetNodeScale(action, touchedIds);
+  if (type === "organize_nodes") return applyAssistantOrganizeNodes(action, touchedIds);
+  if (type === "organize_groups") return applyAssistantOrganizeGroups(action, touchedIds);
   return false;
 }
 
@@ -2750,7 +2870,7 @@ function applyAssistantCreateNote(action, touchedIds) {
     type: "note",
     text: String(action.text || "").trim(),
     fontSize: clamp(Math.round(planNumber(action.fontSize, 22)), minNoteFontSize, maxNoteFontSize),
-    color: normalizeAssistantColor(action.color),
+    color: normalizeAssistantColor(action.color, defaultNoteColorForTheme()),
     width,
     height,
     x: Math.round(planNumber(action.x, center.x)),
@@ -2810,6 +2930,73 @@ function applyAssistantUpdateTask(action, touchedIds) {
   return true;
 }
 
+function applyAssistantUpdateNote(action, touchedIds) {
+  const node = canvasState.nodes.find((item) => item.id === action.id && item.type === "note");
+  if (!node) return false;
+  return applyAssistantNotePatch(node, action, touchedIds);
+}
+
+function applyAssistantUpdateNotes(action, touchedIds) {
+  const nodes = assistantNoteTargetsFromAction(action);
+  if (!nodes.length) return false;
+
+  let changed = 0;
+  for (const node of nodes) {
+    if (applyAssistantNotePatch(node, action, touchedIds)) changed += 1;
+  }
+  return changed > 0;
+}
+
+function assistantNoteTargetsFromAction(action) {
+  const ids = new Set(
+    Array.isArray(action.ids)
+      ? action.ids.map(String)
+      : Array.isArray(action.items)
+        ? action.items.map((item) => String(typeof item === "string" ? item : item?.id || "")).filter(Boolean)
+        : []
+  );
+  if (ids.size) return canvasState.nodes.filter((node) => node.type === "note" && ids.has(node.id));
+
+  const scope = String(action.scope || "").trim().toLowerCase();
+  if (scope === "selected" || scope === "selection") {
+    return canvasState.nodes.filter((node) => node.type === "note" && selectedNodeIds.has(node.id));
+  }
+  if (scope === "all" || action.all === true) {
+    return canvasState.nodes.filter((node) => node.type === "note");
+  }
+  return [];
+}
+
+function applyAssistantNotePatch(node, action, touchedIds) {
+  let changed = false;
+
+  if (typeof action.text === "string") {
+    node.text = action.text;
+    changed = true;
+  }
+  if (action.color !== undefined) {
+    node.color = normalizeAssistantColor(action.color, noteDisplayColor(node));
+    changed = true;
+  }
+  if (action.fontSize !== undefined) {
+    node.fontSize = clamp(Math.round(planNumber(action.fontSize, node.fontSize || 22)), minNoteFontSize, maxNoteFontSize);
+    changed = true;
+  }
+  if (action.width !== undefined) {
+    node.width = clamp(Math.round(planNumber(action.width, node.width || defaultNoteWidth)), minNoteWidth, maxNoteWidth);
+    changed = true;
+  }
+  if (action.height !== undefined) {
+    node.height = clamp(Math.round(planNumber(action.height, node.height || defaultNoteHeight)), minNoteHeight, maxNoteHeight);
+    changed = true;
+  }
+
+  if (!changed) return false;
+  node.z = ++canvasState.nextZ;
+  touchedIds.add(node.id);
+  return true;
+}
+
 function applyAssistantTaskFields(node, action) {
   if (action.n) node.n = String(action.n);
   if (action.size && isSizeAllowedForModel(action.size, node.model, node.mode)) node.size = action.size;
@@ -2828,14 +3015,272 @@ function applyAssistantSetNodeScale(action, touchedIds) {
   return true;
 }
 
+function applyAssistantOrganizeNodes(action, touchedIds) {
+  const ids = new Set(
+    Array.isArray(action.ids)
+      ? action.ids.map(String)
+      : Array.isArray(action.items)
+        ? action.items.map((item) => String(item?.id || "")).filter(Boolean)
+        : []
+  );
+  const nodes = canvasState.nodes
+    .filter((node) => ids.has(node.id))
+    .sort((a, b) => (Number(a.x) || 0) - (Number(b.x) || 0) || (Number(a.y) || 0) - (Number(b.y) || 0));
+  if (!nodes.length) return false;
+
+  const bounds = computeNodesBounds(nodes) || { x: getViewportCenterWorld().x, y: getViewportCenterWorld().y };
+  const gap = clamp(Math.round(planNumber(action.gap, 56)), 24, 180);
+  const columns = clamp(Math.round(planNumber(action.columns, Math.ceil(Math.sqrt(nodes.length * 1.2)))), 1, Math.min(8, nodes.length));
+  const originX = Math.round(planNumber(action.originX, bounds.x));
+  const originY = Math.round(planNumber(action.originY, bounds.y));
+  const normalizeMedia = action.normalizeMedia !== false;
+
+  if (normalizeMedia) {
+    for (const node of nodes) normalizeAssistantLayoutMediaScale(node, action);
+  }
+
+  layoutAssistantNodeMasonry(nodes, {
+    x: originX,
+    y: originY,
+    columns,
+    gap,
+    touchedIds
+  });
+
+  return true;
+}
+
+function applyAssistantOrganizeGroups(action, touchedIds) {
+  const groups = normalizeAssistantPlanGroups(action);
+  if (!groups.length) return false;
+
+  const uniqueIds = new Set(groups.flatMap((group) => group.ids));
+  const allNodes = canvasState.nodes.filter((node) => uniqueIds.has(node.id));
+  if (!allNodes.length) return false;
+
+  const bounds = computeNodesBounds(allNodes) || { x: getViewportCenterWorld().x, y: getViewportCenterWorld().y };
+  const gap = clamp(Math.round(planNumber(action.gap, 52)), 24, 180);
+  const groupGap = clamp(Math.round(planNumber(action.groupGap, 180)), 80, 520);
+  const originX = Math.round(planNumber(action.originX, bounds.x));
+  const originY = Math.round(planNumber(action.originY, bounds.y));
+  const maxMediaLongSide = clamp(Math.round(planNumber(action.maxMediaLongSide, 240)), 120, 720);
+  const labelFontSize = clamp(Math.round(planNumber(action.labelFontSize, 46)), 20, maxNoteFontSize);
+  const labelColor = normalizeAssistantColor(action.labelColor, defaultNoteColorForTheme());
+  const labelHeight = Math.max(72, Math.round(labelFontSize * 1.8));
+  const orientation = String(action.orientation || "horizontal") === "vertical" ? "vertical" : "horizontal";
+
+  if (action.normalizeMedia !== false) {
+    for (const node of allNodes) normalizeAssistantLayoutMediaScale(node, { ...action, maxMediaLongSide });
+  }
+
+  let cursorX = originX;
+  let cursorY = originY;
+  let appliedGroups = 0;
+
+  for (const group of groups) {
+    const nodes = group.ids
+      .map((id) => canvasState.nodes.find((node) => node.id === id))
+      .filter(Boolean);
+    if (!nodes.length) continue;
+
+    const columns = clamp(
+      Math.round(planNumber(group.columns, Math.ceil(Math.sqrt(nodes.length * 1.15)))),
+      1,
+      Math.min(6, nodes.length)
+    );
+    const layout = measureAssistantMasonry(nodes, columns, gap);
+    const labelWidth = clamp(Math.max(layout.width, 220), minNoteWidth, maxNoteWidth);
+    const label = createAssistantGroupLabel(group.title || `分组 ${appliedGroups + 1}`, {
+      x: cursorX,
+      y: cursorY,
+      width: labelWidth,
+      height: labelHeight,
+      fontSize: labelFontSize,
+      color: labelColor
+    });
+    canvasState.nodes.push(label);
+    touchedIds.add(label.id);
+
+    const result = layoutAssistantNodeMasonry(nodes, {
+      x: cursorX,
+      y: cursorY + labelHeight + 28,
+      columns,
+      gap,
+      touchedIds
+    });
+    const groupWidth = Math.max(labelWidth, result.width);
+    const groupHeight = labelHeight + 28 + result.height;
+    if (orientation === "vertical") {
+      cursorY += groupHeight + groupGap;
+    } else {
+      cursorX += groupWidth + groupGap;
+    }
+    appliedGroups += 1;
+  }
+
+  return appliedGroups > 0;
+}
+
+function normalizeAssistantPlanGroups(action) {
+  const groups = Array.isArray(action.groups) ? action.groups : Array.isArray(action.items) ? action.items : [];
+  const seen = new Set();
+  return groups
+    .map((group, index) => {
+      const ids = [];
+      const rawIds = Array.isArray(group?.ids) ? group.ids : Array.isArray(group?.items) ? group.items : [];
+      for (const item of rawIds) {
+        const id = String(typeof item === "string" ? item : item?.id || "");
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        ids.push(id);
+      }
+      return {
+        title: String(group?.title || group?.name || `分组 ${index + 1}`).trim(),
+        ids,
+        columns: group?.columns
+      };
+    })
+    .filter((group) => group.ids.length);
+}
+
+function createAssistantGroupLabel(text, options) {
+  return {
+    id: createId(),
+    type: "note",
+    text: String(text || "分组").trim(),
+    fontSize: options.fontSize,
+    color: options.color,
+    width: options.width,
+    height: options.height,
+    x: Math.round(options.x),
+    y: Math.round(options.y),
+    z: ++canvasState.nextZ,
+    createdAt: new Date().toISOString()
+  };
+}
+
+function measureAssistantMasonry(nodes, columns, gap) {
+  const entries = nodes.map((node) => ({ node, bounds: getAssistantLayoutBounds(node) }));
+  const columnWidth = Math.max(...entries.map((entry) => entry.bounds.width), 150);
+  const columnHeights = Array.from({ length: columns }, () => 0);
+  for (const entry of entries) {
+    const column = columnHeights.indexOf(Math.min(...columnHeights));
+    columnHeights[column] += Math.ceil(entry.bounds.height) + gap;
+  }
+  const height = Math.max(...columnHeights.map((value) => Math.max(0, value - gap)), 0);
+  return {
+    width: columns * columnWidth + (columns - 1) * gap,
+    height,
+    columnWidth,
+    entries
+  };
+}
+
+function layoutAssistantNodeMasonry(nodes, options) {
+  const columns = clamp(Math.round(options.columns || 1), 1, Math.max(1, nodes.length));
+  const gap = clamp(Math.round(options.gap || 52), 24, 180);
+  const measured = measureAssistantMasonry(nodes, columns, gap);
+  const columnHeights = Array.from({ length: columns }, () => 0);
+
+  for (const entry of measured.entries) {
+    const column = columnHeights.indexOf(Math.min(...columnHeights));
+    entry.node.x = Math.round(options.x + column * (measured.columnWidth + gap));
+    entry.node.y = Math.round(options.y + columnHeights[column]);
+    entry.node.z = ++canvasState.nextZ;
+    columnHeights[column] += Math.ceil(entry.bounds.height) + gap;
+    options.touchedIds?.add(entry.node.id);
+  }
+
+  return {
+    width: measured.width,
+    height: Math.max(...columnHeights.map((value) => Math.max(0, value - gap)), 0)
+  };
+}
+
+function normalizeAssistantLayoutMediaScale(node, action = {}) {
+  if (!["image", "video"].includes(node.type)) return;
+  const defaultScale = node.type === "video" ? defaultVideoScale : defaultImageScale;
+  const minScale = node.type === "video" ? 0.1 : 0.05;
+  const width = Math.max(1, Number(node.originalWidth) || (node.type === "video" ? defaultVideoWidth : 512));
+  const height = Math.max(1, Number(node.originalHeight) || (node.type === "video" ? defaultVideoHeight : 512));
+  const currentScale = clamp(Number(node.scale) || defaultScale, minScale, 4);
+  const maxLongSide = clamp(Math.round(planNumber(action.maxMediaLongSide, node.type === "video" ? 320 : 280)), 120, 720);
+  const targetScale = Math.min(currentScale, maxLongSide / Math.max(width, height));
+  node.scale = clamp(targetScale, minScale, 4);
+}
+
+function getAssistantLayoutBounds(node) {
+  if (node.type === "image") {
+    const scale = Number(node.scale) || defaultImageScale;
+    return {
+      x: node.x,
+      y: node.y,
+      width: Math.max(1, Number(node.originalWidth) || 512) * scale,
+      height: Math.max(1, Number(node.originalHeight) || 512) * scale
+    };
+  }
+  if (node.type === "video") {
+    const scale = Number(node.scale) || defaultVideoScale;
+    return {
+      x: node.x,
+      y: node.y,
+      width: Math.max(1, Number(node.originalWidth) || defaultVideoWidth) * scale,
+      height: Math.max(1, Number(node.originalHeight) || defaultVideoHeight) * scale
+    };
+  }
+  return getNodeBounds(node);
+}
+
 function planNumber(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
 }
 
-function normalizeAssistantColor(value) {
+function normalizeAssistantColor(value, fallback = defaultNoteColorForTheme()) {
   const text = String(value || "").trim();
-  return /^#[0-9a-f]{6}$/iu.test(text) ? text : "#202124";
+  if (/^#[0-9a-f]{6}$/iu.test(text)) return text.toLowerCase();
+  if (/^#[0-9a-f]{3}$/iu.test(text)) {
+    return `#${text.slice(1).split("").map((char) => `${char}${char}`).join("")}`.toLowerCase();
+  }
+
+  const normalized = text.toLowerCase();
+  const namedColors = {
+    白: "#ffffff",
+    白色: "#ffffff",
+    white: "#ffffff",
+    黑: "#000000",
+    黑色: "#000000",
+    black: "#000000",
+    红: "#ef4444",
+    红色: "#ef4444",
+    red: "#ef4444",
+    蓝: "#3b82f6",
+    蓝色: "#3b82f6",
+    blue: "#3b82f6",
+    绿: "#22c55e",
+    绿色: "#22c55e",
+    green: "#22c55e",
+    黄: "#facc15",
+    黄色: "#facc15",
+    yellow: "#facc15",
+    紫: "#a855f7",
+    紫色: "#a855f7",
+    purple: "#a855f7",
+    粉: "#ec4899",
+    粉色: "#ec4899",
+    pink: "#ec4899",
+    橙: "#f97316",
+    橙色: "#f97316",
+    orange: "#f97316",
+    灰: "#94a3b8",
+    灰色: "#94a3b8",
+    gray: "#94a3b8",
+    grey: "#94a3b8",
+    青: "#14b8a6",
+    青色: "#14b8a6",
+    teal: "#14b8a6"
+  };
+  return namedColors[normalized] || fallback;
 }
 
 function assistantStorageKey(projectId = currentProjectId) {
@@ -2924,12 +3369,15 @@ function migrateAssistantSkillAttachmentsFromChat() {
   if (changed) saveAssistantChat();
 }
 
-function buildAssistantContext() {
+function buildAssistantContext(options = {}) {
+  const compact = Boolean(options.compact);
+  const nodeLimit = compact ? 80 : 24;
+  const promptLimit = compact ? 520 : 1200;
   const selected = canvasState.nodes.filter((node) => selectedNodeIds.has(node.id));
   const counts = countCanvasNodeTypes();
   const recentNodes = [...canvasState.nodes]
     .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")) || (Number(b.z) || 0) - (Number(a.z) || 0))
-    .slice(0, 24);
+    .slice(0, nodeLimit);
 
   return {
     project: {
@@ -2939,6 +3387,7 @@ function buildAssistantContext() {
     canvas: {
       nodeCount: canvasState.nodes.length,
       counts,
+      theme: currentCanvasTheme(),
       selectedCount: selected.length,
       viewport: {
         zoom: Number(canvasState.viewport.zoom) || 1,
@@ -2946,8 +3395,8 @@ function buildAssistantContext() {
         y: Math.round(Number(canvasState.viewport.y) || 0)
       }
     },
-    selection: selected.map(summarizeNodeForAssistant),
-    recentNodes: recentNodes.map(summarizeNodeForAssistant)
+    selection: selected.slice(0, nodeLimit).map((node) => summarizeNodeForAssistant(node, promptLimit)),
+    recentNodes: recentNodes.map((node) => summarizeNodeForAssistant(node, promptLimit))
   };
 }
 
@@ -2958,12 +3407,15 @@ function countCanvasNodeTypes() {
   }, {});
 }
 
-function summarizeNodeForAssistant(node) {
+function summarizeNodeForAssistant(node, textLimit = 1200) {
+  const bounds = getNodeBounds(node);
   const common = {
     id: node.id,
     type: node.type || "task",
     x: Math.round(Number(node.x) || 0),
     y: Math.round(Number(node.y) || 0),
+    width: Math.round(bounds.width),
+    height: Math.round(bounds.height),
     createdAt: node.createdAt || ""
   };
 
@@ -2971,7 +3423,7 @@ function summarizeNodeForAssistant(node) {
     return {
       ...common,
       mode: node.mode,
-      prompt: trimAssistantText(node.prompt, 1200),
+      prompt: trimAssistantText(node.prompt, textLimit),
       model: node.model,
       size: node.size,
       count: node.n,
@@ -2985,7 +3437,7 @@ function summarizeNodeForAssistant(node) {
   if (node.type === "video-task") {
     return {
       ...common,
-      prompt: trimAssistantText(node.prompt, 1200),
+      prompt: trimAssistantText(node.prompt, textLimit),
       model: node.model,
       ratio: node.size,
       duration: node.n,
@@ -3004,7 +3456,7 @@ function summarizeNodeForAssistant(node) {
       filename: node.image?.filename || "",
       dimensions: `${node.originalWidth || "?"}x${node.originalHeight || "?"}`,
       displayScale: Number(node.scale) || defaultImageScale,
-      prompt: trimAssistantText(generation?.prompt || getImagePrompt(node), 1200),
+      prompt: trimAssistantText(generation?.prompt || getImagePrompt(node), textLimit),
       model: generation?.model || node.image?.model || "",
       size: generation?.size || node.image?.size || "",
       sourceTaskId: node.sourceTaskId || ""
@@ -3017,7 +3469,7 @@ function summarizeNodeForAssistant(node) {
       filename: node.video?.filename || "",
       dimensions: `${node.originalWidth || "?"}x${node.originalHeight || "?"}`,
       displayScale: Number(node.scale) || defaultVideoScale,
-      prompt: trimAssistantText(node.video?.prompt || node.video?.generation?.prompt || "", 1200),
+      prompt: trimAssistantText(node.video?.prompt || node.video?.generation?.prompt || "", textLimit),
       model: node.video?.model || node.video?.generation?.model || "",
       sourceTaskId: node.sourceTaskId || ""
     };
@@ -3026,7 +3478,7 @@ function summarizeNodeForAssistant(node) {
   if (node.type === "note") {
     return {
       ...common,
-      text: trimAssistantText(node.text, 1200),
+      text: trimAssistantText(node.text, textLimit),
       fontSize: node.fontSize,
       color: node.color,
       width: node.width,
@@ -5896,7 +6348,7 @@ function createLegacyNoteNode(node) {
   text.placeholder = "输入文字";
   text.spellcheck = false;
   text.style.fontSize = `${node.fontSize || 22}px`;
-  text.style.color = node.color || "#202124";
+  text.style.color = noteDisplayColor(node);
   text.addEventListener("pointerdown", (event) => {
     if (!selectedNodeIds.has(node.id)) {
       event.preventDefault();
@@ -5926,7 +6378,7 @@ function createNoteDisplay(node) {
   text.tabIndex = 0;
   text.title = "双击编辑文字";
   text.style.fontSize = `${node.fontSize || 22}px`;
-  text.style.color = node.color || "#202124";
+  text.style.color = noteDisplayColor(node);
   text.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 || !selectedNodeIds.has(node.id)) return;
     event.preventDefault();
@@ -5943,7 +6395,7 @@ function createNoteEditor(node) {
   text.placeholder = "输入文字";
   text.spellcheck = false;
   text.style.fontSize = `${node.fontSize || 22}px`;
-  text.style.color = node.color || "#202124";
+  text.style.color = noteDisplayColor(node);
   text.addEventListener("pointerdown", (event) => event.stopPropagation());
   text.addEventListener("keydown", (event) => {
     if (event.key === "Escape" || ((event.ctrlKey || event.metaKey) && event.key === "Enter")) {
@@ -6124,7 +6576,7 @@ function createNoteToolbar(node) {
 
   const colorInput = document.createElement("input");
   colorInput.type = "color";
-  colorInput.value = node.color || "#202124";
+  colorInput.value = noteDisplayColor(node);
   colorInput.title = "颜色";
   colorInput.addEventListener("pointerdown", (event) => event.stopPropagation());
   colorInput.addEventListener("input", () => {
@@ -6702,7 +7154,7 @@ function migrateNode(node) {
       type: "note",
       text: node.text || "",
       fontSize: Number(node.fontSize) || 22,
-      color: node.color || "#202124",
+      color: noteDisplayColor(node),
       width: clamp(Number(node.width) || defaultNoteWidth, minNoteWidth, maxNoteWidth),
       height: clamp(Number(node.height) || defaultNoteHeight, minNoteHeight, maxNoteHeight),
       x: node.x || 0,

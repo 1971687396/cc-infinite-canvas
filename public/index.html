@@ -4,6 +4,16 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>cc无限画布</title>
+    <script>
+      (() => {
+        try {
+          const theme = localStorage.getItem("cc-canvas-theme");
+          if (theme === "dark") document.documentElement.dataset.theme = "dark";
+        } catch {
+          // Theme persistence is optional.
+        }
+      })();
+    </script>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -29,6 +39,8 @@
             <button id="generateAllButton" type="button" class="secondary compact">生成全部</button>
             <button id="addNoteButton" type="button" class="secondary compact">添加标注</button>
             <button id="addChatGptButton" type="button" class="secondary compact">添加 ChatGPT</button>
+            <button id="assistantButton" type="button" class="secondary compact">画布助手</button>
+            <button id="themeToggleButton" type="button" class="secondary compact">深色</button>
             <button id="zoomOutButton" type="button" class="tool-button" title="缩小" aria-label="缩小">-</button>
             <span id="zoomLevel" class="zoom-level">100%</span>
             <button id="zoomInButton" type="button" class="tool-button" title="放大" aria-label="放大">+</button>
@@ -54,6 +66,52 @@
           <summary>原始响应</summary>
           <pre id="rawResponse">{}</pre>
         </details>
+
+        <aside id="assistantPanel" class="assistant-panel" hidden>
+          <div class="assistant-head">
+            <div>
+              <p class="eyebrow">Assistant</p>
+              <h2>画布助手</h2>
+            </div>
+            <button id="assistantCloseButton" type="button" class="secondary compact">关闭</button>
+          </div>
+          <div class="assistant-actions" aria-label="助手快捷操作">
+            <button id="assistantAnalyzeButton" type="button" class="secondary compact">分析选中</button>
+            <button id="assistantOrganizeButton" type="button" class="secondary compact">整理建议</button>
+            <button id="assistantPlanButton" type="button" class="secondary compact">生成计划</button>
+            <button id="assistantImportImagesButton" type="button" class="secondary compact">导入选中图片</button>
+            <button id="assistantSkillMenuButton" type="button" class="secondary compact">
+              Skills <span id="assistantSkillMenuCount" class="assistant-skill-menu-count">0/0</span>
+            </button>
+            <button id="assistantImportSkillButton" type="button" class="secondary compact">导入 Skill</button>
+            <button id="assistantClearButton" type="button" class="secondary compact">清空</button>
+            <section id="assistantSkillLibrary" class="assistant-skill-library" aria-label="Skill 库" hidden>
+              <div class="assistant-skill-library-head">
+                <div>
+                  <strong>Skill 库</strong>
+                  <span id="assistantSkillSummary">未导入</span>
+                </div>
+                <button id="assistantSkillCloseButton" type="button" class="secondary compact">关闭</button>
+              </div>
+              <label class="assistant-skill-search">
+                <span>搜索 Skill</span>
+                <input id="assistantSkillSearchInput" type="search" placeholder="输入名称或内容关键词" />
+              </label>
+              <div class="assistant-skill-library-subhead">
+                <span>选择本轮对话要调用的 Skill</span>
+              </div>
+              <div id="assistantSkillList" class="assistant-skill-list"></div>
+            </section>
+          </div>
+          <input id="assistantSkillInput" type="file" accept=".md,.txt,.json,.yaml,.yml,.skill" multiple hidden />
+          <div id="assistantMessages" class="assistant-messages" aria-live="polite"></div>
+          <form id="assistantForm" class="assistant-form">
+            <div id="assistantPendingAttachments" class="assistant-pending-attachments" hidden></div>
+            <textarea id="assistantInput" rows="3" placeholder="问问当前画布、选中节点或下一轮提示词"></textarea>
+            <button id="assistantSendButton" type="submit">发送</button>
+            <button id="assistantStopButton" type="button" class="secondary" hidden>停止</button>
+          </form>
+        </aside>
       </section>
     </main>
 
@@ -93,6 +151,11 @@
         </label>
 
         <label class="settings-field">
+          <span>gpt-5.5 助手专用 Key</span>
+          <input id="settingsAssistantKey" type="password" autocomplete="off" placeholder="留空则使用平台总 Key" />
+        </label>
+
+        <label class="settings-field">
           <span>Grsai API Key</span>
           <input id="settingsGrsaiApiKey" type="password" autocomplete="off" placeholder="留空则不修改" />
         </label>
@@ -112,9 +175,19 @@
           <input id="settingsEditEndpoint" type="text" autocomplete="off" />
         </label>
 
+        <label class="settings-field">
+          <span>对话接口</span>
+          <input id="settingsChatEndpoint" type="text" autocomplete="off" />
+        </label>
+
         <label class="settings-field settings-field-full">
           <span>默认模型</span>
           <input id="settingsDefaultModel" type="text" autocomplete="off" />
+        </label>
+
+        <label class="settings-field settings-field-full">
+          <span>助手模型</span>
+          <input id="settingsAssistantModel" type="text" autocomplete="off" />
         </label>
 
         <label class="settings-field settings-field-full">

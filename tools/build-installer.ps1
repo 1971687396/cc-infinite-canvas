@@ -438,6 +438,9 @@ foreach ($file in $files) {
 }
 
 Copy-Item -LiteralPath (Join-Path $root "public") -Destination (Join-Path $payloadRoot "public") -Recurse -Force
+if (Test-Path (Join-Path $root "skills")) {
+  Copy-Item -LiteralPath (Join-Path $root "skills") -Destination (Join-Path $payloadRoot "skills") -Recurse -Force
+}
 Copy-Item -LiteralPath (Join-Path $root "electron-main.cjs") -Destination (Join-Path $payloadRoot "electron-main.cjs") -Force
 Copy-Item -LiteralPath (Join-Path $root "electron-preload.cjs") -Destination (Join-Path $payloadRoot "electron-preload.cjs") -Force
 Copy-Item -LiteralPath (Join-Path $root "tools\start-yunwu-canvas.ps1") -Destination (Join-Path $payloadRoot "tools\start-yunwu-canvas.ps1") -Force

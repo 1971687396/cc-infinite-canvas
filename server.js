@@ -10,6 +10,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const packageInfo = JSON.parse(readFileSync(path.join(__dirname, "package.json"), "utf8"));
 const publicDir = path.join(__dirname, "public");
+const skillsDir = path.join(__dirname, "skills");
 const outputDir = path.join(__dirname, "outputs");
 const cacheDir = path.join(__dirname, "cache");
 const assetCacheDir = path.join(cacheDir, "assets");
@@ -31,7 +32,8 @@ const dreaminaVideoModelVersions = new Set(["seedance2.0", "seedance2.0fast", "s
 const dreaminaVideoRatios = new Set(["1:1", "3:4", "16:9", "4:3", "9:16", "21:9"]);
 const dreaminaVideoExtensions = new Set([".mp4", ".mov", ".webm", ".m4v"]);
 const maxMultipartBytes = 512 * 1024 * 1024;
-const modelKeyModels = ["gpt-image-2", "grok-image-image"];
+const assistantDefaultModel = "gpt-5.5";
+const modelKeyModels = ["gpt-image-2", "grok-image-image", assistantDefaultModel];
 const serverHost = "127.0.0.1";
 
 loadEnvFile(envFile);
@@ -45,7 +47,9 @@ const config = {
   baseUrl: process.env.YUNWU_BASE_URL || "https://yunwu.ai",
   imageEndpoint: process.env.YUNWU_IMAGE_ENDPOINT || "/v1/images/generations",
   editEndpoint: process.env.YUNWU_EDIT_ENDPOINT || "/v1/images/edits",
+  chatEndpoint: process.env.YUNWU_CHAT_ENDPOINT || "/v1/chat/completions",
   defaultModel: process.env.YUNWU_DEFAULT_MODEL || "gpt-image-2",
+  assistantModel: process.env.YUNWU_ASSISTANT_MODEL || assistantDefaultModel,
   modelApiKeys: loadModelApiKeys(),
   cacheDir: sanitizeCacheDir(process.env.CC_CANVAS_CACHE_DIR || process.env.YUNWU_CACHE_DIR || defaultCacheDir, defaultCacheDir)
 };
@@ -126,6 +130,14 @@ const server = http.createServer(async (req, res) => {
       return await handleGenerate(req, res);
     }
 
+    if (req.method === "POST" && url.pathname === "/api/assistant/chat") {
+      return await handleAssistantChat(req, res);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/assistant/skills") {
+      return await handleAssistantBuiltInSkills(res);
+    }
+
     if (req.method === "GET" && url.pathname.startsWith("/outputs/")) {
       return await serveFile(res, path.join(__dirname, decodeURIComponent(url.pathname)));
     }
@@ -178,7 +190,9 @@ function publicSettings() {
     baseUrl: config.baseUrl,
     imageEndpoint: config.imageEndpoint,
     editEndpoint: config.editEndpoint,
+    chatEndpoint: config.chatEndpoint,
     defaultModel: config.defaultModel,
+    assistantModel: config.assistantModel,
     modelKeys: publicModelKeyStatus(),
     cacheDir: config.cacheDir,
     version: config.version,
@@ -230,6 +244,7 @@ function apiKeyForModel(model) {
 function modelKeyBucket(model) {
   const normalizedModel = normalizeModelName(model || config.defaultModel);
   if (isGrokImageModel(normalizedModel)) return grokKeyModel;
+  if (normalizedModel === assistantDefaultModel || normalizedModel.startsWith(`${assistantDefaultModel}-`)) return assistantDefaultModel;
   return normalizedModel;
 }
 
@@ -535,7 +550,9 @@ async function handleSaveSettings(req, res) {
     baseUrl: sanitizeOptionalText(body.baseUrl) || config.baseUrl,
     imageEndpoint: sanitizeOptionalText(body.imageEndpoint) || config.imageEndpoint,
     editEndpoint: sanitizeOptionalText(body.editEndpoint) || config.editEndpoint,
+    chatEndpoint: sanitizeOptionalText(body.chatEndpoint) || config.chatEndpoint,
     defaultModel: sanitizeOptionalText(body.defaultModel) || config.defaultModel,
+    assistantModel: sanitizeOptionalText(body.assistantModel) || config.assistantModel,
     modelApiKeys: mergeModelApiKeys(body),
     cacheDir: sanitizeCacheDir(body.cacheDir, config.cacheDir)
   };
@@ -545,7 +562,9 @@ async function handleSaveSettings(req, res) {
   config.baseUrl = nextSettings.baseUrl;
   config.imageEndpoint = nextSettings.imageEndpoint;
   config.editEndpoint = nextSettings.editEndpoint;
+  config.chatEndpoint = nextSettings.chatEndpoint;
   config.defaultModel = nextSettings.defaultModel;
+  config.assistantModel = nextSettings.assistantModel;
   config.modelApiKeys = nextSettings.modelApiKeys;
   config.cacheDir = nextSettings.cacheDir;
 
@@ -665,9 +684,12 @@ async function writeSettingsEnv(settings) {
     ["YUNWU_BASE_URL", settings.baseUrl],
     ["YUNWU_IMAGE_ENDPOINT", settings.imageEndpoint],
     ["YUNWU_EDIT_ENDPOINT", settings.editEndpoint],
+    ["YUNWU_CHAT_ENDPOINT", settings.chatEndpoint],
     ["YUNWU_DEFAULT_MODEL", settings.defaultModel],
+    ["YUNWU_ASSISTANT_MODEL", settings.assistantModel],
     [modelKeyEnvName("gpt-image-2"), settings.modelApiKeys["gpt-image-2"] || ""],
     [modelKeyEnvName("grok-image-image"), settings.modelApiKeys["grok-image-image"] || ""],
+    [modelKeyEnvName(assistantDefaultModel), settings.modelApiKeys[assistantDefaultModel] || ""],
     ["CC_CANVAS_CACHE_DIR", settings.cacheDir]
   ]);
   const seen = new Set();
@@ -791,6 +813,334 @@ async function handleGenerate(req, res) {
   }
 
   return await handleCreate(res, body, prompt);
+}
+
+async function handleAssistantChat(req, res) {
+  const body = await readJsonBody(req, { maxBytes: 16 * 1024 * 1024 });
+  const model = sanitizeOptionalText(body.model) || config.assistantModel || assistantDefaultModel;
+  const messages = normalizeAssistantMessages(body.messages);
+  const mode = sanitizeOptionalText(body.mode) === "action_plan" ? "action_plan" : "chat";
+  if (!messages.length) {
+    return sendJson(res, 400, { error: "At least one assistant message is required." });
+  }
+
+  const apiKey = apiKeyForModel(model);
+  if (!apiKey) {
+    return sendJson(res, 500, { error: missingKeyMessage(model) });
+  }
+
+  const context = normalizeAssistantContext(body.context);
+  const payload = pruneEmpty({
+    model,
+    messages: buildAssistantMessages(messages, context, mode),
+    temperature: Number.isFinite(Number(body.temperature)) ? Number(body.temperature) : 0.7,
+    stream: false
+  });
+  const apiUrl = buildApiUrl(config.baseUrl, config.chatEndpoint);
+
+  let upstream;
+  const assistantAbortController = new AbortController();
+  const assistantTimeout = setTimeout(() => assistantAbortController.abort(new Error("Assistant request timed out")), 120000);
+  const abortAssistantOnClose = () => {
+    if (!res.writableEnded) assistantAbortController.abort(new Error("Client stopped assistant request"));
+  };
+  res.once("close", abortAssistantOnClose);
+  try {
+    upstream = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload),
+      signal: assistantAbortController.signal
+    });
+  } catch (error) {
+    clearTimeout(assistantTimeout);
+    res.off?.("close", abortAssistantOnClose);
+    if (assistantAbortController.signal.aborted && (res.writableEnded || res.destroyed)) return;
+    return sendJson(res, 502, {
+      error: `Assistant request failed: ${error.message || error}`,
+      request: { apiUrl, model }
+    });
+  }
+
+  let responseText;
+  try {
+    responseText = await upstream.text();
+  } catch (error) {
+    clearTimeout(assistantTimeout);
+    res.off?.("close", abortAssistantOnClose);
+    if (assistantAbortController.signal.aborted && (res.writableEnded || res.destroyed)) return;
+    return sendJson(res, 502, {
+      error: `Assistant response failed: ${error.message || error}`,
+      request: { apiUrl, model }
+    });
+  }
+  clearTimeout(assistantTimeout);
+  res.off?.("close", abortAssistantOnClose);
+  const upstreamData = tryParseJson(responseText);
+  if (!upstream.ok) {
+    return sendJson(res, upstream.status, {
+      error: readUpstreamError(upstreamData, responseText),
+      status: upstream.status,
+      upstream: upstreamData
+    });
+  }
+
+  const content = extractAssistantText(upstreamData);
+  if (!content) {
+    return sendJson(res, 502, {
+      error: "Assistant response did not include text content.",
+      upstream: upstreamData
+    });
+  }
+
+  const plan = mode === "action_plan" ? parseAssistantPlan(content) : null;
+  sendJson(res, 200, {
+    message: { role: "assistant", content: plan?.summary || content },
+    plan,
+    model,
+    usage: upstreamData.usage || null
+  });
+}
+
+async function handleAssistantBuiltInSkills(res) {
+  const skills = await listBuiltInAssistantSkills();
+  sendJson(res, 200, { skills });
+}
+
+async function listBuiltInAssistantSkills() {
+  let entries;
+  try {
+    entries = await readdir(skillsDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const skills = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const skillRoot = path.join(skillsDir, entry.name);
+    const skillFile = await findAssistantSkillFile(skillRoot);
+    if (!skillFile) continue;
+
+    try {
+      const fileStat = await stat(skillFile);
+      if (!fileStat.isFile() || fileStat.size > 300 * 1024) continue;
+      const text = (await readFile(skillFile, "utf8")).trim().slice(0, 120000);
+      if (!text) continue;
+      skills.push({
+        id: `builtin-${normalizeSkillId(entry.name)}`,
+        name: assistantSkillTitle(text, skillFile),
+        filename: path.basename(skillFile),
+        size: Buffer.byteLength(text, "utf8"),
+        updatedAt: fileStat.mtime.toISOString(),
+        text
+      });
+    } catch {
+      // Ignore malformed or unreadable bundled skills.
+    }
+  }
+
+  return skills.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+}
+
+async function findAssistantSkillFile(skillRoot) {
+  let entries;
+  try {
+    entries = await readdir(skillRoot, { withFileTypes: true });
+  } catch {
+    return "";
+  }
+
+  const files = entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
+  const assistantFile = files.find((name) => /_助手导入版\.md$/u.test(name));
+  if (assistantFile) return path.join(skillRoot, assistantFile);
+  if (files.includes("SKILL.md")) return path.join(skillRoot, "SKILL.md");
+  return "";
+}
+
+function assistantSkillTitle(text, filePath) {
+  const heading = text.match(/^#\s+(.+)$/mu)?.[1];
+  const fallback = path.basename(filePath, path.extname(filePath)).replace(/_助手导入版$/u, "");
+  return sanitizeOptionalText(heading || fallback).slice(0, 160) || "内置 Skill";
+}
+
+function normalizeSkillId(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 80) || "skill";
+}
+
+function normalizeAssistantMessages(messages) {
+  const source = Array.isArray(messages) ? messages : [];
+  return source
+    .map(normalizeAssistantMessage)
+    .filter((message) => {
+      if (typeof message.content === "string") return message.content.trim();
+      return Array.isArray(message.content) && message.content.length;
+    })
+    .slice(-18);
+}
+
+function normalizeAssistantMessage(message) {
+  const role = ["assistant", "system", "user"].includes(message?.role) ? message.role : "user";
+  const textParts = [String(message?.content || "").trim().slice(0, 16000)];
+  const imageParts = [];
+
+  for (const attachment of normalizeAssistantAttachments(message?.attachments)) {
+    if (attachment.type === "skill") {
+      textParts.push(`本地 Skill：${attachment.name}\n${attachment.text}`);
+    } else if (attachment.type === "image" && role === "user") {
+      imageParts.push({
+        type: "image_url",
+        image_url: { url: attachment.dataUrl }
+      });
+      const meta = [
+        attachment.name ? `文件：${attachment.name}` : "",
+        attachment.nodeId ? `节点：${attachment.nodeId}` : "",
+        attachment.model ? `模型：${attachment.model}` : "",
+        attachment.prompt ? `来源提示词：${attachment.prompt}` : ""
+      ].filter(Boolean);
+      if (meta.length) textParts.push(`画布图片参考：${meta.join("；")}`);
+    }
+  }
+
+  const text = textParts.filter(Boolean).join("\n\n").trim();
+  if (!imageParts.length) return { role, content: text };
+  return {
+    role,
+    content: [{ type: "text", text }, ...imageParts]
+  };
+}
+
+function normalizeAssistantAttachments(attachments) {
+  if (!Array.isArray(attachments)) return [];
+  const normalized = [];
+  for (const attachment of attachments.slice(0, 8)) {
+    if (!isPlainObject(attachment)) continue;
+    if (attachment.type === "image" && typeof attachment.dataUrl === "string" && attachment.dataUrl.startsWith("data:image/")) {
+      normalized.push({
+        type: "image",
+        name: sanitizeOptionalText(attachment.name).slice(0, 120),
+        nodeId: sanitizeOptionalText(attachment.nodeId).slice(0, 120),
+        model: sanitizeOptionalText(attachment.model).slice(0, 120),
+        prompt: sanitizeOptionalText(attachment.prompt).slice(0, 1200),
+        dataUrl: attachment.dataUrl
+      });
+      continue;
+    }
+
+    if (attachment.type === "skill") {
+      const text = String(attachment.text || "").trim().slice(0, 60000);
+      if (!text) continue;
+      normalized.push({
+        type: "skill",
+        name: sanitizeOptionalText(attachment.name).slice(0, 160) || "local-skill",
+        text
+      });
+    }
+  }
+  return normalized;
+}
+
+function normalizeAssistantContext(context) {
+  if (!isPlainObject(context)) return {};
+  return {
+    project: isPlainObject(context.project) ? context.project : {},
+    selection: Array.isArray(context.selection) ? context.selection.slice(0, 24) : [],
+    canvas: isPlainObject(context.canvas) ? context.canvas : {},
+    recentNodes: Array.isArray(context.recentNodes) ? context.recentNodes.slice(0, 40) : []
+  };
+}
+
+function buildAssistantMessages(messages, context, mode = "chat") {
+  const contextText = JSON.stringify(context, null, 2).slice(0, 16000);
+  const baseMessages = [
+    {
+      role: "system",
+      content:
+        "你是 cc无限画布的画布助手，帮助用户管理画布、整理节点、优化生图/生视频提示词，并给出下一步创作建议。你只能依据提供的画布上下文、节点参数、提示词和生成记录判断；如果没有图片像素内容，不要声称已经看到了图片细节。回答要简洁、具体、可执行，默认使用中文。"
+    },
+    {
+      role: "system",
+      content: `当前画布上下文 JSON：\n${contextText}`
+    },
+    {
+      role: "system",
+      content:
+        "如果用户消息包含 image_url 内容块，说明用户已把画布图片导入助手，你可以结合这些图片进行视觉分析；如果没有 image_url，就只能依据文本上下文判断。"
+    },
+  ];
+
+  if (mode === "action_plan") {
+    baseMessages.push({
+      role: "system",
+      content:
+        "本轮必须只返回 JSON，不要使用 Markdown。JSON 格式：{\"summary\":\"一句话说明计划\",\"actions\":[...]}。允许的 action.type 只有：create_task、create_video_task、create_note、move_node、move_nodes、update_task、set_node_scale。禁止删除节点、禁止直接运行生成。最多 20 个动作。坐标使用画布世界坐标。修改已有节点时必须使用上下文里的真实 id。create_task 字段可含 mode、prompt、model、size、n、quality、format、x、y；create_video_task 字段可含 prompt、model、size、n、quality、x、y；create_note 字段可含 text、x、y、fontSize、color、width、height；move_node 字段为 id、x、y；move_nodes 字段为 items:[{id,x,y}]；update_task 字段为 id、prompt、model、size、n、quality、format、mode；set_node_scale 字段为 id、scale。"
+    });
+  }
+
+  return [...baseMessages, ...messages];
+}
+
+function extractAssistantText(data) {
+  const messageContent = data?.choices?.[0]?.message?.content;
+  if (typeof messageContent === "string") return messageContent.trim();
+  if (Array.isArray(messageContent)) {
+    return messageContent
+      .map((part) => (typeof part === "string" ? part : part?.text || part?.content || ""))
+      .join("")
+      .trim();
+  }
+  if (typeof data?.output_text === "string") return data.output_text.trim();
+  if (Array.isArray(data?.output)) {
+    return data.output
+      .flatMap((item) => item?.content || [])
+      .map((part) => part?.text || part?.content || "")
+      .join("")
+      .trim();
+  }
+  if (typeof data?.content === "string") return data.content.trim();
+  return "";
+}
+
+function parseAssistantPlan(content) {
+  const parsed = tryParseAssistantJson(content);
+  if (!isPlainObject(parsed)) return null;
+  const actions = Array.isArray(parsed.actions) ? parsed.actions.slice(0, 20).filter(isPlainObject) : [];
+  return {
+    summary: sanitizeOptionalText(parsed.summary) || "已生成可执行计划，请确认后应用。",
+    actions
+  };
+}
+
+function tryParseAssistantJson(content) {
+  const text = String(content || "").trim();
+  if (!text) return null;
+
+  try {
+    return JSON.parse(stripJsonFence(text));
+  } catch {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(stripJsonFence(text.slice(start, end + 1)));
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+function stripJsonFence(text) {
+  return text.replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "").trim();
 }
 
 async function handleListProjects(res) {

@@ -54,6 +54,7 @@
 - 顶部可以给当前画布命名、从下拉框切换已有画布；点击“新建画布”或按 `Ctrl+N` 会创建新的空画布，点击“保存画布”或按 `Ctrl+S` 会保存当前画布
 - 框选多个节点后，底部会出现选区工具条，可统一设置选中图片节点的显示缩放比例
 - 顶部“添加标注”会创建可输入文字的标注节点，用来记录想法、版本备注或排版说明
+- 顶部“画布助手”支持导入画布图片和 Skill；图片会先进入待发送区，配合文字要求一起发送，回复过程中可以点击“停止”中断；项目内置的 `skills/` 会随应用加载，用户也可以自行导入本地 Skill，通过 `Skills` 按钮弹出选择页逐个启用、停用和搜索，用户上传的 Skill 可删除
 - 生成结果会保留在对应节点里，适合按主题整理多轮结果
 - 结果图片支持打开和下载，节点支持复制和删除
 - 画布支持平移、滚轮缩放、复位视图、清空画布；按住空格拖动画布时会临时忽略节点选择
@@ -97,9 +98,12 @@ YUNWU_API_KEY=你的 Yunwu API Key
 YUNWU_BASE_URL=https://yunwu.ai
 YUNWU_IMAGE_ENDPOINT=/v1/images/generations
 YUNWU_EDIT_ENDPOINT=/v1/images/edits
+YUNWU_CHAT_ENDPOINT=/v1/chat/completions
 YUNWU_DEFAULT_MODEL=gpt-image-2
+YUNWU_ASSISTANT_MODEL=gpt-5.5
 YUNWU_MODEL_KEY_GPT_IMAGE_2=
 YUNWU_MODEL_KEY_GROK_IMAGE_IMAGE=
+YUNWU_MODEL_KEY_GPT_5_5=
 CC_CANVAS_CACHE_DIR=D:\ccCanvasCache
 CC_CANVAS_UPDATE_REPO=1971687396/cc-infinite-canvas
 DREAMINA_CLI_PATH=C:\Users\你的用户名\bin\dreamina.exe

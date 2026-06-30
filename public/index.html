@@ -76,6 +76,10 @@
             <button id="assistantCloseButton" type="button" class="secondary compact">关闭</button>
           </div>
           <div class="assistant-actions" aria-label="助手快捷操作">
+            <label class="assistant-model-picker">
+              <span>模型</span>
+              <select id="assistantModelSelect"></select>
+            </label>
             <button id="assistantAnalyzeButton" type="button" class="secondary compact">分析选中</button>
             <button id="assistantOrganizeButton" type="button" class="secondary compact">整理建议</button>
             <button id="assistantPlanButton" type="button" class="secondary compact">生成计划</button>
@@ -187,7 +191,7 @@
 
         <label class="settings-field settings-field-full">
           <span>助手模型</span>
-          <input id="settingsAssistantModel" type="text" autocomplete="off" />
+          <select id="settingsAssistantModel"></select>
         </label>
 
         <label class="settings-field settings-field-full">

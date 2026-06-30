@@ -126,6 +126,7 @@ const assistantClearButton = document.querySelector("#assistantClearButton");
 const assistantMessagesEl = document.querySelector("#assistantMessages");
 const assistantPendingAttachmentsEl = document.querySelector("#assistantPendingAttachments");
 const assistantForm = document.querySelector("#assistantForm");
+const assistantModelSelect = document.querySelector("#assistantModelSelect");
 const assistantInput = document.querySelector("#assistantInput");
 const assistantSendButton = document.querySelector("#assistantSendButton");
 const assistantStopButton = document.querySelector("#assistantStopButton");
@@ -205,6 +206,14 @@ const dreaminaVideoDefaultDuration = "5";
 const dreaminaVideoDefaultResolution = "720p";
 const assistantDefaultModel = "gpt-5.5";
 const assistantPendingImageLimit = 8;
+const assistantModelOptions = [
+  [assistantDefaultModel, assistantDefaultModel],
+  ["gemini-3.5-flash", "gemini-3.5-flash"],
+  ["claude-opus-4-8", "claude-opus-4-8"],
+  ["doubao-seed-2-1-turbo-260628", "doubao-seed-2-1-turbo-260628"],
+  ["grok-4.3", "grok-4.3"],
+  ["deepseek-v4-pro", "deepseek-v4-pro"]
+];
 const grokModelOptions = [
   ["grok-3-image", "grok-3-image"],
   ["grok-image-image", "grok-image-image"]
@@ -370,6 +379,8 @@ assistantPendingAttachmentsEl?.addEventListener("click", handleAssistantPendingA
 assistantClearButton?.addEventListener("click", clearAssistantChat);
 assistantForm?.addEventListener("submit", sendAssistantMessage);
 assistantStopButton?.addEventListener("click", stopAssistantResponse);
+assistantMessagesEl?.addEventListener("click", handleAssistantMessageClick);
+assistantModelSelect?.addEventListener("change", () => updateAssistantModelSelection(assistantModelSelect.value));
 clearCanvasButton.addEventListener("click", clearCanvas);
 resetViewButton.addEventListener("click", resetViewport);
 zoomInButton.addEventListener("click", () => zoomAtCenter(canvasState.viewport.zoom * 1.2));
@@ -408,6 +419,7 @@ async function refreshRuntimeConfig() {
   if (!response.ok || data.parseError) throw new Error(data.error || "配置读取失败");
   config = data;
   setKeyStatus(config.hasAnyKey ?? config.hasApiKey);
+  renderAssistantModelSelectors();
   return config;
 }
 
@@ -1220,6 +1232,57 @@ function setKeyStatus(hasApiKey, dreaminaReady = false) {
   keyStatus.textContent = hasApiKey ? "Key 已配置" : dreaminaReady ? "即梦已登录" : "Key 未配置";
 }
 
+function renderAssistantModelSelectors(value = config.assistantModel || assistantDefaultModel) {
+  const model = String(value || assistantDefaultModel).trim() || assistantDefaultModel;
+  fillAssistantModelSelect(assistantModelSelect, model);
+  fillAssistantModelSelect(settingsAssistantModel, model);
+}
+
+function fillAssistantModelSelect(select, value) {
+  if (!select) return;
+  const selected = String(value || assistantDefaultModel).trim() || assistantDefaultModel;
+  const options = [...assistantModelOptions];
+  if (!options.some(([model]) => model === selected)) {
+    options.push([selected, `${selected}（当前）`]);
+  }
+
+  select.replaceChildren();
+  for (const [model, label] of options) {
+    const option = document.createElement("option");
+    option.value = model;
+    option.textContent = label;
+    select.append(option);
+  }
+  select.value = selected;
+}
+
+async function updateAssistantModelSelection(model) {
+  const nextModel = String(model || assistantDefaultModel).trim() || assistantDefaultModel;
+  const previousModel = config.assistantModel || assistantDefaultModel;
+  config.assistantModel = nextModel;
+  renderAssistantModelSelectors(nextModel);
+
+  try {
+    const response = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ assistantModel: nextModel })
+    });
+    const data = await readJsonResponse(response);
+    if (!response.ok || data.parseError) throw new Error(data.error || "助手模型保存失败");
+    config = {
+      ...config,
+      ...data
+    };
+    renderAssistantModelSelectors(config.assistantModel || nextModel);
+    showToast(`助手模型已切换为 ${config.assistantModel || nextModel}`);
+  } catch (error) {
+    config.assistantModel = previousModel;
+    renderAssistantModelSelectors(previousModel);
+    showToast(error.message || "助手模型保存失败");
+  }
+}
+
 function openSettingsDialog() {
   settingsApiKey.value = "";
   settingsGptImageKey.value = "";
@@ -1235,7 +1298,7 @@ function openSettingsDialog() {
   settingsEditEndpoint.value = config.editEndpoint || "/v1/images/edits";
   settingsChatEndpoint.value = config.chatEndpoint || "/v1/chat/completions";
   settingsDefaultModel.value = config.defaultModel || "gpt-image-2";
-  settingsAssistantModel.value = config.assistantModel || assistantDefaultModel;
+  renderAssistantModelSelectors();
   settingsCacheDir.value = config.cacheDir || "";
   settingsStatus.textContent = config.hasApiKey ? "Key 已配置" : "Key 未配置";
   const modelKeyCount = Object.values(config.modelKeys || {}).filter(Boolean).length;
@@ -1427,6 +1490,7 @@ async function saveSettings(event) {
       cacheDir: data.cacheDir
     };
     setKeyStatus(config.hasAnyKey ?? config.hasApiKey, config.dreaminaLoggedIn);
+    renderAssistantModelSelectors();
     await refreshProjectList();
     settingsApiKey.value = "";
     settingsGptImageKey.value = "";
@@ -1895,6 +1959,7 @@ async function importLocalSkillToAssistant(event) {
     const result = upsertAssistantSkillRecords(records, { enabled: true });
     openAssistantSkillLibrary();
     assistantMessages.push({
+      id: createId(),
       role: "user",
       content: formatAssistantSkillImportMessage(result),
       createdAt: new Date().toISOString()
@@ -2258,11 +2323,17 @@ async function sendAssistantPrompt(content, options = {}) {
   }
   if (!content.trim()) return;
 
-  const attachments = consumeAssistantPendingImages();
+  const attachments = Array.isArray(options.attachments)
+    ? cloneAssistantAttachments(options.attachments)
+    : consumeAssistantPendingImages();
+  const mode = options.mode || "chat";
   assistantMessages.push({
+    id: createId(),
     role: "user",
     content: content.trim(),
     attachments,
+    mode,
+    retryOf: options.retryOf || "",
     createdAt: new Date().toISOString()
   });
   saveAssistantChat();
@@ -2277,8 +2348,8 @@ async function sendAssistantPrompt(content, options = {}) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: config.assistantModel || assistantDefaultModel,
-        mode: options.mode || "chat",
-        messages: buildAssistantRequestMessages(),
+        mode,
+        messages: buildAssistantRequestMessages(options.requestMessages || assistantMessages),
         context: buildAssistantContext()
       }),
       signal: assistantAbortController.signal
@@ -2287,18 +2358,23 @@ async function sendAssistantPrompt(content, options = {}) {
     if (!response.ok || data.parseError) throw new Error(data.error || "助手请求失败");
 
     assistantMessages.push({
+      id: createId(),
       role: "assistant",
       content: data.message?.content || "",
       plan: data.plan || null,
+      retryOf: options.retryOf || "",
       createdAt: new Date().toISOString()
     });
     saveAssistantChat();
   } catch (error) {
     const stopped = error?.name === "AbortError";
     assistantMessages.push({
+      id: createId(),
       role: "assistant",
       content: stopped ? "已停止当前回复。" : error.message || "助手请求失败",
       error: !stopped,
+      stopped,
+      retryOf: options.retryOf || "",
       createdAt: new Date().toISOString()
     });
     saveAssistantChat();
@@ -2321,6 +2397,7 @@ function setAssistantBusy(isBusy) {
   if (assistantPlanButton) assistantPlanButton.disabled = assistantBusy;
   if (assistantImportImagesButton) assistantImportImagesButton.disabled = assistantBusy;
   if (assistantImportSkillButton) assistantImportSkillButton.disabled = assistantBusy;
+  if (assistantModelSelect) assistantModelSelect.disabled = assistantBusy;
 }
 
 function stopAssistantResponse() {
@@ -2328,8 +2405,8 @@ function stopAssistantResponse() {
   assistantAbortController.abort();
 }
 
-function buildAssistantRequestMessages() {
-  const messages = assistantMessages.map(serializeAssistantMessageForRequest);
+function buildAssistantRequestMessages(sourceMessages = assistantMessages) {
+  const messages = sourceMessages.map(serializeAssistantMessageForRequest);
   const activeSkillAttachments = getEnabledAssistantSkillAttachments();
   if (!activeSkillAttachments.length || !messages.length) return messages;
 
@@ -2365,6 +2442,99 @@ function serializeAssistantMessageForRequest(message) {
   };
 }
 
+function cloneAssistantAttachments(attachments = []) {
+  return Array.isArray(attachments) ? clonePlainValue(attachments).filter((attachment) => attachment?.type !== "skill") : [];
+}
+
+function handleAssistantMessageClick(event) {
+  const retryButton = event.target?.closest?.("button[data-assistant-retry]");
+  if (!retryButton) return;
+  retryAssistantMessage(retryButton.dataset.assistantRetry);
+}
+
+async function retryAssistantMessage(messageId) {
+  if (assistantBusy) {
+    showToast("助手正在回复");
+    return;
+  }
+
+  const sourceInfo = findAssistantRetrySource(messageId);
+  if (!sourceInfo) {
+    showToast("没有找到可重试的消息");
+    return;
+  }
+
+  const { sourceUser, sourceUserIndex, clickedMessage } = sourceInfo;
+  const originalAttachments = Array.isArray(sourceUser.attachments) ? sourceUser.attachments : [];
+  const imageCount = originalAttachments.filter((attachment) => attachment?.type === "image").length;
+  const missingImageCount = originalAttachments.filter(
+    (attachment) => attachment?.type === "image" && !String(attachment.dataUrl || "").startsWith("data:image/")
+  ).length;
+  if (imageCount && missingImageCount) {
+    showToast("这条历史消息的图片数据已丢失，请重新导入图片后再重试");
+    return;
+  }
+
+  const attachments = cloneAssistantAttachments(originalAttachments);
+  const retryUserMessage = {
+    ...sourceUser,
+    attachments,
+    content: String(sourceUser.content || "").trim()
+  };
+  const requestMessages = [
+    ...assistantMessages.slice(0, sourceUserIndex).map(normalizeAssistantChatMessage),
+    retryUserMessage
+  ];
+  const mode = sourceUser.mode === "action_plan" || clickedMessage?.plan ? "action_plan" : "chat";
+  await sendAssistantPrompt(retryUserMessage.content, {
+    mode,
+    attachments,
+    requestMessages,
+    retryOf: sourceUser.id || ""
+  });
+}
+
+function findAssistantRetrySource(messageId) {
+  const index = assistantMessages.findIndex((message) => message.id === messageId);
+  if (index < 0) return null;
+  const clickedMessage = assistantMessages[index];
+  if (clickedMessage.role === "user") {
+    return { sourceUser: clickedMessage, sourceUserIndex: index, clickedMessage };
+  }
+
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const candidate = assistantMessages[cursor];
+    if (candidate?.role === "user" && String(candidate.content || "").trim()) {
+      return { sourceUser: candidate, sourceUserIndex: cursor, clickedMessage };
+    }
+  }
+
+  return null;
+}
+
+function createAssistantMessageActionsElement(message) {
+  if (!canRetryAssistantMessage(message)) return null;
+
+  const actions = document.createElement("div");
+  actions.className = "assistant-message-actions";
+
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "secondary compact assistant-message-retry";
+  retry.dataset.assistantRetry = message.id;
+  retry.disabled = assistantBusy;
+  retry.textContent = "重试";
+
+  actions.append(retry);
+  return actions;
+}
+
+function canRetryAssistantMessage(message) {
+  if (!message?.id || !String(message.content || "").trim()) return false;
+  if (message.role === "user") return true;
+  return message.role === "assistant" && Boolean(findAssistantRetrySource(message.id));
+}
+
 function renderAssistantMessages() {
   if (!assistantMessagesEl) return;
   assistantMessagesEl.replaceChildren();
@@ -2398,6 +2568,9 @@ function renderAssistantMessages() {
     if (message.attachments?.length) {
       item.append(createAssistantAttachmentsElement(message.attachments));
     }
+
+    const actions = createAssistantMessageActionsElement(message);
+    if (actions) item.append(actions);
 
     assistantMessagesEl.append(item);
   }
@@ -2670,14 +2843,25 @@ function assistantStorageKey(projectId = currentProjectId) {
 }
 
 function loadAssistantChat() {
+  let changed = false;
   try {
     const raw = localStorage.getItem(assistantStorageKey(currentProjectId)) || "[]";
     const parsed = JSON.parse(raw);
-    assistantMessages = Array.isArray(parsed) ? parsed.filter((item) => item?.content).slice(-80) : [];
+    assistantMessages = Array.isArray(parsed)
+      ? parsed
+          .filter((item) => item?.content)
+          .map((item) => {
+            const normalized = normalizeAssistantChatMessage(item);
+            if (!item.id) changed = true;
+            return normalized;
+          })
+          .slice(-80)
+      : [];
   } catch {
     assistantMessages = [];
   }
   migrateAssistantSkillAttachmentsFromChat();
+  if (changed) saveAssistantChat();
   renderAssistantMessages();
   renderAssistantSkillLibrary();
 }
@@ -2704,6 +2888,21 @@ function serializeAssistantMessageForStorage(message) {
       })
     : [];
   return { ...message, attachments };
+}
+
+function normalizeAssistantChatMessage(message) {
+  return {
+    id: String(message?.id || createId()),
+    role: ["assistant", "system", "user"].includes(message?.role) ? message.role : "user",
+    content: String(message?.content || ""),
+    attachments: Array.isArray(message?.attachments) ? clonePlainValue(message.attachments) : [],
+    plan: isPlainObject(message?.plan) ? clonePlainValue(message.plan) : null,
+    error: Boolean(message?.error),
+    stopped: Boolean(message?.stopped),
+    retryOf: String(message?.retryOf || ""),
+    mode: message?.mode === "action_plan" ? "action_plan" : "chat",
+    createdAt: message?.createdAt || new Date().toISOString()
+  };
 }
 
 function migrateAssistantSkillAttachmentsFromChat() {

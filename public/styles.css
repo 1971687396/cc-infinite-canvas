@@ -1721,6 +1721,30 @@ pre {
   padding: 10px 14px;
 }
 
+.assistant-model-picker {
+  display: flex;
+  min-width: min(100%, 220px);
+  flex: 1 1 180px;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+}
+
+.assistant-model-picker span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.assistant-model-picker select {
+  min-width: 0;
+  min-height: 34px;
+  flex: 1 1 auto;
+  padding: 0 32px 0 10px;
+  font-size: 13px;
+}
+
 .assistant-actions button,
 .assistant-form button,
 .assistant-head button {
@@ -1909,6 +1933,20 @@ pre {
 
 .assistant-message.is-pending {
   color: var(--muted);
+}
+
+.assistant-message-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+  white-space: normal;
+}
+
+.assistant-message-retry {
+  min-height: 28px;
+  padding: 0 9px;
+  font-size: 12px;
 }
 
 .assistant-attachments {
@@ -2164,7 +2202,8 @@ pre {
   font-weight: 750;
 }
 
-.settings-field input {
+.settings-field input,
+.settings-field select {
   min-height: 38px;
   border-radius: 8px;
   padding: 0 10px;

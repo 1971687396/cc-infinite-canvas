@@ -249,7 +249,8 @@ function modelKeyBucket(model) {
 }
 
 function isGrokImageModel(model) {
-  return normalizeModelName(model).startsWith("grok-");
+  const normalized = normalizeModelName(model);
+  return normalized.startsWith("grok-") && (normalized === "grok-image-image" || normalized.includes("-image"));
 }
 
 function isGrsaiImageModel(model) {
@@ -840,7 +841,11 @@ async function handleAssistantChat(req, res) {
 
   let upstream;
   const assistantAbortController = new AbortController();
-  const assistantTimeout = setTimeout(() => assistantAbortController.abort(new Error("Assistant request timed out")), 120000);
+  const assistantTimeoutMs = assistantRequestTimeoutMs(model, mode);
+  const assistantTimeout = setTimeout(
+    () => assistantAbortController.abort(new Error(`Assistant request timed out after ${Math.round(assistantTimeoutMs / 1000)}s`)),
+    assistantTimeoutMs
+  );
   const abortAssistantOnClose = () => {
     if (!res.writableEnded) assistantAbortController.abort(new Error("Client stopped assistant request"));
   };
@@ -903,6 +908,15 @@ async function handleAssistantChat(req, res) {
     model,
     usage: upstreamData.usage || null
   });
+}
+
+function assistantRequestTimeoutMs(model, mode = "chat") {
+  const normalized = normalizeModelName(model);
+  if (normalized === assistantDefaultModel || normalized.startsWith(`${assistantDefaultModel}-`)) {
+    return 10 * 60 * 1000;
+  }
+  if (mode === "action_plan") return 5 * 60 * 1000;
+  return 4 * 60 * 1000;
 }
 
 async function handleAssistantBuiltInSkills(res) {

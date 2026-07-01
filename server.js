@@ -5,6 +5,7 @@ import { createReadStream, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { inflateRawSync } from "node:zlib";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -132,6 +133,18 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/assistant/chat") {
       return await handleAssistantChat(req, res);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/assistant/chat-backup") {
+      return await handleGetAssistantChatBackup(res, url);
+    }
+
+    if (req.method === "PUT" && url.pathname === "/api/assistant/chat-backup") {
+      return await handleSaveAssistantChatBackup(req, res, url);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/assistant/extract-files") {
+      return await handleAssistantExtractFiles(req, res);
     }
 
     if (req.method === "GET" && url.pathname === "/api/assistant/skills") {
@@ -783,6 +796,10 @@ function projectFile(projectId) {
   return path.join(projectDir(projectId), "project.json");
 }
 
+function assistantChatFile(projectId) {
+  return path.join(projectDir(projectId), "assistant-chat.json");
+}
+
 function projectOutputDir(projectId) {
   return path.join(projectDir(projectId), "outputs");
 }
@@ -910,6 +927,247 @@ async function handleAssistantChat(req, res) {
   });
 }
 
+async function handleGetAssistantChatBackup(res, url) {
+  const projectId = projectIdFromUrl(url);
+  try {
+    const raw = await readFile(assistantChatFile(projectId), "utf8");
+    const backup = normalizeAssistantChatBackup(JSON.parse(raw), projectId);
+    return sendJson(res, 200, { backup });
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  sendJson(res, 200, {
+    backup: {
+      version: 1,
+      projectId,
+      savedAt: "",
+      messages: []
+    }
+  });
+}
+
+async function handleSaveAssistantChatBackup(req, res, url) {
+  const body = await readJsonBody(req, { maxBytes: 8 * 1024 * 1024 });
+  const projectId = normalizeProjectId(body.projectId || url.searchParams.get("projectId") || "default");
+  const backup = normalizeAssistantChatBackup(body, projectId);
+  backup.savedAt = new Date().toISOString();
+
+  await mkdir(projectDir(projectId), { recursive: true });
+  await writeFile(assistantChatFile(projectId), JSON.stringify(backup, null, 2), "utf8");
+  sendJson(res, 200, { ok: true, savedAt: backup.savedAt, count: backup.messages.length });
+}
+
+async function handleAssistantExtractFiles(req, res) {
+  const contentType = req.headers["content-type"] || "";
+  if (!contentType.includes("multipart/form-data")) {
+    return sendJson(res, 400, { error: "File extraction expects multipart/form-data." });
+  }
+
+  const body = await readMultipartBody(req, contentType);
+  const uploads = Array.isArray(body.files) ? body.files.filter((file) => file.name === "files" || file.name === "file") : [];
+  const files = [];
+  const errors = [];
+
+  for (const file of uploads.slice(0, 5)) {
+    try {
+      files.push(extractAssistantDocument(file));
+    } catch (error) {
+      errors.push({
+        name: file.filename || "unknown",
+        error: String(error?.message || error || "文件解析失败").slice(0, 300)
+      });
+    }
+  }
+
+  sendJson(res, 200, { files: files.filter((file) => file.text), errors });
+}
+
+function extractAssistantDocument(file) {
+  const maxBytes = 5 * 1024 * 1024;
+  const name = sanitizeOptionalText(file.filename || "local-file").slice(0, 180) || "local-file";
+  const data = Buffer.from(file.data || []);
+  if (!data.length) throw new Error("文件为空");
+  if (data.length > maxBytes) throw new Error("文件超过 5MB");
+
+  const extension = path.extname(name).toLowerCase();
+  let text = "";
+  let kind = "文本";
+
+  if (extension === ".docx") {
+    text = extractDocxText(data);
+    kind = "DOCX";
+  } else if (isAssistantTextDocument(extension, file.contentType)) {
+    text = stripUtf8Bom(data.toString("utf8"));
+    kind = extension ? extension.slice(1).toUpperCase() : "文本";
+  } else {
+    throw new Error("暂不支持该文件格式");
+  }
+
+  text = normalizeExtractedDocumentText(text).slice(0, 120000);
+  if (!text.trim()) throw new Error("没有提取到可读取文本");
+  return {
+    name,
+    size: data.length,
+    kind,
+    text
+  };
+}
+
+function isAssistantTextDocument(extension, contentType = "") {
+  const textExtensions = new Set([".txt", ".md", ".markdown", ".json", ".csv", ".tsv", ".srt", ".ass", ".log", ".yaml", ".yml"]);
+  if (textExtensions.has(extension)) return true;
+  return /^text\//iu.test(contentType || "");
+}
+
+function stripUtf8Bom(text) {
+  return String(text || "").replace(/^\uFEFF/u, "");
+}
+
+function extractDocxText(buffer) {
+  const entries = readZipEntries(buffer);
+  const names = ["word/document.xml", "word/footnotes.xml", "word/endnotes.xml", "word/comments.xml"];
+  return names
+    .map((name) => entries.get(name))
+    .filter(Boolean)
+    .map((entry) => docxXmlToText(entry.toString("utf8")))
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function readZipEntries(buffer) {
+  const end = findZipEndOfCentralDirectory(buffer);
+  if (end < 0) throw new Error("DOCX 文件结构无效");
+  const entryCount = buffer.readUInt16LE(end + 10);
+  let cursor = buffer.readUInt32LE(end + 16);
+  const entries = new Map();
+
+  for (let index = 0; index < entryCount && cursor < buffer.length; index += 1) {
+    if (buffer.readUInt32LE(cursor) !== 0x02014b50) break;
+    const method = buffer.readUInt16LE(cursor + 10);
+    const compressedSize = buffer.readUInt32LE(cursor + 20);
+    const fileNameLength = buffer.readUInt16LE(cursor + 28);
+    const extraLength = buffer.readUInt16LE(cursor + 30);
+    const commentLength = buffer.readUInt16LE(cursor + 32);
+    const localHeaderOffset = buffer.readUInt32LE(cursor + 42);
+    const name = buffer.subarray(cursor + 46, cursor + 46 + fileNameLength).toString("utf8");
+    const data = readZipEntryData(buffer, localHeaderOffset, compressedSize, method);
+    entries.set(name, data);
+    cursor += 46 + fileNameLength + extraLength + commentLength;
+  }
+
+  return entries;
+}
+
+function findZipEndOfCentralDirectory(buffer) {
+  const min = Math.max(0, buffer.length - 0xffff - 22);
+  for (let index = buffer.length - 22; index >= min; index -= 1) {
+    if (buffer.readUInt32LE(index) === 0x06054b50) return index;
+  }
+  return -1;
+}
+
+function readZipEntryData(buffer, localHeaderOffset, compressedSize, method) {
+  if (buffer.readUInt32LE(localHeaderOffset) !== 0x04034b50) throw new Error("DOCX 条目无效");
+  const fileNameLength = buffer.readUInt16LE(localHeaderOffset + 26);
+  const extraLength = buffer.readUInt16LE(localHeaderOffset + 28);
+  const dataStart = localHeaderOffset + 30 + fileNameLength + extraLength;
+  const compressed = buffer.subarray(dataStart, dataStart + compressedSize);
+  if (method === 0) return compressed;
+  if (method === 8) return inflateRawSync(compressed);
+  throw new Error("DOCX 压缩格式不支持");
+}
+
+function docxXmlToText(xml) {
+  return decodeXmlEntities(
+    String(xml || "")
+      .replace(/<w:tab\/>/gu, "\t")
+      .replace(/<w:br\/>/gu, "\n")
+      .replace(/<\/w:p>/gu, "\n")
+      .replace(/<\/w:tr>/gu, "\n")
+      .replace(/<[^>]+>/gu, "")
+  );
+}
+
+function decodeXmlEntities(text) {
+  return String(text || "")
+    .replace(/&lt;/gu, "<")
+    .replace(/&gt;/gu, ">")
+    .replace(/&amp;/gu, "&")
+    .replace(/&quot;/gu, '"')
+    .replace(/&apos;/gu, "'");
+}
+
+function normalizeExtractedDocumentText(text) {
+  return String(text || "")
+    .replace(/\r\n?/gu, "\n")
+    .replace(/[ \t]+\n/gu, "\n")
+    .replace(/\n{4,}/gu, "\n\n\n")
+    .trim();
+}
+
+function normalizeAssistantChatBackup(value, fallbackProjectId) {
+  const projectId = normalizeProjectId(value?.projectId || fallbackProjectId || "default");
+  const messages = Array.isArray(value?.messages) ? value.messages : Array.isArray(value) ? value : [];
+  return {
+    version: 1,
+    projectId,
+    savedAt: sanitizeOptionalText(value?.savedAt),
+    messages: messages.slice(-80).map(normalizeAssistantStoredMessage).filter(Boolean)
+  };
+}
+
+function normalizeAssistantStoredMessage(message) {
+  if (!isPlainObject(message)) return null;
+  const role = ["assistant", "system", "user"].includes(message.role) ? message.role : "user";
+  const content = sanitizeOptionalText(message.content).slice(0, 24000);
+  if (!content && !Array.isArray(message.attachments)) return null;
+  return pruneEmpty({
+    id: sanitizeOptionalText(message.id).slice(0, 120),
+    role,
+    content,
+    attachments: normalizeAssistantStoredAttachments(message.attachments),
+    plan: isPlainObject(message.plan) ? message.plan : null,
+    error: Boolean(message.error),
+    stopped: Boolean(message.stopped),
+    retryOf: sanitizeOptionalText(message.retryOf).slice(0, 120),
+    mode: message.mode === "action_plan" ? "action_plan" : "chat",
+    createdAt: sanitizeOptionalText(message.createdAt).slice(0, 80)
+  });
+}
+
+function normalizeAssistantStoredAttachments(attachments) {
+  if (!Array.isArray(attachments)) return [];
+  return attachments
+    .slice(0, 12)
+    .map((attachment) => {
+      if (!isPlainObject(attachment)) return null;
+      if (attachment.type === "image") {
+        return pruneEmpty({
+          type: "image",
+          name: sanitizeOptionalText(attachment.name).slice(0, 160),
+          nodeId: sanitizeOptionalText(attachment.nodeId).slice(0, 160),
+          model: sanitizeOptionalText(attachment.model).slice(0, 160),
+          prompt: sanitizeOptionalText(attachment.prompt).slice(0, 1600),
+          key: sanitizeOptionalText(attachment.key).slice(0, 220)
+        });
+      }
+      if (attachment.type === "file") {
+        const text = sanitizeOptionalText(attachment.text).slice(0, 120000);
+        if (!text) return null;
+        return pruneEmpty({
+          type: "file",
+          name: sanitizeOptionalText(attachment.name).slice(0, 180) || "local-file",
+          kind: sanitizeOptionalText(attachment.kind).slice(0, 40) || "文本",
+          size: Number(attachment.size) || Buffer.byteLength(text, "utf8"),
+          key: sanitizeOptionalText(attachment.key).slice(0, 220),
+          text
+        });
+      }
+      return null;
+    })
+    .filter(Boolean);
+}
+
 function assistantRequestTimeoutMs(model, mode = "chat") {
   const normalized = normalizeModelName(model);
   if (normalized === assistantDefaultModel || normalized.startsWith(`${assistantDefaultModel}-`)) {
@@ -1009,6 +1267,8 @@ function normalizeAssistantMessage(message) {
   for (const attachment of normalizeAssistantAttachments(message?.attachments)) {
     if (attachment.type === "skill") {
       textParts.push(`本地 Skill：${attachment.name}\n${attachment.text}`);
+    } else if (attachment.type === "file") {
+      textParts.push(`本地文件：${attachment.name}\n类型：${attachment.kind || "文本"}\n大小：${attachment.size || 0} bytes\n\n${attachment.text}`);
     } else if (attachment.type === "image" && role === "user") {
       imageParts.push({
         type: "image_url",
@@ -1057,6 +1317,19 @@ function normalizeAssistantAttachments(attachments) {
         name: sanitizeOptionalText(attachment.name).slice(0, 160) || "local-skill",
         text
       });
+      continue;
+    }
+
+    if (attachment.type === "file") {
+      const text = String(attachment.text || "").trim().slice(0, 120000);
+      if (!text) continue;
+      normalized.push({
+        type: "file",
+        name: sanitizeOptionalText(attachment.name).slice(0, 180) || "local-file",
+        kind: sanitizeOptionalText(attachment.kind).slice(0, 40) || "文本",
+        size: Number(attachment.size) || Buffer.byteLength(text, "utf8"),
+        text
+      });
     }
   }
   return normalized;
@@ -1079,7 +1352,7 @@ function buildAssistantMessages(messages, context, mode = "chat") {
     {
       role: "system",
       content:
-        "你是 cc无限画布的画布助手，帮助用户管理画布、整理节点、优化生图/生视频提示词，并给出下一步创作建议。你只能依据提供的画布上下文、节点参数、提示词和生成记录判断；如果没有图片像素内容，不要声称已经看到了图片细节。回答要简洁、具体、可执行，默认使用中文。"
+        "你是 cc无限画布的画布助手，帮助用户管理画布、整理节点、优化生图/生视频提示词，并给出下一步创作建议。你不是外部网页助手，而是在为本地无限画布生成可执行建议或 JSON 操作计划。画布术语：生图节点/图片生成节点=task 节点，可用 create_task 创建；视频节点/生视频节点=video-task 节点，可用 create_video_task 创建；文字标注/文字节点/note=note 节点，可用 create_note 创建；图片节点=image；视频文件节点=video。你只能依据提供的画布上下文、节点参数、提示词和生成记录判断；如果没有图片像素内容，不要声称已经看到了图片细节。回答要简洁、具体、可执行，默认使用中文。"
     },
     {
       role: "system",
@@ -1096,7 +1369,7 @@ function buildAssistantMessages(messages, context, mode = "chat") {
     baseMessages.push({
       role: "system",
       content:
-        "本轮必须只返回 JSON，不要使用 Markdown。JSON 格式：{\"summary\":\"一句话说明计划\",\"actions\":[...]}。允许的 action.type 只有：create_task、create_video_task、create_note、move_node、move_nodes、organize_nodes、organize_groups、update_task、update_note、update_notes、set_node_scale。禁止删除节点、禁止直接运行生成。最多 20 个动作。坐标使用画布世界坐标，必须根据节点 width/height 留出 48px 以上间距，避免重叠。修改已有节点时必须使用上下文里的真实 id。整理、排版、对齐但不需要分类时使用 organize_nodes，不要手写大量 move_node。用户要求分类、归类、分组、按人物/道具/场景/风格/用途整理，或要求标注/标题时，优先使用 organize_groups，让你根据节点的 prompt、filename、model、sourceTaskId 和上下文判断分组；如果不确定，放入“未分类”。用户要求修改文字标注的颜色、字号、内容时使用 update_note 或 update_notes；如果目标是“选中的文字标注”，update_notes 使用 scope:\"selected\"；如果目标是“全部文字标注”，使用 scope:\"all\"；如果目标是“人物名字/标题/分组名/某类标注”等模糊对象，必须根据 note.text、上下文和选中状态自行判断并返回具体 ids，不要让前端猜。颜色优先返回 #RRGGBB，也可返回中文颜色名。create_task 字段可含 mode、prompt、model、size、n、quality、format、x、y；create_video_task 字段可含 prompt、model、size、n、quality、x、y；create_note 字段可含 text、x、y、fontSize、color、width、height；move_node 字段为 id、x、y；move_nodes 字段为 items:[{id,x,y}]；organize_nodes 字段为 ids:[id]、columns、gap、normalizeMedia、maxMediaLongSide；organize_groups 字段为 groups:[{title,ids,columns}]、originX、originY、gap、groupGap、orientation、normalizeMedia、maxMediaLongSide、labelFontSize、labelColor，其中 orientation 可为 horizontal 或 vertical，labelFontSize 建议 40-64；update_task 字段为 id、prompt、model、size、n、quality、format、mode；update_note 字段为 id、text、color、fontSize、width、height；update_notes 字段为 ids、scope、color、fontSize、width、height；set_node_scale 字段为 id、scale。"
+        "本轮必须只返回 JSON，不要使用 Markdown，也不要解释你没有接口、没有权限、需要查看代码或需要用户先说明系统。你已经拥有前端支持的画布操作接口，只需要返回计划 JSON，前端会执行。JSON 格式：{\"summary\":\"一句话说明计划\",\"actions\":[...]}。允许的 action.type 只有：create_task、create_video_task、create_note、move_node、move_nodes、organize_nodes、organize_groups、update_task、update_note、update_notes、set_node_scale。禁止删除节点、禁止直接运行生成。最多 20 个动作。术语映射必须牢记：用户说“生图节点、图片生成节点、生成图片节点、作图节点”就是 create_task；用户说“图生图节点、参考图生图节点”也是 create_task 但 mode 应为 \"edit\"；用户说“生视频节点、视频生成节点”就是 create_video_task；用户说“文字标注、文字节点、提示词节点”就是 create_note。用户说“创建生图节点，将提示词填进去/把提示词填进去”时，应创建 create_task，并把用户消息中的提示词、选中的 note.text、选中 task.prompt 或最近上下文里明确的提示词填入 prompt；如果确实没有提示词，就创建 prompt 为空的生图节点，而不是拒绝。坐标使用画布世界坐标，必须根据节点 width/height 留出 48px 以上间距，避免重叠。修改已有节点时必须使用上下文里的真实 id。整理、排版、对齐但不需要分类时使用 organize_nodes，不要手写大量 move_node。用户要求分类、归类、分组、按人物/道具/场景/风格/用途整理，或要求标注/标题时，优先使用 organize_groups，让你根据节点的 prompt、filename、model、sourceTaskId 和上下文判断分组；如果不确定，放入“未分类”。用户要求修改文字标注的颜色、字号、内容时使用 update_note 或 update_notes；如果目标是“选中的文字标注”，update_notes 使用 scope:\"selected\"；如果目标是“全部文字标注”，使用 scope:\"all\"；如果目标是“人物名字/标题/分组名/某类标注”等模糊对象，必须根据 note.text、上下文和选中状态自行判断并返回具体 ids，不要让前端猜。颜色优先返回 #RRGGBB，也可返回中文颜色名。create_task 字段可含 mode、prompt、model、size、n、quality、format、x、y；create_video_task 字段可含 prompt、model、size、n、quality、x、y；create_note 字段可含 text、x、y、fontSize、color、width、height；move_node 字段为 id、x、y；move_nodes 字段为 items:[{id,x,y}]；organize_nodes 字段为 ids:[id]、columns、gap、normalizeMedia、maxMediaLongSide；organize_groups 字段为 groups:[{title,ids,columns}]、originX、originY、gap、groupGap、orientation、normalizeMedia、maxMediaLongSide、labelFontSize、labelColor，其中 orientation 可为 horizontal 或 vertical，labelFontSize 建议 40-64；update_task 字段为 id、prompt、model、size、n、quality、format、mode；update_note 字段为 id、text、color、fontSize、width、height；update_notes 字段为 ids、scope、color、fontSize、width、height；set_node_scale 字段为 id、scale。"
     });
   }
 

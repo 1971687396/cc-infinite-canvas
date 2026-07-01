@@ -1912,6 +1912,11 @@ pre {
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 14px;
+  user-select: text;
+}
+
+.assistant-message-content {
+  user-select: text;
 }
 
 .assistant-message.is-user {
@@ -1943,10 +1948,35 @@ pre {
   white-space: normal;
 }
 
+.assistant-message-copy,
 .assistant-message-retry {
   min-height: 28px;
   padding: 0 9px;
   font-size: 12px;
+}
+
+.assistant-copy-menu {
+  position: fixed;
+  z-index: 1200;
+  display: grid;
+  gap: 4px;
+  min-width: 96px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.assistant-copy-menu[hidden] {
+  display: none;
+}
+
+.assistant-copy-menu button {
+  justify-content: flex-start;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 6px;
 }
 
 .assistant-attachments {
@@ -1957,7 +1987,8 @@ pre {
 }
 
 .assistant-attachment-image,
-.assistant-attachment-skill {
+.assistant-attachment-skill,
+.assistant-attachment-file {
   overflow: hidden;
   margin: 0;
   border: 1px solid var(--line);
@@ -1973,7 +2004,8 @@ pre {
 }
 
 .assistant-attachment-image figcaption,
-.assistant-attachment-skill {
+.assistant-attachment-skill,
+.assistant-attachment-file {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.35;
@@ -1984,10 +2016,21 @@ pre {
   padding: 7px 8px;
 }
 
-.assistant-attachment-skill {
+.assistant-attachment-skill,
+.assistant-attachment-file {
   grid-column: 1 / -1;
   padding: 9px 10px;
   font-weight: 750;
+}
+
+.assistant-attachment-file {
+  display: grid;
+  gap: 3px;
+}
+
+.assistant-attachment-file strong {
+  color: var(--ink);
+  font-size: 13px;
 }
 
 .assistant-plan {
@@ -2057,6 +2100,11 @@ pre {
   gap: 8px;
 }
 
+.assistant-pending-files {
+  display: grid;
+  gap: 8px;
+}
+
 .assistant-pending-image {
   position: relative;
   overflow: hidden;
@@ -2081,6 +2129,29 @@ pre {
   line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.assistant-pending-file {
+  position: relative;
+  display: grid;
+  gap: 3px;
+  padding: 9px 34px 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.assistant-pending-file strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-pending-file span {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .assistant-pending-remove {

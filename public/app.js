@@ -7,6 +7,8 @@ const assistantSkillLibraryStorageKey = "cc-canvas-assistant-skill-library-v1";
 const assistantBuiltInSkillStateStorageKey = "cc-canvas-assistant-builtin-skill-state-v1";
 const assistantSkillLibraryLimit = 40;
 const assistantSkillRequestLimit = 8;
+const assistantChatBackupDelayMs = 600;
+const assistantPendingFileLimit = 5;
 const themeStorageKey = "cc-canvas-theme";
 const minZoom = 0.02;
 const maxZoom = 24;
@@ -20,7 +22,7 @@ const defaultNoteWidth = 300;
 const defaultNoteHeight = 64;
 const minNoteWidth = 96;
 const minNoteHeight = 44;
-const maxNoteWidth = 1600;
+const maxNoteWidth = 4096;
 const maxNoteHeight = 1400;
 const minNoteFontSize = 10;
 const maxNoteFontSize = 240;
@@ -113,6 +115,7 @@ const assistantAnalyzeButton = document.querySelector("#assistantAnalyzeButton")
 const assistantOrganizeButton = document.querySelector("#assistantOrganizeButton");
 const assistantPlanButton = document.querySelector("#assistantPlanButton");
 const assistantImportImagesButton = document.querySelector("#assistantImportImagesButton");
+const assistantImportFilesButton = document.querySelector("#assistantImportFilesButton");
 const assistantSkillMenuButton = document.querySelector("#assistantSkillMenuButton");
 const assistantSkillMenuCount = document.querySelector("#assistantSkillMenuCount");
 const assistantImportSkillButton = document.querySelector("#assistantImportSkillButton");
@@ -122,6 +125,7 @@ const assistantSkillCloseButton = document.querySelector("#assistantSkillCloseBu
 const assistantSkillSearchInput = document.querySelector("#assistantSkillSearchInput");
 const assistantSkillList = document.querySelector("#assistantSkillList");
 const assistantSkillInput = document.querySelector("#assistantSkillInput");
+const assistantFileInput = document.querySelector("#assistantFileInput");
 const assistantClearButton = document.querySelector("#assistantClearButton");
 const assistantMessagesEl = document.querySelector("#assistantMessages");
 const assistantPendingAttachmentsEl = document.querySelector("#assistantPendingAttachments");
@@ -299,9 +303,13 @@ let assistantSkills = [];
 let assistantBuiltInSkills = [];
 let assistantBuiltInSkillStates = {};
 let assistantPendingImages = [];
+let assistantPendingFiles = [];
 let assistantBusy = false;
 let assistantAbortController = null;
 let assistantSkillSearchQuery = "";
+let assistantChatBackupTimer = 0;
+let assistantCopyMenu = null;
+let assistantCopyText = "";
 let lastCanvasPointer = null;
 let canvasState = {
   nodes: [],
@@ -365,9 +373,11 @@ assistantPlanButton?.addEventListener("click", () =>
   sendAssistantPlanPrompt("请根据当前画布和选中内容，生成一个可执行的画布操作计划，用于整理排版、创建必要的提示词节点或补充生图节点。")
 );
 assistantImportImagesButton?.addEventListener("click", importSelectedImagesToAssistant);
+assistantImportFilesButton?.addEventListener("click", () => assistantFileInput?.click());
 assistantSkillMenuButton?.addEventListener("click", toggleAssistantSkillLibrary);
 assistantImportSkillButton?.addEventListener("click", () => assistantSkillInput?.click());
 assistantSkillInput?.addEventListener("change", importLocalSkillToAssistant);
+assistantFileInput?.addEventListener("change", importLocalFilesToAssistant);
 assistantSkillCloseButton?.addEventListener("click", closeAssistantSkillLibrary);
 assistantSkillSearchInput?.addEventListener("input", () => {
   assistantSkillSearchQuery = assistantSkillSearchInput.value.trim().toLowerCase();
@@ -380,6 +390,7 @@ assistantClearButton?.addEventListener("click", clearAssistantChat);
 assistantForm?.addEventListener("submit", sendAssistantMessage);
 assistantStopButton?.addEventListener("click", stopAssistantResponse);
 assistantMessagesEl?.addEventListener("click", handleAssistantMessageClick);
+assistantMessagesEl?.addEventListener("contextmenu", handleAssistantMessageContextMenu);
 assistantModelSelect?.addEventListener("change", () => updateAssistantModelSelection(assistantModelSelect.value));
 clearCanvasButton.addEventListener("click", clearCanvas);
 resetViewButton.addEventListener("click", resetViewport);
@@ -1441,19 +1452,23 @@ function setDreaminaActionProgress(message, state = "active") {
 }
 
 async function copyDreaminaCommand(command) {
+  await copyTextToClipboard(command, "命令已复制");
+}
+
+async function copyTextToClipboard(text, successMessage = "已复制") {
   try {
-    await navigator.clipboard.writeText(command);
-    showToast("命令已复制");
+    await navigator.clipboard.writeText(text);
+    showToast(successMessage);
   } catch {
     const input = document.createElement("textarea");
-    input.value = command;
+    input.value = text;
     input.style.position = "fixed";
     input.style.opacity = "0";
     document.body.append(input);
     input.select();
     document.execCommand("copy");
     input.remove();
-    showToast("命令已复制");
+    showToast(successMessage);
   }
 }
 
@@ -1753,6 +1768,7 @@ function closeAssistantSkillLibrary() {
 function clearAssistantChat() {
   assistantMessages = [];
   assistantPendingImages = [];
+  assistantPendingFiles = [];
   saveAssistantChat();
   renderAssistantPendingAttachments();
   renderAssistantMessages();
@@ -1893,55 +1909,98 @@ function appendAssistantPendingImages(attachments) {
 function renderAssistantPendingAttachments() {
   if (!assistantPendingAttachmentsEl) return;
   assistantPendingAttachmentsEl.replaceChildren();
-  assistantPendingAttachmentsEl.hidden = !assistantPendingImages.length;
-  if (!assistantPendingImages.length) return;
+  const total = assistantPendingImages.length + assistantPendingFiles.length;
+  assistantPendingAttachmentsEl.hidden = !total;
+  if (!total) return;
 
   const head = document.createElement("div");
   head.className = "assistant-pending-head";
-  head.textContent = `待发送图片 ${assistantPendingImages.length}/${assistantPendingImageLimit}`;
+  head.textContent = `待发送附件 ${total} · 图片 ${assistantPendingImages.length}/${assistantPendingImageLimit} · 文件 ${assistantPendingFiles.length}/${assistantPendingFileLimit}`;
   assistantPendingAttachmentsEl.append(head);
 
-  const grid = document.createElement("div");
-  grid.className = "assistant-pending-grid";
+  if (assistantPendingImages.length) {
+    const grid = document.createElement("div");
+    grid.className = "assistant-pending-grid";
 
-  assistantPendingImages.forEach((attachment, index) => {
-    const item = document.createElement("figure");
-    item.className = "assistant-pending-image";
+    assistantPendingImages.forEach((attachment, index) => {
+      const item = document.createElement("figure");
+      item.className = "assistant-pending-image";
 
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.className = "assistant-pending-remove";
-    remove.dataset.pendingImageIndex = String(index);
-    remove.title = "移除图片";
-    remove.setAttribute("aria-label", "移除图片");
-    remove.textContent = "×";
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "assistant-pending-remove";
+      remove.dataset.pendingImageIndex = String(index);
+      remove.title = "移除图片";
+      remove.setAttribute("aria-label", "移除图片");
+      remove.textContent = "×";
 
-    const img = document.createElement("img");
-    img.src = attachment.dataUrl;
-    img.alt = attachment.name || "待发送图片";
+      const img = document.createElement("img");
+      img.src = attachment.dataUrl;
+      img.alt = attachment.name || "待发送图片";
 
-    const caption = document.createElement("figcaption");
-    caption.textContent = attachment.name || attachment.nodeId || "画布图片";
+      const caption = document.createElement("figcaption");
+      caption.textContent = attachment.name || attachment.nodeId || "画布图片";
 
-    item.append(remove, img, caption);
-    grid.append(item);
-  });
+      item.append(remove, img, caption);
+      grid.append(item);
+    });
 
-  assistantPendingAttachmentsEl.append(grid);
+    assistantPendingAttachmentsEl.append(grid);
+  }
+
+  if (assistantPendingFiles.length) {
+    const files = document.createElement("div");
+    files.className = "assistant-pending-files";
+    assistantPendingFiles.forEach((attachment, index) => {
+      const item = document.createElement("div");
+      item.className = "assistant-pending-file";
+
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "assistant-pending-remove";
+      remove.dataset.pendingFileIndex = String(index);
+      remove.title = "移除文件";
+      remove.setAttribute("aria-label", "移除文件");
+      remove.textContent = "×";
+
+      const name = document.createElement("strong");
+      name.textContent = attachment.name || "本地文件";
+
+      const meta = document.createElement("span");
+      meta.textContent = `${formatBytes(attachment.size || attachment.text?.length || 0)} · ${attachment.kind || "文本"}`;
+
+      item.append(remove, name, meta);
+      files.append(item);
+    });
+    assistantPendingAttachmentsEl.append(files);
+  }
 }
 
 function handleAssistantPendingAttachmentClick(event) {
-  const button = event.target?.closest?.("button[data-pending-image-index]");
-  if (!button) return;
-  const index = Number(button.dataset.pendingImageIndex);
-  if (!Number.isInteger(index) || index < 0 || index >= assistantPendingImages.length) return;
-  assistantPendingImages.splice(index, 1);
+  const imageButton = event.target?.closest?.("button[data-pending-image-index]");
+  if (imageButton) {
+    const index = Number(imageButton.dataset.pendingImageIndex);
+    if (Number.isInteger(index) && index >= 0 && index < assistantPendingImages.length) {
+      assistantPendingImages.splice(index, 1);
+    }
+    renderAssistantPendingAttachments();
+    return;
+  }
+
+  const fileButton = event.target?.closest?.("button[data-pending-file-index]");
+  if (fileButton) {
+    const index = Number(fileButton.dataset.pendingFileIndex);
+    if (Number.isInteger(index) && index >= 0 && index < assistantPendingFiles.length) {
+      assistantPendingFiles.splice(index, 1);
+    }
+  }
   renderAssistantPendingAttachments();
 }
 
 function consumeAssistantPendingImages() {
-  const attachments = assistantPendingImages.slice();
+  const attachments = [...assistantPendingImages, ...assistantPendingFiles];
   assistantPendingImages = [];
+  assistantPendingFiles = [];
   return attachments;
 }
 
@@ -1981,6 +2040,70 @@ async function importLocalSkillToAssistant(event) {
     showToast(formatAssistantSkillImportToast(result));
   } catch (error) {
     showToast(error.message || "Skill 导入失败");
+  }
+}
+
+async function importLocalFilesToAssistant(event) {
+  openAssistantPanel();
+  const remaining = Math.max(0, assistantPendingFileLimit - assistantPendingFiles.length);
+  const selectedFiles = Array.from(event.target?.files || []);
+  const files = selectedFiles.slice(0, remaining);
+  if (assistantFileInput) assistantFileInput.value = "";
+  if (!files.length) {
+    if (!remaining) showToast(`待发送文件最多 ${assistantPendingFileLimit} 个`);
+    return;
+  }
+
+  setAssistantBusy(true);
+  try {
+    const attachments = await extractAssistantFileAttachments(files);
+    if (!attachments.length) {
+      showToast("没有可导入的文件内容");
+      return;
+    }
+
+    appendAssistantPendingFiles(attachments);
+    renderAssistantPendingAttachments();
+    assistantInput?.focus();
+    const clipped = files.length < selectedFiles.length ? "，已自动截取可添加数量" : "";
+    showToast(`已添加 ${attachments.length} 个待发送文件${clipped}`);
+  } catch (error) {
+    showToast(error.message || "文件导入助手失败");
+  } finally {
+    setAssistantBusy(false);
+  }
+}
+
+async function extractAssistantFileAttachments(files) {
+  const formData = new FormData();
+  for (const file of files) formData.append("files", file, file.name);
+  const response = await fetch("/api/assistant/extract-files", {
+    method: "POST",
+    body: formData
+  });
+  const data = await readJsonResponse(response);
+  if (!response.ok || data.parseError) throw new Error(data.error || "文件解析失败");
+  const documents = Array.isArray(data.files) ? data.files : [];
+  return documents
+    .filter((item) => item?.text)
+    .map((item) => ({
+      type: "file",
+      key: `${item.name}:${item.size}:${hashAssistantSkillText(item.text || "")}`,
+      name: item.name || "本地文件",
+      size: Number(item.size) || item.text.length,
+      kind: item.kind || "文本",
+      text: String(item.text || "").slice(0, 120000)
+    }));
+}
+
+function appendAssistantPendingFiles(attachments) {
+  const seen = new Set(assistantPendingFiles.map((attachment) => attachment.key || attachment.name));
+  for (const attachment of attachments) {
+    const key = attachment.key || attachment.name;
+    if (!key || seen.has(key)) continue;
+    if (assistantPendingFiles.length >= assistantPendingFileLimit) break;
+    seen.add(key);
+    assistantPendingFiles.push(attachment);
   }
 }
 
@@ -2311,7 +2434,7 @@ async function sendAssistantMessage(event) {
   event?.preventDefault();
   const content = assistantInput?.value.trim() || "";
   if (!content) {
-    if (assistantPendingImages.length) showToast("请先输入图片分析要求，再一起发送");
+    if (assistantPendingImages.length || assistantPendingFiles.length) showToast("请先输入分析要求，再和附件一起发送");
     return;
   }
   if (assistantInput) assistantInput.value = "";
@@ -2385,11 +2508,12 @@ async function sendAssistantPrompt(content, options = {}) {
     const data = await readJsonResponse(response);
     if (!response.ok || data.parseError) throw new Error(data.error || "助手请求失败");
 
+    const responsePlan = data.plan || createAssistantFallbackPlan(content, mode);
     assistantMessages.push({
       id: createId(),
       role: "assistant",
-      content: data.message?.content || "",
-      plan: data.plan || null,
+      content: responsePlan?.summary || data.message?.content || "",
+      plan: responsePlan,
       retryOf: options.retryOf || "",
       createdAt: new Date().toISOString()
     });
@@ -2424,6 +2548,7 @@ function setAssistantBusy(isBusy) {
   if (assistantOrganizeButton) assistantOrganizeButton.disabled = assistantBusy;
   if (assistantPlanButton) assistantPlanButton.disabled = assistantBusy;
   if (assistantImportImagesButton) assistantImportImagesButton.disabled = assistantBusy;
+  if (assistantImportFilesButton) assistantImportFilesButton.disabled = assistantBusy;
   if (assistantImportSkillButton) assistantImportSkillButton.disabled = assistantBusy;
   if (assistantModelSelect) assistantModelSelect.disabled = assistantBusy;
 }
@@ -2475,9 +2600,69 @@ function cloneAssistantAttachments(attachments = []) {
 }
 
 function handleAssistantMessageClick(event) {
+  const copyButton = event.target?.closest?.("button[data-assistant-copy]");
+  if (copyButton) {
+    const message = assistantMessages.find((item) => item.id === copyButton.dataset.assistantCopy);
+    copyAssistantMessage(message);
+    return;
+  }
+
   const retryButton = event.target?.closest?.("button[data-assistant-retry]");
   if (!retryButton) return;
   retryAssistantMessage(retryButton.dataset.assistantRetry);
+}
+
+function handleAssistantMessageContextMenu(event) {
+  const item = event.target?.closest?.(".assistant-message");
+  if (!item || !assistantMessagesEl?.contains(item) || item.classList.contains("is-pending")) return;
+  const message = assistantMessages.find((entry) => entry.id === item.dataset.assistantMessageId);
+  const text = selectedTextWithin(item) || assistantMessageCopyText(message);
+  if (!text.trim()) return;
+  event.preventDefault();
+  showAssistantCopyMenu(event.clientX, event.clientY, text);
+}
+
+function selectedTextWithin(element) {
+  const selection = window.getSelection?.();
+  const text = selection?.toString?.() || "";
+  if (!text.trim() || !selection.rangeCount) return "";
+  const anchor = selection.anchorNode;
+  const focus = selection.focusNode;
+  if (element.contains(anchor) || element.contains(focus)) return text;
+  return "";
+}
+
+function hasActiveTextSelection() {
+  const selection = window.getSelection?.();
+  return Boolean(selection && !selection.isCollapsed && selection.toString().trim());
+}
+
+function copyAssistantMessage(message) {
+  const text = assistantMessageCopyText(message);
+  if (!text.trim()) return;
+  copyTextToClipboard(text, "助手内容已复制");
+}
+
+function assistantMessageCopyText(message) {
+  if (!message) return "";
+  const parts = [String(message.content || "").trim()].filter(Boolean);
+  if (message.plan?.actions?.length) {
+    parts.push(
+      [
+        "操作计划：",
+        ...message.plan.actions.slice(0, 20).map((action, index) => `${index + 1}. ${formatAssistantPlanActionForCopy(action)}`)
+      ].join("\n")
+    );
+  }
+  return parts.join("\n\n").trim();
+}
+
+function formatAssistantPlanActionForCopy(action = {}) {
+  const type = String(action.type || "");
+  if (type === "create_task") return `创建生图节点：${String(action.prompt || "").trim() || "空提示词"}`;
+  if (type === "create_video_task") return `创建视频节点：${String(action.prompt || "").trim() || "空提示词"}`;
+  if (type === "create_note") return `创建文字标注：${String(action.text || "").trim() || "空文字"}`;
+  return formatAssistantPlanAction(action);
 }
 
 async function retryAssistantMessage(messageId) {
@@ -2541,19 +2726,31 @@ function findAssistantRetrySource(messageId) {
 }
 
 function createAssistantMessageActionsElement(message) {
-  if (!canRetryAssistantMessage(message)) return null;
+  const canCopy = Boolean(String(message?.content || "").trim() || message?.plan?.actions?.length);
+  const canRetry = canRetryAssistantMessage(message);
+  if (!canCopy && !canRetry) return null;
 
   const actions = document.createElement("div");
   actions.className = "assistant-message-actions";
 
-  const retry = document.createElement("button");
-  retry.type = "button";
-  retry.className = "secondary compact assistant-message-retry";
-  retry.dataset.assistantRetry = message.id;
-  retry.disabled = assistantBusy;
-  retry.textContent = "重试";
+  if (canCopy) {
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "secondary compact assistant-message-copy";
+    copy.dataset.assistantCopy = message.id;
+    copy.textContent = "复制";
+    actions.append(copy);
+  }
 
-  actions.append(retry);
+  if (canRetry) {
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "secondary compact assistant-message-retry";
+    retry.dataset.assistantRetry = message.id;
+    retry.disabled = assistantBusy;
+    retry.textContent = "重试";
+    actions.append(retry);
+  }
   return actions;
 }
 
@@ -2570,10 +2767,10 @@ function inferAssistantMessageMode(content) {
 function isAssistantActionInstruction(content) {
   const text = String(content || "").trim();
   if (!text) return false;
-  const hasActionWord = /(整理|排版|布局|排列|对齐|分组|归类|分类|标注|文字|颜色|改色|改为|修改|变成|移动|挪动|摆放|创建|新建|添加|生成.*节点|补充.*节点|缩放|放大|缩小|执行|应用)/u.test(text);
+  const hasActionWord = /(整理|排版|布局|排列|对齐|分组|归类|分类|标注|文字|颜色|改色|改为|修改|变成|移动|挪动|摆放|创建|新建|添加|生图节点|图生图节点|作图节点|图片生成节点|视频节点|提示词节点|提示词.*填|生成.*节点|补充.*节点|缩放|放大|缩小|执行|应用)/u.test(text);
   if (!hasActionWord) return false;
   const asksForAdvice = /(怎么|如何|怎样|建议|分析|评价|是否|能不能|可不可以|思路|方案|为什么)/u.test(text);
-  const explicitExecution = /(生成计划|应用|执行|直接|自动|立即|现在|把|将|整理一下|排版一下|分类|归类|分组|标注|改为|修改|变成|改色|创建|新建|添加|移动|挪动|缩放|放大|缩小)/u.test(text);
+  const explicitExecution = /(生成计划|应用|执行|直接|自动|立即|现在|把|将|整理一下|排版一下|分类|归类|分组|标注|改为|修改|变成|改色|创建|新建|添加|生图节点|图生图节点|作图节点|图片生成节点|视频节点|提示词节点|填进去|移动|挪动|缩放|放大|缩小)/u.test(text);
   const hasCommandTone = /(帮我|请|把|将|给我|直接|自动|现在|立即|需要|想要|生成计划|应用|执行)/u.test(text);
   if (asksForAdvice && !explicitExecution) return false;
   return hasCommandTone || !asksForAdvice;
@@ -2603,6 +2800,59 @@ function createLocalAssistantPlan(content, mode) {
       }
     ]
   };
+}
+
+function createAssistantFallbackPlan(content, mode) {
+  if (mode !== "action_plan") return null;
+  const text = String(content || "").trim();
+  if (!/(创建|新建|添加|补充)/u.test(text)) return null;
+  if (!/(生图节点|图生图节点|作图节点|图片生成节点|生成图片节点)/u.test(text)) return null;
+
+  const prompt = extractAssistantCreateTaskPrompt(text) || promptFromSelectedNodes();
+  const isEditMode = /(图生图|参考图|垫图|局部重绘|重绘)/u.test(text);
+  return {
+    summary: prompt
+      ? "已生成创建生图节点的计划，并会把识别到的提示词填入节点。"
+      : "已生成创建空白生图节点的计划，应用后可继续填写提示词。",
+    actions: [
+      {
+        type: "create_task",
+        mode: isEditMode ? "edit" : "create",
+        prompt
+      }
+    ]
+  };
+}
+
+function extractAssistantCreateTaskPrompt(text) {
+  const patterns = [
+    /提示词[:：]\s*([\s\S]+)/u,
+    /prompt[:：]\s*([\s\S]+)/iu,
+    /用(?:这个|以下|下面)?提示词\s*[“"']?([\s\S]+?)[”"']?$/u,
+    /将(?:以下|下面|这个)?提示词填进去[:：]?\s*([\s\S]*)$/u,
+    /把(?:以下|下面|这个)?提示词填进去[:：]?\s*([\s\S]*)$/u
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const prompt = String(match?.[1] || "").trim();
+    if (prompt) return prompt;
+  }
+  return "";
+}
+
+function promptFromSelectedNodes() {
+  const parts = canvasState.nodes
+    .filter((node) => selectedNodeIds.has(node.id))
+    .map((node) => {
+      if (node.type === "note") return node.text || "";
+      if (node.type === "task" || node.type === "video-task") return node.prompt || "";
+      if (node.type === "image") return getImagePrompt(node) || getImageGeneration(node)?.prompt || "";
+      if (node.type === "video") return node.video?.prompt || node.video?.generation?.prompt || "";
+      return "";
+    })
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  return parts.join("\n\n").trim();
 }
 
 function isAssistantLayoutInstruction(content) {
@@ -2651,6 +2901,7 @@ function renderAssistantMessages() {
     ]
       .filter(Boolean)
       .join(" ");
+    item.dataset.assistantMessageId = message.id;
 
     const content = document.createElement("div");
     content.className = "assistant-message-content";
@@ -2708,6 +2959,18 @@ function createAssistantAttachmentsElement(attachments = []) {
       const item = document.createElement("div");
       item.className = "assistant-attachment-skill";
       item.textContent = `${attachment.name || "本地 Skill"} · ${formatBytes(attachment.size || attachment.text?.length || 0)}`;
+      wrap.append(item);
+      continue;
+    }
+
+    if (attachment.type === "file") {
+      const item = document.createElement("div");
+      item.className = "assistant-attachment-file";
+      const name = document.createElement("strong");
+      name.textContent = attachment.name || "本地文件";
+      const meta = document.createElement("span");
+      meta.textContent = `${formatBytes(attachment.size || attachment.text?.length || 0)} · ${attachment.kind || "文本"}`;
+      item.append(name, meta);
       wrap.append(item);
     }
   }
@@ -3287,12 +3550,38 @@ function assistantStorageKey(projectId = currentProjectId) {
   return `${assistantStorageKeyPrefix}:${normalizeProjectId(projectId)}`;
 }
 
-function loadAssistantChat() {
+async function loadAssistantChat() {
+  const localMessages = readAssistantLocalMessages();
+  const diskMessages = await readAssistantChatBackup();
+  const restoredFromLocal =
+    localMessages.length &&
+    (!diskMessages.length || newestAssistantMessageTime(localMessages) > newestAssistantMessageTime(diskMessages));
+  assistantMessages = restoredFromLocal ? localMessages : diskMessages;
+
+  const migrated = migrateAssistantSkillAttachmentsFromChat();
+  if (restoredFromLocal || migrated) saveAssistantChat({ immediate: restoredFromLocal });
+  else if (diskMessages.length) saveAssistantChat({ backup: false });
+
+  renderAssistantMessages();
+  renderAssistantSkillLibrary();
+}
+
+function newestAssistantMessageTime(messages = []) {
+  return Math.max(
+    0,
+    ...messages.map((message) => {
+      const time = Date.parse(message.createdAt || "");
+      return Number.isFinite(time) ? time : 0;
+    })
+  );
+}
+
+function readAssistantLocalMessages(projectId = currentProjectId) {
   let changed = false;
   try {
-    const raw = localStorage.getItem(assistantStorageKey(currentProjectId)) || "[]";
+    const raw = localStorage.getItem(assistantStorageKey(projectId)) || "[]";
     const parsed = JSON.parse(raw);
-    assistantMessages = Array.isArray(parsed)
+    const messages = Array.isArray(parsed)
       ? parsed
           .filter((item) => item?.content)
           .map((item) => {
@@ -3302,23 +3591,69 @@ function loadAssistantChat() {
           })
           .slice(-80)
       : [];
+    if (changed) {
+      localStorage.setItem(
+        assistantStorageKey(projectId),
+        JSON.stringify(messages.slice(-80).map(serializeAssistantMessageForStorage))
+      );
+    }
+    return messages;
   } catch {
-    assistantMessages = [];
+    return [];
   }
-  migrateAssistantSkillAttachmentsFromChat();
-  if (changed) saveAssistantChat();
-  renderAssistantMessages();
-  renderAssistantSkillLibrary();
 }
 
-function saveAssistantChat() {
+async function readAssistantChatBackup(projectId = currentProjectId) {
+  try {
+    const response = await fetch(`/api/assistant/chat-backup?projectId=${encodeURIComponent(projectId)}`);
+    const data = await readJsonResponse(response);
+    if (!response.ok || data.parseError) throw new Error(data.error || "助手聊天备份读取失败");
+    const messages = Array.isArray(data.backup?.messages) ? data.backup.messages : [];
+    return messages.map(normalizeAssistantChatMessage).filter((message) => message.content).slice(-80);
+  } catch {
+    return [];
+  }
+}
+
+function saveAssistantChat(options = {}) {
+  const messages = assistantMessages.slice(-80).map(serializeAssistantMessageForStorage);
   try {
     localStorage.setItem(
       assistantStorageKey(currentProjectId),
-      JSON.stringify(assistantMessages.slice(-80).map(serializeAssistantMessageForStorage))
+      JSON.stringify(messages)
     );
   } catch {
     // Chat history is helpful but not required for canvas editing.
+  }
+  if (options.backup !== false) {
+    scheduleAssistantChatBackup(messages, currentProjectId, { immediate: Boolean(options.immediate) });
+  }
+}
+
+function scheduleAssistantChatBackup(messages, projectId = currentProjectId, options = {}) {
+  const payload = {
+    version: 1,
+    projectId: normalizeProjectId(projectId),
+    messages
+  };
+  if (assistantChatBackupTimer) window.clearTimeout(assistantChatBackupTimer);
+  const persist = () => {
+    assistantChatBackupTimer = 0;
+    persistAssistantChatBackup(payload);
+  };
+  if (options.immediate) persist();
+  else assistantChatBackupTimer = window.setTimeout(persist, assistantChatBackupDelayMs);
+}
+
+async function persistAssistantChatBackup(payload) {
+  try {
+    await fetch(`/api/assistant/chat-backup?projectId=${encodeURIComponent(payload.projectId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+  } catch {
+    // localStorage remains as the immediate fallback if disk backup is unavailable.
   }
 }
 
@@ -3366,7 +3701,8 @@ function migrateAssistantSkillAttachmentsFromChat() {
   });
 
   if (records.length) upsertAssistantSkillRecords(records, { enabled: true });
-  if (changed) saveAssistantChat();
+  if (changed) return true;
+  return false;
 }
 
 function buildAssistantContext(options = {}) {
@@ -3693,6 +4029,9 @@ function bindCanvasEvents() {
     if (createMenu && !createMenu.hidden && !createMenu.contains(event.target)) {
       hideCreateMenu();
     }
+    if (assistantCopyMenu && !assistantCopyMenu.hidden && !assistantCopyMenu.contains(event.target)) {
+      hideAssistantCopyMenu();
+    }
   });
 }
 
@@ -3712,13 +4051,15 @@ function handleCanvasShortcut(event) {
     return true;
   }
 
-  if (isInteractiveElement(event.target)) return false;
-
   if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === "c") {
+    if (hasActiveTextSelection()) return false;
+    if (isInteractiveElement(event.target)) return false;
     event.preventDefault();
     copySelectedNodesToClipboard();
     return true;
   }
+
+  if (isInteractiveElement(event.target)) return false;
 
   if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === "z") {
     event.preventDefault();
@@ -6728,6 +7069,25 @@ function createContextMenu() {
   }
 
   document.body.append(createMenu);
+  createAssistantCopyMenu();
+}
+
+function createAssistantCopyMenu() {
+  assistantCopyMenu = document.createElement("div");
+  assistantCopyMenu.className = "assistant-copy-menu";
+  assistantCopyMenu.hidden = true;
+  assistantCopyMenu.addEventListener("pointerdown", (event) => event.stopPropagation());
+
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.textContent = "复制";
+  copy.addEventListener("click", () => {
+    const text = assistantCopyText;
+    hideAssistantCopyMenu();
+    copyTextToClipboard(text, "助手内容已复制");
+  });
+  assistantCopyMenu.append(copy);
+  document.body.append(assistantCopyMenu);
 }
 
 function showCreateMenu(clientX, clientY) {
@@ -6740,6 +7100,19 @@ function showCreateMenu(clientX, clientY) {
 function hideCreateMenu() {
   if (createMenu) createMenu.hidden = true;
   pendingCreatePoint = null;
+}
+
+function showAssistantCopyMenu(clientX, clientY, text) {
+  if (!assistantCopyMenu) return;
+  assistantCopyText = text;
+  assistantCopyMenu.hidden = false;
+  assistantCopyMenu.style.left = `${clientX}px`;
+  assistantCopyMenu.style.top = `${clientY}px`;
+}
+
+function hideAssistantCopyMenu() {
+  if (assistantCopyMenu) assistantCopyMenu.hidden = true;
+  assistantCopyText = "";
 }
 
 function statusText(status) {
@@ -7459,7 +7832,7 @@ async function loadProjectById(projectId, options = {}) {
 
   renderCanvas();
   applyViewport();
-  loadAssistantChat();
+  await loadAssistantChat();
   primeUndoHistory();
   renderProjectSelect();
 
@@ -7472,6 +7845,7 @@ async function loadProjectById(projectId, options = {}) {
 
 async function switchProject(projectId) {
   if (!projectId || projectId === currentProjectId) return;
+  saveAssistantChat({ immediate: true });
   saveCanvasState({ history: false });
   persistDiskProject(serializeCanvasState(), currentProjectId);
   selectedNodeIds.clear();
@@ -7481,6 +7855,7 @@ async function switchProject(projectId) {
 }
 
 function createNewProject() {
+  saveAssistantChat({ immediate: true });
   saveCanvasState({ history: false });
   persistDiskProject(serializeCanvasState(), currentProjectId);
   selectedNodeIds.clear();
@@ -7526,6 +7901,7 @@ function renameCurrentProject(name) {
 function saveProjectNow() {
   currentProjectName = projectNameInput.value.trim() || currentProjectName || "未命名画布";
   projectNameInput.value = currentProjectName;
+  saveAssistantChat({ immediate: true });
   saveCanvasState({ history: false });
   persistDiskProject(serializeCanvasState(), currentProjectId);
   showToast("画布已保存");

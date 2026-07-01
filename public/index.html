@@ -84,6 +84,7 @@
             <button id="assistantOrganizeButton" type="button" class="secondary compact">整理建议</button>
             <button id="assistantPlanButton" type="button" class="secondary compact">生成计划</button>
             <button id="assistantImportImagesButton" type="button" class="secondary compact">导入选中图片</button>
+            <button id="assistantImportFilesButton" type="button" class="secondary compact">导入文件</button>
             <button id="assistantSkillMenuButton" type="button" class="secondary compact">
               Skills <span id="assistantSkillMenuCount" class="assistant-skill-menu-count">0/0</span>
             </button>
@@ -108,6 +109,7 @@
             </section>
           </div>
           <input id="assistantSkillInput" type="file" accept=".md,.txt,.json,.yaml,.yml,.skill" multiple hidden />
+          <input id="assistantFileInput" type="file" accept=".txt,.md,.markdown,.json,.csv,.tsv,.srt,.ass,.docx" multiple hidden />
           <div id="assistantMessages" class="assistant-messages" aria-live="polite"></div>
           <form id="assistantForm" class="assistant-form">
             <div id="assistantPendingAttachments" class="assistant-pending-attachments" hidden></div>

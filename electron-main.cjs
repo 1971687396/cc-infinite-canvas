@@ -9,6 +9,7 @@ loadEnvFile(path.join(__dirname, ".env.local"));
 
 const preloadPath = path.join(__dirname, "electron-preload.cjs");
 const logPath = path.join(__dirname, "electron-desktop.log");
+const appIconPath = path.join(__dirname, "public", "assets", "app-icon.ico");
 const chatGptPartition = "persist:cc-canvas-chatgpt";
 
 let mainWindow = null;
@@ -35,6 +36,8 @@ app.on("web-contents-created", (_event, contents) => attachProxyAuth(contents));
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch("disable-features", "BlockInsecurePrivateNetworkRequests");
 app.commandLine.appendSwitch("disable-gpu");
+app.setName("cc无限画布");
+if (process.platform === "win32") app.setAppUserModelId("ccInfiniteCanvas");
 
 app.whenReady().then(async () => {
   log("app ready");
@@ -97,7 +100,9 @@ function createMainWindow() {
     minWidth: 960,
     minHeight: 620,
     title: "cc无限画布",
-    backgroundColor: "#eef0eb",
+    backgroundColor: "#111417",
+    autoHideMenuBar: true,
+    icon: fs.existsSync(appIconPath) ? appIconPath : undefined,
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -105,6 +110,7 @@ function createMainWindow() {
       sandbox: false
     }
   });
+  mainWindow.setMenuBarVisibility(false);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) shell.openExternal(url);

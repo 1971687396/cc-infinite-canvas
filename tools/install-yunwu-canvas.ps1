@@ -304,6 +304,7 @@ try {
   if (-not (Test-Path $launcher)) {
     $launcher = $browserLauncher
   }
+  $iconPath = Join-Path $installDir "public\assets\app-icon.ico"
   $uninstaller = Join-Path $installDir "Uninstall.cmd"
   $desktop = [Environment]::GetFolderPath("DesktopDirectory")
   $programs = [Environment]::GetFolderPath("Programs")
@@ -316,12 +317,18 @@ try {
   $desktopShortcut.TargetPath = $launcher
   $desktopShortcut.WorkingDirectory = $installDir
   $desktopShortcut.Description = $appName
+  if (Test-Path $iconPath) {
+    $desktopShortcut.IconLocation = $iconPath
+  }
   $desktopShortcut.Save()
 
   $startShortcut = $shell.CreateShortcut((Join-Path $startMenuDir "$appName.lnk"))
   $startShortcut.TargetPath = $launcher
   $startShortcut.WorkingDirectory = $installDir
   $startShortcut.Description = $appName
+  if (Test-Path $iconPath) {
+    $startShortcut.IconLocation = $iconPath
+  }
   $startShortcut.Save()
 
   if (Test-Path $browserLauncher) {
@@ -329,6 +336,9 @@ try {
     $browserShortcut.TargetPath = $browserLauncher
     $browserShortcut.WorkingDirectory = $installDir
     $browserShortcut.Description = "$appName browser fallback"
+    if (Test-Path $iconPath) {
+      $browserShortcut.IconLocation = $iconPath
+    }
     $browserShortcut.Save()
   }
 
@@ -336,6 +346,9 @@ try {
   $uninstallShortcut.TargetPath = $uninstaller
   $uninstallShortcut.WorkingDirectory = $installDir
   $uninstallShortcut.Description = "Uninstall $appName"
+  if (Test-Path $iconPath) {
+    $uninstallShortcut.IconLocation = $iconPath
+  }
   $uninstallShortcut.Save()
 
   $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$appId"

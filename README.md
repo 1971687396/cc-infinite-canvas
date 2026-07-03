@@ -11,7 +11,7 @@
 - Base URL：`https://yunwu.ai`
 - 鉴权：`Authorization: Bearer <YOUR_API_KEY>`
 - 默认模型：`gpt-image-2`
-- 可在节点模型字段中填写 `grok-image-image` 或文档示例里的 `grok-3-image`，两者都会使用设置里的 Grok 专用 Key
+- 可在节点模型字段中填写 `grok-imagine-image` 或文档示例里的 `grok-3-image`，两者都会使用设置里的 Grok 专用 Key
 
 创建图像请求体为 JSON，关键字段：
 

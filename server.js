@@ -18,7 +18,9 @@ const assetCacheDir = path.join(cacheDir, "assets");
 const projectCacheFile = path.join(cacheDir, "project.json");
 const defaultCacheDir = cacheDir;
 const envFile = path.join(__dirname, ".env.local");
-const grokKeyModel = "grok-image-image";
+const grokImageModel = "grok-imagine-image";
+const legacyGrokImageModel = "grok-image-image";
+const grokKeyModel = grokImageModel;
 const grsaiDefaultBaseUrl = "https://grsaiapi.com";
 const grsaiGenerateEndpoint = "/v1/api/generate";
 const grsaiResultEndpoint = "/v1/api/result";
@@ -34,7 +36,7 @@ const dreaminaVideoRatios = new Set(["1:1", "3:4", "16:9", "4:3", "9:16", "21:9"
 const dreaminaVideoExtensions = new Set([".mp4", ".mov", ".webm", ".m4v"]);
 const maxMultipartBytes = 512 * 1024 * 1024;
 const assistantDefaultModel = "gpt-5.5";
-const modelKeyModels = ["gpt-image-2", "grok-image-image", assistantDefaultModel];
+const modelKeyModels = ["gpt-image-2", grokKeyModel, assistantDefaultModel];
 const serverHost = "127.0.0.1";
 
 loadEnvFile(envFile);
@@ -49,7 +51,7 @@ const config = {
   imageEndpoint: process.env.YUNWU_IMAGE_ENDPOINT || "/v1/images/generations",
   editEndpoint: process.env.YUNWU_EDIT_ENDPOINT || "/v1/images/edits",
   chatEndpoint: process.env.YUNWU_CHAT_ENDPOINT || "/v1/chat/completions",
-  defaultModel: process.env.YUNWU_DEFAULT_MODEL || "gpt-image-2",
+  defaultModel: normalizeModelAlias(process.env.YUNWU_DEFAULT_MODEL || "gpt-image-2"),
   assistantModel: process.env.YUNWU_ASSISTANT_MODEL || assistantDefaultModel,
   modelApiKeys: loadModelApiKeys(),
   cacheDir: sanitizeCacheDir(process.env.CC_CANVAS_CACHE_DIR || process.env.YUNWU_CACHE_DIR || defaultCacheDir, defaultCacheDir)
@@ -219,12 +221,23 @@ function hasAnyApiKey() {
 
 function loadModelApiKeys() {
   return Object.fromEntries(
-    modelKeyModels.map((model) => [normalizeModelName(model), process.env[modelKeyEnvName(model)] || ""])
+    modelKeyModels.map((model) => {
+      const normalizedModel = normalizeModelName(model);
+      const legacyValue =
+        normalizedModel === grokKeyModel ? process.env[modelKeyEnvName(legacyGrokImageModel)] || "" : "";
+      return [normalizedModel, process.env[modelKeyEnvName(model)] || legacyValue];
+    })
   );
 }
 
 function normalizeModelName(model) {
   return String(model || "").trim().toLowerCase();
+}
+
+function normalizeModelAlias(model) {
+  const normalized = normalizeModelName(model);
+  if (normalized === legacyGrokImageModel) return grokImageModel;
+  return normalized;
 }
 
 function modelKeyEnvName(model) {
@@ -243,7 +256,8 @@ function mergeModelApiKeys(body) {
   const submitted = isPlainObject(body.modelApiKeys) ? body.modelApiKeys : {};
   for (const model of modelKeyModels) {
     const normalizedModel = normalizeModelName(model);
-    const value = sanitizeOptionalText(submitted[normalizedModel]);
+    const legacyValue = normalizedModel === grokKeyModel ? submitted[legacyGrokImageModel] : "";
+    const value = sanitizeOptionalText(submitted[normalizedModel] || legacyValue);
     if (value) next[normalizedModel] = value;
   }
   return next;
@@ -255,15 +269,15 @@ function apiKeyForModel(model) {
 }
 
 function modelKeyBucket(model) {
-  const normalizedModel = normalizeModelName(model || config.defaultModel);
+  const normalizedModel = normalizeModelAlias(model || config.defaultModel);
   if (isGrokImageModel(normalizedModel)) return grokKeyModel;
   if (normalizedModel === assistantDefaultModel || normalizedModel.startsWith(`${assistantDefaultModel}-`)) return assistantDefaultModel;
   return normalizedModel;
 }
 
 function isGrokImageModel(model) {
-  const normalized = normalizeModelName(model);
-  return normalized.startsWith("grok-") && (normalized === "grok-image-image" || normalized.includes("-image"));
+  const normalized = normalizeModelAlias(model);
+  return normalized.startsWith("grok-") && (normalized === grokImageModel || normalized.includes("-image"));
 }
 
 function isGrsaiImageModel(model) {
@@ -565,7 +579,7 @@ async function handleSaveSettings(req, res) {
     imageEndpoint: sanitizeOptionalText(body.imageEndpoint) || config.imageEndpoint,
     editEndpoint: sanitizeOptionalText(body.editEndpoint) || config.editEndpoint,
     chatEndpoint: sanitizeOptionalText(body.chatEndpoint) || config.chatEndpoint,
-    defaultModel: sanitizeOptionalText(body.defaultModel) || config.defaultModel,
+    defaultModel: normalizeModelAlias(sanitizeOptionalText(body.defaultModel) || config.defaultModel),
     assistantModel: sanitizeOptionalText(body.assistantModel) || config.assistantModel,
     modelApiKeys: mergeModelApiKeys(body),
     cacheDir: sanitizeCacheDir(body.cacheDir, config.cacheDir)
@@ -702,7 +716,7 @@ async function writeSettingsEnv(settings) {
     ["YUNWU_DEFAULT_MODEL", settings.defaultModel],
     ["YUNWU_ASSISTANT_MODEL", settings.assistantModel],
     [modelKeyEnvName("gpt-image-2"), settings.modelApiKeys["gpt-image-2"] || ""],
-    [modelKeyEnvName("grok-image-image"), settings.modelApiKeys["grok-image-image"] || ""],
+    [modelKeyEnvName(grokKeyModel), settings.modelApiKeys[grokKeyModel] || ""],
     [modelKeyEnvName(assistantDefaultModel), settings.modelApiKeys[assistantDefaultModel] || ""],
     ["CC_CANVAS_CACHE_DIR", settings.cacheDir]
   ]);
@@ -816,6 +830,7 @@ async function handleGenerate(req, res) {
   const contentType = req.headers["content-type"] || "";
   const isMultipart = contentType.includes("multipart/form-data");
   const body = isMultipart ? await readMultipartBody(req, contentType) : await readJsonBody(req);
+  body.model = normalizeModelAlias(body.model || config.defaultModel);
   const prompt = String(body.prompt || "").trim();
 
   if (!prompt) {
@@ -1363,6 +1378,11 @@ function buildAssistantMessages(messages, context, mode = "chat") {
       content:
         "如果用户消息包含 image_url 内容块，说明用户已把画布图片导入助手，你可以结合这些图片进行视觉分析；如果没有 image_url，就只能依据文本上下文判断。"
     },
+    {
+      role: "system",
+      content:
+        "画布可用能力表：create_note 用于文字标注、分析报告、提示词、说明、清单和标题；create_task 用于创建生图/作图/图片生成节点，图生图或参考图场景使用 mode:\"edit\"；create_video_task 用于创建生视频/视频生成节点；organize_nodes 用于普通整理排版；organize_groups 用于按人物、道具、场景、风格、用途等分类整理并生成分组标题；update_note/update_notes 用于改文字内容、字号和颜色；update_task 用于改生图节点参数；set_node_scale 用于调整图片或视频缩放。用户说“输出到画布、放到画布、写到画布、做成节点”时，不等于固定创建文字标注，必须根据语境选择动作：文本类结果才用 create_note，图片生成需求用 create_task，视频生成需求用 create_video_task，素材整理需求用 organize_nodes 或 organize_groups。"
+    },
   ];
 
   if (mode === "action_plan") {
@@ -1370,6 +1390,11 @@ function buildAssistantMessages(messages, context, mode = "chat") {
       role: "system",
       content:
         "本轮必须只返回 JSON，不要使用 Markdown，也不要解释你没有接口、没有权限、需要查看代码或需要用户先说明系统。你已经拥有前端支持的画布操作接口，只需要返回计划 JSON，前端会执行。JSON 格式：{\"summary\":\"一句话说明计划\",\"actions\":[...]}。允许的 action.type 只有：create_task、create_video_task、create_note、move_node、move_nodes、organize_nodes、organize_groups、update_task、update_note、update_notes、set_node_scale。禁止删除节点、禁止直接运行生成。最多 20 个动作。术语映射必须牢记：用户说“生图节点、图片生成节点、生成图片节点、作图节点”就是 create_task；用户说“图生图节点、参考图生图节点”也是 create_task 但 mode 应为 \"edit\"；用户说“生视频节点、视频生成节点”就是 create_video_task；用户说“文字标注、文字节点、提示词节点”就是 create_note。用户说“创建生图节点，将提示词填进去/把提示词填进去”时，应创建 create_task，并把用户消息中的提示词、选中的 note.text、选中 task.prompt 或最近上下文里明确的提示词填入 prompt；如果确实没有提示词，就创建 prompt 为空的生图节点，而不是拒绝。坐标使用画布世界坐标，必须根据节点 width/height 留出 48px 以上间距，避免重叠。修改已有节点时必须使用上下文里的真实 id。整理、排版、对齐但不需要分类时使用 organize_nodes，不要手写大量 move_node。用户要求分类、归类、分组、按人物/道具/场景/风格/用途整理，或要求标注/标题时，优先使用 organize_groups，让你根据节点的 prompt、filename、model、sourceTaskId 和上下文判断分组；如果不确定，放入“未分类”。用户要求修改文字标注的颜色、字号、内容时使用 update_note 或 update_notes；如果目标是“选中的文字标注”，update_notes 使用 scope:\"selected\"；如果目标是“全部文字标注”，使用 scope:\"all\"；如果目标是“人物名字/标题/分组名/某类标注”等模糊对象，必须根据 note.text、上下文和选中状态自行判断并返回具体 ids，不要让前端猜。颜色优先返回 #RRGGBB，也可返回中文颜色名。create_task 字段可含 mode、prompt、model、size、n、quality、format、x、y；create_video_task 字段可含 prompt、model、size、n、quality、x、y；create_note 字段可含 text、x、y、fontSize、color、width、height；move_node 字段为 id、x、y；move_nodes 字段为 items:[{id,x,y}]；organize_nodes 字段为 ids:[id]、columns、gap、normalizeMedia、maxMediaLongSide；organize_groups 字段为 groups:[{title,ids,columns}]、originX、originY、gap、groupGap、orientation、normalizeMedia、maxMediaLongSide、labelFontSize、labelColor，其中 orientation 可为 horizontal 或 vertical，labelFontSize 建议 40-64；update_task 字段为 id、prompt、model、size、n、quality、format、mode；update_note 字段为 id、text、color、fontSize、width、height；update_notes 字段为 ids、scope、color、fontSize、width、height；set_node_scale 字段为 id、scale。"
+    });
+    baseMessages.push({
+      role: "system",
+      content:
+        "再次强调：不要把“输出到画布”机械理解为 create_note。先判断用户要输出的对象是什么：分析报告、文字说明、提示词、标题、清单等文本产物用 create_note；要生成图片或创建作图任务用 create_task；要生成视频用 create_video_task；要整理现有图片、视频、文字和任务节点用 organize_nodes/organize_groups；要修改现有节点用 update_* 或 set_node_scale。"
     });
   }
 

@@ -10,6 +10,7 @@ $payloadZip = Join-Path $iexpressRoot "YunwuImageCanvas.zip"
 $installScript = Join-Path $iexpressRoot "Install-YunwuCanvas.ps1"
 $sedPath = Join-Path $iexpressRoot "YunwuImageCanvasSetup.sed"
 $csharpInstaller = Join-Path $iexpressRoot "YunwuImageCanvasInstaller.cs"
+$installerIcon = Join-Path $root "public\assets\app-icon.ico"
 
 function Assert-UnderRoot($path, $parent) {
   $resolvedParent = [IO.Path]::GetFullPath($parent)
@@ -397,7 +398,20 @@ internal static class Program
 '@
 
   Set-Content -LiteralPath $csharpInstaller -Value $source -Encoding ASCII
-  & $csc /nologo /target:winexe /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /out:$installerTempPath /resource:$payloadZip,YunwuImageCanvas.zip /resource:$installScript,Install-YunwuCanvas.ps1 $csharpInstaller
+  $compileArgs = @(
+    "/nologo",
+    "/target:winexe",
+    "/reference:System.Windows.Forms.dll",
+    "/reference:System.Drawing.dll",
+    "/out:$installerTempPath",
+    "/resource:$payloadZip,YunwuImageCanvas.zip",
+    "/resource:$installScript,Install-YunwuCanvas.ps1"
+  )
+  if (Test-Path $installerIcon) {
+    $compileArgs += "/win32icon:$installerIcon"
+  }
+  $compileArgs += $csharpInstaller
+  & $csc @compileArgs
 
   if (-not (Test-Path $installerTempPath)) {
     throw "C# installer was not created: $installerTempPath"

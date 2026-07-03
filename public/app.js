@@ -12,9 +12,15 @@ const assistantPendingFileLimit = 5;
 const themeStorageKey = "cc-canvas-theme";
 const minZoom = 0.02;
 const maxZoom = 24;
-const defaultTaskWidth = 420;
+const defaultTaskWidth = 620;
 const defaultVideoTaskWidth = 440;
 const defaultImageScale = 0.5;
+const imageDisplayLongSideByTier = {
+  "1k": 360,
+  "2k": 460,
+  "4k": 560
+};
+const defaultImageDisplayLongSide = imageDisplayLongSideByTier["1k"];
 const defaultVideoWidth = 480;
 const defaultVideoHeight = 270;
 const defaultVideoScale = 0.75;
@@ -1140,6 +1146,7 @@ function createImageNodesForTask(taskNode, images) {
     if (key && existingKeys.has(key)) continue;
 
     const dimensions = parseImageDimensions(image, taskNode.size);
+    const scale = defaultScaleForImageDimensions(dimensions.width || 512, dimensions.height || 512, image?.size || taskNode.size);
     const node = {
       id: createId(),
       type: "image",
@@ -1148,7 +1155,7 @@ function createImageNodesForTask(taskNode, images) {
       sourceImageKey: key,
       originalWidth: dimensions.width || 512,
       originalHeight: dimensions.height || 512,
-      scale: defaultImageScale,
+      scale,
       x,
       y: cursorY,
       z: ++canvasState.nextZ,
@@ -1201,11 +1208,39 @@ function createVideoNodesForTask(taskNode, videos) {
 }
 
 function parseImageSize(size) {
-  const match = String(size || "").match(/^(\d+)x(\d+)$/i);
-  if (!match) return { width: 512, height: 512 };
+  const text = String(size || "").trim();
+  const match = text.match(/(\d{2,5})\s*x\s*(\d{2,5})/i);
+  if (match) {
+    return {
+      width: Number(match[1]) || 512,
+      height: Number(match[2]) || 512
+    };
+  }
+
+  const ratioMatch = text.match(/(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?).*?([124])\s*k/i);
+  if (ratioMatch) {
+    const ratioW = Number(ratioMatch[1]) || 1;
+    const ratioH = Number(ratioMatch[2]) || 1;
+    const tier = `${ratioMatch[3]}k`;
+    const longSide = tier === "4k" ? 3840 : tier === "2k" ? 2048 : 1280;
+    if (ratioW >= ratioH) {
+      return {
+        width: longSide,
+        height: Math.round((longSide * ratioH) / ratioW)
+      };
+    }
+    return {
+      width: Math.round((longSide * ratioW) / ratioH),
+      height: longSide
+    };
+  }
+
+  if (/4\s*k/i.test(text)) return { width: 3840, height: 2160 };
+  if (/2\s*k/i.test(text)) return { width: 2048, height: 1152 };
+  if (/1\s*k/i.test(text)) return { width: 1280, height: 720 };
   return {
-    width: Number(match[1]) || 512,
-    height: Number(match[2]) || 512
+    width: 512,
+    height: 512
   };
 }
 
@@ -1214,6 +1249,52 @@ function parseImageDimensions(image, fallbackSize) {
   const height = Number(image?.height);
   if (width > 0 && height > 0) return { width, height };
   return parseImageSize(image?.size || fallbackSize);
+}
+
+function imageDisplayTierFromSize(size) {
+  const text = String(size || "").toLowerCase();
+  const tierMatch = text.match(/(?:^|[^0-9])([124])\s*k(?:$|[^a-z0-9])/i);
+  if (tierMatch) return `${tierMatch[1].toLowerCase()}k`;
+
+  const dimensions = text.match(/(\d{2,5})\s*x\s*(\d{2,5})/i);
+  if (!dimensions) return "";
+  const longSide = Math.max(Number(dimensions[1]) || 0, Number(dimensions[2]) || 0);
+  if (longSide >= 2800) return "4k";
+  if (longSide >= 1700) return "2k";
+  if (longSide >= 600) return "1k";
+  return "";
+}
+
+function targetImageDisplayLongSide(size, width, height) {
+  const tier = imageDisplayTierFromSize(size);
+  if (tier && imageDisplayLongSideByTier[tier]) return imageDisplayLongSideByTier[tier];
+
+  const longSide = Math.max(Number(width) || 0, Number(height) || 0);
+  if (longSide >= 2800) return imageDisplayLongSideByTier["4k"];
+  if (longSide >= 1700) return imageDisplayLongSideByTier["2k"];
+  return defaultImageDisplayLongSide;
+}
+
+function defaultScaleForImageDimensions(width, height, size = "") {
+  const longSide = Math.max(1, Number(width) || 512, Number(height) || 512);
+  return clamp(targetImageDisplayLongSide(size, width, height) / longSide, 0.05, 1);
+}
+
+function defaultScaleForImageNode(node, dimensions = {}) {
+  const width = Number(dimensions.width) || Number(node?.originalWidth) || 512;
+  const height = Number(dimensions.height) || Number(node?.originalHeight) || 512;
+  const size = node?.image?.size || node?.size || "";
+  return defaultScaleForImageDimensions(width, height, size);
+}
+
+function resolvedImageNodeScale(node, dimensions = {}) {
+  const currentScale = Number(node?.scale);
+  const normalizedScale = defaultScaleForImageNode(node, dimensions);
+  if (Number.isFinite(currentScale) && currentScale > 0) {
+    const isLegacyDefault = Math.abs(currentScale - defaultImageScale) < 0.0001;
+    return clamp(isLegacyDefault ? normalizedScale : currentScale, 0.05, 4);
+  }
+  return normalizedScale;
 }
 
 function parseVideoDimensions(video, fallbackRatio = "16:9") {
@@ -1261,6 +1342,8 @@ async function cacheEditFiles(nodeId) {
     const nextStored = { ...storedFiles };
     if (imageAssets.length) delete nextStored.images;
     if (maskAsset) delete nextStored.mask;
+    if (imageAssets.length && !nextStored.images?.length) node.sessionFiles = [];
+    else if (imageAssets.length && node.sessionFiles?.length) node.sessionFiles = node.sessionFiles.slice(imageAssets.length);
     if (nextStored.images?.length || nextStored.mask) fileStore.set(node.id, nextStored);
     else fileStore.delete(node.id);
   } catch {
@@ -4465,10 +4548,10 @@ async function addLocalMediaFilesToCanvas(files, point) {
     for (const [index, asset] of assets.entries()) {
       const dim = metadata[index] || (asset.field === "video" ? { width: defaultVideoWidth, height: defaultVideoHeight } : { width: 512, height: 512 });
       const isVideo = asset.field === "video";
-      const scale = isVideo ? defaultVideoScale : defaultImageScale;
       const node = isVideo
         ? createLocalVideoNode(asset, dim, cursorX, cursorY)
         : createLocalImageNode(asset, dim, cursorX, cursorY);
+      const scale = Number(node.scale) || (isVideo ? defaultVideoScale : defaultImageScale);
 
       canvasState.nodes.push(node);
       createdIds.push(node.id);
@@ -4509,6 +4592,7 @@ function createLocalImageNode(asset, dim, x, y) {
     cachedAsset: asset,
     createdAt: new Date().toISOString()
   };
+  const scale = defaultScaleForImageDimensions(dim.width, dim.height, image.size);
 
   return {
     id: createId(),
@@ -4518,7 +4602,7 @@ function createLocalImageNode(asset, dim, x, y) {
     sourceImageKey: asset.filename || image.url,
     originalWidth: dim.width,
     originalHeight: dim.height,
-    scale: defaultImageScale,
+    scale,
     x: Math.round(x),
     y: Math.round(y),
     z: ++canvasState.nextZ,
@@ -5700,9 +5784,9 @@ function startVideoResize(event, nodeId) {
 
 function createImageNode(node) {
   const selected = selectedNodeIds.has(node.id);
-  const scale = Number(node.scale) || defaultImageScale;
   const width = Math.max(1, Number(node.originalWidth) || 512);
   const height = Math.max(1, Number(node.originalHeight) || 512);
+  const scale = Number(node.scale) || defaultScaleForImageNode(node, { width, height });
 
   const tile = document.createElement("article");
   tile.className = ["canvas-node", "image-node", selected ? "is-selected" : ""].filter(Boolean).join(" ");
@@ -5720,10 +5804,29 @@ function createImageNode(node) {
   img.addEventListener("load", () => {
     if (!img.naturalWidth || !img.naturalHeight) return;
     if (node.originalWidth === img.naturalWidth && node.originalHeight === img.naturalHeight) return;
+    const previousDefaultScale = defaultScaleForImageNode(node, {
+      width: node.originalWidth || width,
+      height: node.originalHeight || height
+    });
+    const currentScale = Number(node.scale);
+    const shouldRefreshDefaultScale =
+      !Number.isFinite(currentScale) ||
+      Math.abs(currentScale - defaultImageScale) < 0.0001 ||
+      Math.abs(currentScale - previousDefaultScale) < 0.0001;
     node.originalWidth = img.naturalWidth;
     node.originalHeight = img.naturalHeight;
-    tile.style.width = `${Math.round(node.originalWidth * (Number(node.scale) || 1))}px`;
-    tile.style.height = `${Math.round(node.originalHeight * (Number(node.scale) || 1))}px`;
+    if (shouldRefreshDefaultScale) {
+      node.scale = defaultScaleForImageNode(node, {
+        width: node.originalWidth,
+        height: node.originalHeight
+      });
+    }
+    const nextScale = Number(node.scale) || defaultScaleForImageNode(node, {
+      width: node.originalWidth,
+      height: node.originalHeight
+    });
+    tile.style.width = `${Math.round(node.originalWidth * nextScale)}px`;
+    tile.style.height = `${Math.round(node.originalHeight * nextScale)}px`;
     saveCanvasState();
     updateMinimap();
     renderReferenceLinks();
@@ -6121,8 +6224,8 @@ function createVideoReferenceSummary(node) {
   const summary = document.createElement("p");
   summary.className = "asset-summary";
   const cached = node.cachedImages?.length || 0;
-  const session = (fileStore.get(node.id)?.images?.length || 0) + (node.sessionFiles?.length || 0);
-  summary.textContent = cached || session ? `${cached} 张已缓存参考图，${session} 张待缓存/本次选择` : "未选择参考图时将使用文生视频。";
+  const pending = pendingReferenceImageCount(node);
+  summary.textContent = cached || pending ? `${cached} 张已缓存参考图，${pending} 张待缓存/本次选择` : "未选择参考图时将使用文生视频。";
   return summary;
 }
 
@@ -6153,6 +6256,38 @@ function videoModelLabel(model) {
   return dreaminaVideoModelOptions.find(([value]) => value === model)?.[1] || String(model || "").replace(/^dreamina-video-/u, "");
 }
 
+function createNodeIcon(name, className = "") {
+  const span = document.createElement("span");
+  span.className = ["node-inline-icon", className].filter(Boolean).join(" ");
+  span.setAttribute("aria-hidden", "true");
+  span.innerHTML = nodeIconSvg(name);
+  return span;
+}
+
+function nodeIconSvg(name) {
+  const icons = {
+    "image-generate":
+      '<svg viewBox="0 0 24 24"><path d="M4.5 6.5A2 2 0 0 1 6.5 4.5h8A2 2 0 0 1 16.5 6.5v1h1A2 2 0 0 1 19.5 9.5v8a2 2 0 0 1-2 2h-11a2 2 0 0 1-2-2v-11Z"/><path d="m6.5 16 3-3 2.2 2.2 2.1-2.1 3.7 3.9"/><path d="M18 3.8v3M16.5 5.3h3M9 8.5h.01"/></svg>',
+    "image-edit":
+      '<svg viewBox="0 0 24 24"><path d="M4.5 6.5A2 2 0 0 1 6.5 4.5h7A2 2 0 0 1 15.5 6.5v2"/><path d="M4.5 17.5v-11M4.5 17.5a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-5"/><path d="m6.5 16 3-3 2 2"/><path d="M14.5 15.5 19 11l2 2-4.5 4.5-2.5.5.5-2.5Z"/></svg>',
+    create:
+      '<svg viewBox="0 0 24 24"><path d="M6 5.5h9.5A2.5 2.5 0 0 1 18 8v10.5H6z"/><path d="M18 8h2M19 7v2M9 12h6M12 9v6"/></svg>',
+    pencil:
+      '<svg viewBox="0 0 24 24"><path d="M5 18.5 6 14l8.8-8.8a2 2 0 0 1 2.8 0l1.2 1.2a2 2 0 0 1 0 2.8L10 18l-5 1Z"/><path d="m13.5 6.5 4 4"/></svg>',
+    spark:
+      '<svg viewBox="0 0 24 24"><path d="M12 3.5 14.7 9l5.8 3-5.8 3L12 20.5 9.3 15l-5.8-3 5.8-3L12 3.5Z"/></svg>',
+    copy:
+      '<svg viewBox="0 0 24 24"><path d="M8 8h10v11H8z"/><path d="M5 16V5h10"/></svg>',
+    trash:
+      '<svg viewBox="0 0 24 24"><path d="M7 7h10M10 7V5h4v2M9 10v7M15 10v7M8 7l1 12h6l1-12"/></svg>',
+    image:
+      '<svg viewBox="0 0 24 24"><path d="M5 5h14v14H5z"/><path d="m7 16 3-3 2 2 3-4 2 5"/><path d="M9 9.5h.01"/></svg>',
+    mask:
+      '<svg viewBox="0 0 24 24"><path d="M5 5h5M14 5h5M5 19h5M14 19h5M5 5v5M19 5v5M5 14v5M19 14v5"/><path d="M9 12h6M12 9v6"/></svg>'
+  };
+  return icons[name] || icons.image;
+}
+
 function createTaskHeader(node) {
   const header = document.createElement("div");
   header.className = "task-header";
@@ -6161,9 +6296,14 @@ function createTaskHeader(node) {
   status.className = "task-status";
   status.textContent = statusText(node.status);
 
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "task-title-wrap";
+  titleWrap.append(createNodeIcon(node.mode === "edit" ? "image-edit" : "image-generate", "task-title-icon"));
+
   const title = document.createElement("strong");
   title.className = "task-title";
   title.textContent = providerForModel(node.model) === "dreamina" ? "即梦生图" : node.mode === "edit" ? "图片编辑" : "图片生成";
+  titleWrap.append(title);
 
   const modeTabs = document.createElement("div");
   modeTabs.className = "node-mode-tabs";
@@ -6173,7 +6313,7 @@ function createTaskHeader(node) {
   meta.className = "node-meta";
   meta.textContent = [node.model, node.size, node.format, cacheStatusText(node)].filter(Boolean).join(" · ");
 
-  header.append(status, title, modeTabs, meta, createTaskActions(node));
+  header.append(status, titleWrap, modeTabs, meta, createTaskActions(node));
   return header;
 }
 
@@ -6198,15 +6338,11 @@ function createPromptField(node) {
 }
 
 function createDebugPanel(node) {
-  const debug = document.createElement("details");
+  const debug = document.createElement("section");
   debug.className = "node-debug";
-  debug.open = Boolean(node.debugOpen);
-  debug.addEventListener("toggle", () => {
-    node.debugOpen = debug.open;
-    saveCanvasState();
-  });
 
-  const summary = document.createElement("summary");
+  const summary = document.createElement("div");
+  summary.className = "node-debug-heading";
   summary.textContent = "参数";
 
   const settings = document.createElement("div");
@@ -6215,8 +6351,13 @@ function createDebugPanel(node) {
 
   const advanced = document.createElement("details");
   advanced.className = "node-advanced";
+  advanced.open = Boolean(node.debugOpen);
+  advanced.addEventListener("toggle", () => {
+    node.debugOpen = advanced.open;
+    saveCanvasState();
+  });
   const advancedSummary = document.createElement("summary");
-  advancedSummary.textContent = "高级设置";
+  advancedSummary.textContent = "高级参数已收起";
   const advancedGrid = document.createElement("div");
   advancedGrid.className = "node-config-grid";
 
@@ -6286,18 +6427,19 @@ function createImageArea(node, selected) {
   }
 
   if (node.images?.length) {
-    const placeholder = document.createElement("div");
-    placeholder.className = "node-placeholder";
-    placeholder.textContent = `${node.images.length} 张图片已放到画布`;
-    imageArea.append(placeholder);
+    imageArea.append(createImagePlaceholder(`${node.images.length} 张图片已放到画布`, "image"));
     return imageArea;
   }
 
+  imageArea.append(createImagePlaceholder(node.error || (node.mode === "edit" ? "等待生成" : "待生成"), node.mode === "edit" ? "mask" : "image"));
+  return imageArea;
+}
+
+function createImagePlaceholder(text, icon = "image") {
   const placeholder = document.createElement("div");
   placeholder.className = "node-placeholder";
-  placeholder.textContent = node.error || (node.mode === "edit" ? "等待参考图" : "待生成");
-  imageArea.append(placeholder);
-  return imageArea;
+  placeholder.append(createNodeIcon(icon, "node-placeholder-icon"), document.createTextNode(text));
+  return placeholder;
 }
 
 function createTaskActions(node) {
@@ -6307,19 +6449,19 @@ function createTaskActions(node) {
   const generate = document.createElement("button");
   generate.type = "button";
   generate.className = "node-action-primary";
-  generate.textContent = node.status === "running" ? "生成中" : "生成";
+  generate.append(createNodeIcon("spark", "node-action-icon"), document.createTextNode(node.status === "running" ? "生成中" : "生成"));
   generate.disabled = node.status === "running";
   generate.addEventListener("click", () => generateNode(node.id));
 
   const duplicate = document.createElement("button");
   duplicate.type = "button";
-  duplicate.textContent = "复制";
+  duplicate.append(createNodeIcon("copy", "node-action-icon"), document.createTextNode("复制"));
   duplicate.addEventListener("click", () => duplicateNode(node.id));
 
   const remove = document.createElement("button");
   remove.type = "button";
   remove.className = "node-action-danger";
-  remove.textContent = "删除";
+  remove.append(createNodeIcon("trash", "node-action-icon"), document.createTextNode("删除"));
   remove.addEventListener("click", () => {
     deleteNodes([node.id]);
   });
@@ -6339,7 +6481,7 @@ function createModeButton(node, mode, label) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = node.mode === mode ? "active" : "";
-  button.textContent = label;
+  button.append(createNodeIcon(mode === "edit" ? "pencil" : "create", "node-mode-icon"), document.createTextNode(label));
   button.addEventListener("click", () => {
     if (node.mode === mode) return;
     node.mode = mode;
@@ -6396,9 +6538,13 @@ function createEditAssetFields(node) {
     if (stored.images?.length) cacheEditFiles(node.id);
   });
 
-  const summary = document.createElement("p");
-  summary.className = "asset-summary";
-  summary.textContent = assetSummaryText(node);
+  const head = document.createElement("div");
+  head.className = "edit-assets-head";
+  const title = document.createElement("strong");
+  title.textContent = "参考输入";
+  const hint = document.createElement("span");
+  hint.textContent = "支持参考图与蒙版";
+  head.append(title, hint);
 
   const thumbnails = createReferenceThumbnails(node);
 
@@ -6421,13 +6567,75 @@ function createEditAssetFields(node) {
 
   referenceActions.append(useSelected, pickFromCanvas);
 
-  panel.append(createField(isDreaminaModelName(node.model) ? "参考图片（最多 10 张）" : "参考图片", imageInput, "node-field-full"));
+  const cards = document.createElement("div");
+  cards.className = "reference-card-grid";
+  cards.append(
+    createReferenceInputCard({
+      title: "参考图",
+      hint: imageReferenceStateText(node),
+      icon: "image",
+      input: imageInput,
+      actionText: "选择"
+    })
+  );
   if (!isDreaminaModelName(node.model)) {
-    panel.append(createField("蒙版 PNG", maskInput, "node-field-full"));
+    cards.append(
+      createReferenceInputCard({
+        title: "蒙版",
+        hint: node.cachedMask || node.sessionMask ? "已选" : "可选",
+        icon: "mask",
+        input: maskInput,
+        actionText: "选择"
+      })
+    );
   }
-  panel.append(referenceActions, thumbnails, summary);
+
+  const summary = document.createElement("p");
+  summary.className = "asset-summary";
+  summary.textContent = assetSummaryText(node);
+
+  panel.append(head, cards, referenceActions, thumbnails, summary);
 
   return panel;
+}
+
+function createReferenceInputCard({ title, hint, icon, input, actionText }) {
+  const card = document.createElement("label");
+  card.className = "reference-input-card";
+  card.addEventListener("pointerdown", (event) => event.stopPropagation());
+
+  input.classList.add("reference-file-input");
+  input.tabIndex = -1;
+
+  const iconEl = createNodeIcon(icon, "reference-input-icon");
+  const copy = document.createElement("span");
+  copy.className = "reference-input-copy";
+  const name = document.createElement("strong");
+  name.textContent = title;
+  const meta = document.createElement("span");
+  meta.textContent = hint;
+  copy.append(name, meta);
+
+  const action = document.createElement("span");
+  action.className = "reference-input-action";
+  action.textContent = actionText;
+
+  card.append(iconEl, copy, action, input);
+  return card;
+}
+
+function imageReferenceStateText(node) {
+  const cached = node.cachedImages?.length || 0;
+  const pending = pendingReferenceImageCount(node);
+  if (cached || pending) return `${cached + pending} 张`;
+  return isDreaminaModelName(node.model) ? "最多 10 张" : "选择 / 已选";
+}
+
+function pendingReferenceImageCount(node) {
+  const stored = fileStore.get(node.id)?.images?.length || 0;
+  if (stored) return stored;
+  if (node.cachedImages?.length) return 0;
+  return node.sessionFiles?.length || 0;
 }
 
 function createReferenceThumbnails(node) {
@@ -8294,6 +8502,8 @@ function migrateNode(node) {
 
   if (node.type === "image") {
     const dimensions = parseImageDimensions(node.image, node.size);
+    const originalWidth = Number(node.originalWidth) || dimensions.width || 512;
+    const originalHeight = Number(node.originalHeight) || dimensions.height || 512;
     return {
       ...node,
       id: node.id || createId(),
@@ -8301,9 +8511,9 @@ function migrateNode(node) {
       image: node.image || {},
       sourceTaskId: node.sourceTaskId || "",
       sourceImageKey: node.sourceImageKey || getImageKey(node.image),
-      originalWidth: Number(node.originalWidth) || dimensions.width || 512,
-      originalHeight: Number(node.originalHeight) || dimensions.height || 512,
-      scale: clamp(Number(node.scale) || defaultImageScale, 0.05, 4),
+      originalWidth,
+      originalHeight,
+      scale: resolvedImageNodeScale(node, { width: originalWidth, height: originalHeight }),
       x: node.x || 0,
       y: node.y || 0,
       z: node.z || 1,
@@ -8401,7 +8611,7 @@ function migrateTaskNode(node) {
     error: node.error || "",
     durationMs: node.durationMs || null,
     debugOpen: Boolean(node.debugOpen),
-    width: Math.max(Number(node.width) || defaultTaskWidth, 420),
+    width: Math.max(Number(node.width) || defaultTaskWidth, 560),
     x: node.x || 0,
     y: node.y || 0,
     z: node.z || 1,
@@ -8473,6 +8683,7 @@ function materializeTaskImageNodes() {
       if (key && imageKeys.has(key)) continue;
 
       const dimensions = parseImageDimensions(image, task.size);
+      const scale = defaultScaleForImageDimensions(dimensions.width || 512, dimensions.height || 512, image?.size || task.size);
       additions.push({
         id: createId(),
         type: "image",
@@ -8481,7 +8692,7 @@ function materializeTaskImageNodes() {
         sourceImageKey: key,
         originalWidth: dimensions.width || 512,
         originalHeight: dimensions.height || 512,
-        scale: defaultImageScale,
+        scale,
         x,
         y: cursorY,
         z: ++canvasState.nextZ,
@@ -8489,7 +8700,7 @@ function materializeTaskImageNodes() {
       });
 
       imageKeys.add(key);
-      cursorY += (dimensions.height || 512) * defaultImageScale + 32;
+      cursorY += (dimensions.height || 512) * scale + 32;
     }
   }
 

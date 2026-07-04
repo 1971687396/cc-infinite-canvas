@@ -242,11 +242,6 @@
         </label>
 
         <label class="settings-field">
-          <span>gpt-5.5 助手专用 Key</span>
-          <input id="settingsAssistantKey" type="password" autocomplete="off" placeholder="留空则使用平台总 Key" />
-        </label>
-
-        <label class="settings-field">
           <span>Grsai API Key</span>
           <input id="settingsGrsaiApiKey" type="password" autocomplete="off" placeholder="留空则不修改" />
         </label>
@@ -279,6 +274,11 @@
         <label class="settings-field settings-field-full">
           <span>助手模型</span>
           <select id="settingsAssistantModel"></select>
+        </label>
+
+        <label class="settings-field settings-field-full">
+          <span id="settingsAssistantKeyLabel">助手当前模型专用 Key</span>
+          <input id="settingsAssistantKey" type="password" autocomplete="off" placeholder="留空则使用平台总 Key" />
         </label>
 
         <label class="settings-field settings-field-full">

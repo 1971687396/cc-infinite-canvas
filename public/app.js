@@ -89,6 +89,7 @@ const settingsApiKey = document.querySelector("#settingsApiKey");
 const settingsGptImageKey = document.querySelector("#settingsGptImageKey");
 const settingsGrokImageKey = document.querySelector("#settingsGrokImageKey");
 const settingsAssistantKey = document.querySelector("#settingsAssistantKey");
+const settingsAssistantKeyLabel = document.querySelector("#settingsAssistantKeyLabel");
 const settingsGrsaiApiKey = document.querySelector("#settingsGrsaiApiKey");
 const settingsBaseUrl = document.querySelector("#settingsBaseUrl");
 const settingsImageEndpoint = document.querySelector("#settingsImageEndpoint");
@@ -234,6 +235,19 @@ const assistantModelOptions = [
   ["grok-4.3", "grok-4.3"],
   ["deepseek-v4-pro", "deepseek-v4-pro"]
 ];
+const assistantPlanActionTypes = new Set([
+  "create_task",
+  "create_video_task",
+  "create_note",
+  "move_node",
+  "move_nodes",
+  "organize_nodes",
+  "organize_groups",
+  "update_task",
+  "update_note",
+  "update_notes",
+  "set_node_scale"
+]);
 const grokModelOptions = [
   ["grok-3-image", "grok-3-image"],
   [grokImagineModel, grokImagineModel]
@@ -410,6 +424,10 @@ assistantStopButton?.addEventListener("click", stopAssistantResponse);
 assistantMessagesEl?.addEventListener("click", handleAssistantMessageClick);
 assistantMessagesEl?.addEventListener("contextmenu", handleAssistantMessageContextMenu);
 assistantModelSelect?.addEventListener("change", () => updateAssistantModelSelection(assistantModelSelect.value));
+settingsAssistantModel?.addEventListener("change", () => {
+  settingsAssistantKey.value = "";
+  updateSettingsAssistantKeyState(settingsAssistantModel.value);
+});
 clearCanvasButton.addEventListener("click", clearCanvas);
 resetViewButton.addEventListener("click", resetViewport);
 zoomInButton.addEventListener("click", () => zoomAtCenter(canvasState.viewport.zoom * 1.2));
@@ -508,6 +526,7 @@ selectionScaleInput.addEventListener("keydown", (event) => {
     applySelectionScale();
   }
 });
+selectionScaleInput.addEventListener("blur", commitSelectionScaleInput);
 
 function addTaskNode(mode = "create", point = null, options = {}) {
   const center = point || getViewportCenterWorld();
@@ -1416,6 +1435,20 @@ function fillAssistantModelSelect(select, value) {
   }
   select.value = selected;
   if (select === assistantModelSelect) updateAssistantModelIcon(selected);
+  if (select === settingsAssistantModel) updateSettingsAssistantKeyState(selected);
+}
+
+function settingsAssistantKeyModel(model = settingsAssistantModel?.value || config.assistantModel || assistantDefaultModel) {
+  return String(model || assistantDefaultModel).trim() || assistantDefaultModel;
+}
+
+function updateSettingsAssistantKeyState(model = settingsAssistantKeyModel()) {
+  if (!settingsAssistantKey) return;
+  const keyModel = settingsAssistantKeyModel(model);
+  if (settingsAssistantKeyLabel) settingsAssistantKeyLabel.textContent = `${keyModel} 助手专用 Key`;
+  settingsAssistantKey.placeholder = config.modelKeys?.[keyModel.toLowerCase()]
+    ? "已配置，留空不修改"
+    : "留空则使用平台总 Key";
 }
 
 function updateAssistantModelIcon(model) {
@@ -1489,7 +1522,6 @@ function openSettingsDialog() {
   settingsGrsaiApiKey.value = "";
   settingsGptImageKey.placeholder = config.modelKeys?.["gpt-image-2"] ? "已配置，留空不修改" : "留空则使用平台总 Key";
   settingsGrokImageKey.placeholder = config.modelKeys?.[grokImagineModel] ? "已配置，留空不修改" : "留空则使用平台总 Key";
-  settingsAssistantKey.placeholder = config.modelKeys?.[assistantDefaultModel] ? "已配置，留空不修改" : "留空则使用平台总 Key";
   settingsGrsaiApiKey.placeholder = config.hasGrsaiApiKey ? "已配置，留空不修改" : "填写 Grsai API Key";
   settingsBaseUrl.value = config.baseUrl || "https://yunwu.ai";
   settingsImageEndpoint.value = config.imageEndpoint || "/v1/images/generations";
@@ -1497,6 +1529,7 @@ function openSettingsDialog() {
   settingsChatEndpoint.value = config.chatEndpoint || "/v1/chat/completions";
   settingsDefaultModel.value = config.defaultModel || "gpt-image-2";
   renderAssistantModelSelectors();
+  updateSettingsAssistantKeyState();
   settingsCacheDir.value = config.cacheDir || "";
   settingsStatus.textContent = config.hasApiKey ? "Key 已配置" : "Key 未配置";
   const modelKeyCount = Object.values(config.modelKeys || {}).filter(Boolean).length;
@@ -1652,20 +1685,21 @@ async function saveSettings(event) {
   settingsStatus.textContent = "保存中";
 
   try {
+    const assistantKeyModel = settingsAssistantKeyModel();
     const payload = {
       apiKey: settingsApiKey.value.trim(),
       grsaiApiKey: settingsGrsaiApiKey.value.trim(),
       modelApiKeys: {
         "gpt-image-2": settingsGptImageKey.value.trim(),
         [grokImagineModel]: settingsGrokImageKey.value.trim(),
-        [assistantDefaultModel]: settingsAssistantKey.value.trim()
+        [assistantKeyModel]: settingsAssistantKey.value.trim()
       },
       baseUrl: settingsBaseUrl.value.trim(),
       imageEndpoint: settingsImageEndpoint.value.trim(),
       editEndpoint: settingsEditEndpoint.value.trim(),
       chatEndpoint: settingsChatEndpoint.value.trim(),
       defaultModel: settingsDefaultModel.value.trim(),
-      assistantModel: settingsAssistantModel.value.trim(),
+      assistantModel: assistantKeyModel,
       cacheDir: settingsCacheDir.value.trim()
     };
 
@@ -2685,11 +2719,18 @@ async function sendAssistantPrompt(content, options = {}) {
     const data = await readJsonResponse(response);
     if (!response.ok || data.parseError) throw new Error(data.error || "助手请求失败");
 
-    const responsePlan = data.plan || createAssistantFallbackPlan(content, mode, data.message?.content || "");
+    const assistantContent = data.message?.content || "";
+    const extractedPlan = extractAssistantPlanFromContent(assistantContent);
+    const responsePlan =
+      data.plan ||
+      extractedPlan.plan ||
+      createAssistantFallbackPlan(content, mode, assistantContent) ||
+      createAssistantSummaryFallbackPlan(content, assistantContent);
+    const responseContent = extractedPlan.content || assistantContent || responsePlan?.summary || "";
     assistantMessages.push({
       id: createId(),
       role: "assistant",
-      content: responsePlan?.summary || data.message?.content || "",
+      content: responseContent,
       plan: responsePlan,
       retryOf: options.retryOf || "",
       createdAt: new Date().toISOString()
@@ -2979,13 +3020,249 @@ function createLocalAssistantPlan(content, mode) {
   };
 }
 
+function parseAssistantPlanFromContent(content) {
+  return extractAssistantPlanFromContent(content).plan;
+}
+
+function extractAssistantPlanFromContent(content) {
+  const text = String(content || "").trim();
+  const candidates = assistantJsonCandidates(text);
+  const actions = [];
+  const seenActions = new Set();
+  const planRanges = [];
+  let summary = "";
+
+  for (const candidate of candidates) {
+    const parsed = tryParseAssistantPlanJson(candidate.json);
+    const candidateActions = normalizeAssistantPlanActions(parsed);
+    if (!candidateActions.length) continue;
+
+    if (!summary && isPlainObject(parsed)) summary = String(parsed.summary || "").trim();
+    planRanges.push([candidate.start, candidate.end]);
+
+    for (const action of candidateActions) {
+      const key = JSON.stringify(action);
+      if (seenActions.has(key)) continue;
+      seenActions.add(key);
+      if (actions.length < 20) actions.push(action);
+    }
+  }
+
+  if (!actions.length) {
+    return { plan: null, content: text };
+  }
+
+  const plan = {
+    summary: summary || `已识别到 ${actions.length} 个画布操作，请确认后应用。`,
+    actions
+  };
+  const cleanedContent = removeAssistantPlanRanges(text, planRanges);
+
+  return {
+    plan,
+    content: isAssistantPlanSummaryOnly(cleanedContent) ? plan.summary : cleanedContent || plan.summary
+  };
+}
+
+function isAssistantPlanSummaryOnly(value) {
+  return /^已识别到\s*\d+\s*个画布操作，请确认后应用。?$/u.test(String(value || "").trim());
+}
+
+function normalizeAssistantPlanActions(parsed) {
+  let candidates = [];
+  if (Array.isArray(parsed)) {
+    candidates = parsed;
+  } else if (isPlainObject(parsed) && Array.isArray(parsed.actions)) {
+    candidates = parsed.actions;
+  } else if (isPlainObject(parsed) && assistantPlanActionTypes.has(assistantPlanActionType(parsed))) {
+    candidates = [parsed];
+  } else if (isPlainObject(parsed)) {
+    const args = parseAssistantActionArguments(parsed);
+    if (args) return normalizeAssistantPlanActions(args);
+  }
+
+  return candidates
+    .map(normalizeAssistantPlanAction)
+    .filter(Boolean)
+    .slice(0, 20);
+}
+
+function normalizeAssistantPlanAction(action) {
+  if (!isPlainObject(action)) return null;
+  const type = assistantPlanActionType(action);
+
+  const args = parseAssistantActionArguments(action);
+  if (!assistantPlanActionTypes.has(type)) {
+    if (args) return normalizeAssistantPlanActions(args)[0] || null;
+    return null;
+  }
+  const normalized = args ? { ...args, type } : { ...action, type };
+  delete normalized.name;
+  delete normalized.action;
+  delete normalized.tool;
+  delete normalized.arguments;
+  delete normalized.args;
+  delete normalized.params;
+  delete normalized.parameters;
+  delete normalized.input;
+  return clonePlainValue(normalized);
+}
+
+function assistantPlanActionType(action) {
+  const values = [action?.type, action?.name, action?.action, action?.tool]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  return values.find((value) => assistantPlanActionTypes.has(value)) || values[0] || "";
+}
+
+function parseAssistantActionArguments(action) {
+  const raw =
+    action.arguments ??
+    action.args ??
+    action.params ??
+    action.parameters ??
+    action.input ??
+    null;
+  if (isPlainObject(raw)) return raw;
+  if (typeof raw !== "string") return null;
+  const parsed = tryParseAssistantPlanJson(raw);
+  return isPlainObject(parsed) ? parsed : null;
+}
+
+function tryParseAssistantPlanJson(content) {
+  try {
+    return JSON.parse(stripAssistantJsonFence(content));
+  } catch {
+    return null;
+  }
+}
+
+function stripAssistantJsonFence(text) {
+  return String(text || "").replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "").trim();
+}
+
+function assistantJsonCandidates(content) {
+  const text = String(content || "");
+  const candidates = [];
+  const seen = new Set();
+  const fencedRanges = [];
+  const addCandidate = (json, start, end) => {
+    const trimmed = stripAssistantJsonFence(json);
+    if (!trimmed) return;
+    const key = `${start}:${end}:${trimmed.length}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push({ json: trimmed, start, end });
+  };
+
+  for (const match of text.matchAll(/```(?:json)?\s*([\s\S]*?)```/giu)) {
+    const start = match.index || 0;
+    const end = start + match[0].length;
+    fencedRanges.push([start, end]);
+    addCandidate(match[1], start, end);
+  }
+
+  const whole = text.trim();
+  if (whole) addCandidate(whole, text.indexOf(whole), text.indexOf(whole) + whole.length);
+
+  for (let index = 0; index < text.length; index += 1) {
+    if (isIndexInRanges(index, fencedRanges)) continue;
+    const char = text[index];
+    if (char !== "{" && char !== "[") continue;
+    const block = readBalancedJsonCandidate(text, index);
+    if (!block) continue;
+    addCandidate(block.json, index, block.end);
+    index = block.end - 1;
+  }
+
+  return candidates;
+}
+
+function readBalancedJsonCandidate(text, start) {
+  const opener = text[start];
+  const closer = opener === "{" ? "}" : "]";
+  const stack = [closer];
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start + 1; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{" || char === "[") {
+      stack.push(char === "{" ? "}" : "]");
+      continue;
+    }
+    if (char !== "}" && char !== "]") continue;
+    if (char !== stack.pop()) return null;
+    if (!stack.length) {
+      const end = index + 1;
+      return { json: text.slice(start, end), end };
+    }
+  }
+
+  return null;
+}
+
+function isIndexInRanges(index, ranges) {
+  return ranges.some(([start, end]) => index >= start && index < end);
+}
+
+function removeAssistantPlanRanges(text, ranges) {
+  if (!ranges.length) return String(text || "").trim();
+  const merged = ranges
+    .map(([start, end]) => [Math.max(0, start), Math.min(text.length, end)])
+    .filter(([start, end]) => end > start)
+    .sort((a, b) => a[0] - b[0])
+    .reduce((list, range) => {
+      const last = list[list.length - 1];
+      if (last && range[0] <= last[1]) {
+        last[1] = Math.max(last[1], range[1]);
+      } else {
+        list.push([...range]);
+      }
+      return list;
+    }, []);
+
+  let output = "";
+  let cursor = 0;
+  for (const [start, end] of merged) {
+    output += text.slice(cursor, start);
+    cursor = end;
+  }
+  output += text.slice(cursor);
+  return output
+    .replace(/[ \t]+\n/gu, "\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+}
+
 function createAssistantFallbackPlan(content, mode, assistantContent = "") {
   if (mode !== "action_plan") return null;
   const text = String(content || "").trim();
   if (isAssistantCreateTaskInstruction(text)) return createAssistantTaskFallbackPlan(text);
   if (isAssistantCreateVideoTaskInstruction(text)) return createAssistantVideoTaskFallbackPlan(text);
   if (isAssistantCreateNoteInstruction(text)) return createAssistantNoteFallbackPlan(text, assistantContent);
+  if (isAssistantCharacterAssetSpec(text)) return createAssistantCharacterAssetFallbackPlan(text, assistantContent);
   return null;
+}
+
+function createAssistantSummaryFallbackPlan(content, assistantContent = "") {
+  if (!isAssistantPlanSummaryOnly(assistantContent)) return null;
+  return createAssistantFallbackPlan(content, "action_plan", assistantContent);
 }
 
 function isAssistantCreateTaskInstruction(text) {
@@ -3101,6 +3378,118 @@ function extractAssistantOutputNoteText(text, assistantContent = "") {
   const selectedText = promptFromSelectedNodes();
   if (selectedText) return selectedText;
   return "";
+}
+
+function isAssistantCharacterAssetSpec(text) {
+  const value = String(text || "").trim();
+  if (value.length < 160) return false;
+  const structureScore = [
+    /剧情定位/u,
+    /人设气质/u,
+    /脸型|五官|眉眼|鼻型|嘴唇/u,
+    /身材比例|身高感|体态/u,
+    /服装版本|V\d+\s+/u
+  ].filter((pattern) => pattern.test(value)).length;
+  return structureScore >= 3;
+}
+
+function createAssistantCharacterAssetFallbackPlan(text, assistantContent = "") {
+  const value = String(text || "").trim();
+  if (!value) return null;
+
+  const center = getViewportCenterWorld();
+  const name = inferAssistantCharacterAssetName(value);
+  const versions = extractAssistantCharacterVersions(value).slice(0, 3);
+  const noteText = `【人物资产】${name}设定规范\n\n${value}`;
+  const noteHeight = clamp(300 + Math.ceil(noteText.length / 120) * 24, 420, 760);
+  const originX = Math.round(center.x - 720);
+  const originY = Math.round(center.y - 280);
+  const actions = [
+    {
+      type: "create_note",
+      x: originX,
+      y: originY,
+      width: 1180,
+      height: noteHeight,
+      text: noteText,
+      fontSize: value.length > 900 ? 24 : 28,
+      color: defaultNoteColorForTheme()
+    }
+  ];
+
+  const promptBase = trimAssistantText(value.replace(/\n{2,}/gu, "\n").replace(/\s+/gu, " "), 900);
+  const taskVersions = versions.length
+    ? versions
+    : [{ title: "角色标准版", description: "根据人物设定生成角色定妆参考。" }];
+  for (const [index, version] of taskVersions.entries()) {
+    actions.push({
+      type: "create_task",
+      mode: "create",
+      x: originX + 1240 + index * 260,
+      y: originY,
+      model: config.defaultModel || "gpt-image-2",
+      size: "720x1280",
+      count: "1",
+      prompt: trimAssistantText(
+        [
+          "真人实拍, 9:16竖屏, 电影级写实, 角色定妆参考图",
+          name,
+          version.title,
+          version.description,
+          promptBase,
+          "自然皮肤纹理, 真实骨相, 服装材质清晰, 影视级光影, 半身或全身人物参考"
+        ].filter(Boolean).join(", "),
+        1400
+      )
+    });
+  }
+
+  return {
+    summary: assistantContent && isAssistantPlanSummaryOnly(assistantContent)
+      ? `已补全 ${actions.length} 个画布操作，请确认后应用。`
+      : `已为「${name}」生成 ${actions.length} 个画布操作，请确认后应用。`,
+    actions
+  };
+}
+
+function inferAssistantCharacterAssetName(text) {
+  const lines = String(text || "")
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const titleLine = lines.find((line) => /剧情定位/u.test(line));
+  if (titleLine) {
+    const index = lines.indexOf(titleLine);
+    const next = lines[index + 1] || "";
+    const name = firstChineseNameSegment(next);
+    if (name) return name;
+  }
+
+  for (const line of lines.slice(0, 8)) {
+    if (/^\d+[.、]/u.test(line) || /^(剧情定位|人设气质|脸型|身材)/u.test(line)) continue;
+    const name = firstChineseNameSegment(line);
+    if (name) return name;
+  }
+  return "角色";
+}
+
+function firstChineseNameSegment(line) {
+  const cleaned = String(line || "").replace(/^[-*•\s]+/u, "").trim();
+  const segment = cleaned.split(/[，,。；;：:\s]/u)[0] || "";
+  if (/^[\u4e00-\u9fa5A-Za-z0-9·]{2,16}$/u.test(segment)) return segment;
+  return "";
+}
+
+function extractAssistantCharacterVersions(text) {
+  const versions = [];
+  const pattern = /(V\d+)\s*([^\n\r]{0,40})(?:\r?\n)([^\n\r]{2,120})/giu;
+  for (const match of String(text || "").matchAll(pattern)) {
+    versions.push({
+      title: `${match[1]} ${String(match[2] || "").trim()}`.trim(),
+      description: String(match[3] || "").trim()
+    });
+  }
+  return versions;
 }
 
 function isAssistantCapabilityRefusal(text) {
@@ -3268,7 +3657,8 @@ function createAssistantPlanElement(message) {
 
   const title = document.createElement("div");
   title.className = "assistant-plan-title";
-  title.textContent = `操作计划 · ${plan.actions.length} 步`;
+  const statusText = plan.applied ? "已应用" : plan.ignored ? "已不使用" : "";
+  title.textContent = `操作计划 · ${plan.actions.length} 步${statusText ? ` · ${statusText}` : ""}`;
 
   const list = document.createElement("ol");
   list.className = "assistant-plan-list";
@@ -3284,7 +3674,7 @@ function createAssistantPlanElement(message) {
   const apply = document.createElement("button");
   apply.type = "button";
   apply.textContent = plan.applied ? "已应用" : "应用计划";
-  apply.disabled = Boolean(plan.applied);
+  apply.disabled = Boolean(plan.applied || plan.ignored);
   apply.addEventListener("click", () => {
     const applied = applyAssistantPlan(plan);
     if (!applied) return;
@@ -3293,7 +3683,18 @@ function createAssistantPlanElement(message) {
     renderAssistantMessages();
   });
 
-  actions.append(apply);
+  const ignore = document.createElement("button");
+  ignore.type = "button";
+  ignore.className = "secondary";
+  ignore.textContent = plan.ignored ? "已不使用" : "不使用";
+  ignore.disabled = Boolean(plan.applied || plan.ignored);
+  ignore.addEventListener("click", () => {
+    plan.ignored = true;
+    saveAssistantChat();
+    renderAssistantMessages();
+  });
+
+  actions.append(apply, ignore);
   panel.append(title, list, actions);
   return panel;
 }
@@ -3331,6 +3732,10 @@ function formatAssistantPlanAction(action = {}) {
 }
 
 function applyAssistantPlan(plan) {
+  if (plan?.ignored) {
+    showToast("这条计划已标记为不使用");
+    return false;
+  }
   const actions = Array.isArray(plan?.actions) ? plan.actions.slice(0, 20) : [];
   if (!actions.length) {
     showToast("计划里没有可执行动作");
@@ -3375,10 +3780,18 @@ function applyAssistantAction(action, touchedIds) {
   return false;
 }
 
+function assistantPlannedNodeId(action) {
+  const id = String(action?.id || "").trim().slice(0, 160);
+  if (!id) return "";
+  if (canvasState.nodes.some((node) => node.id === id)) return "";
+  return id;
+}
+
 function applyAssistantCreateTask(action, touchedIds) {
   const center = getViewportCenterWorld();
   const mode = action.mode === "edit" ? "edit" : "create";
   const node = createDefaultTaskNode(mode);
+  node.id = assistantPlannedNodeId(action) || node.id;
   node.prompt = String(action.prompt || "").trim();
   node.model = String(action.model || node.model || config.defaultModel || "gpt-image-2").trim();
   node.x = Math.round(planNumber(action.x, center.x));
@@ -3394,6 +3807,7 @@ function applyAssistantCreateTask(action, touchedIds) {
 function applyAssistantCreateVideoTask(action, touchedIds) {
   const center = getViewportCenterWorld();
   const node = createDefaultVideoTaskNode();
+  node.id = assistantPlannedNodeId(action) || node.id;
   node.prompt = String(action.prompt || "").trim();
   node.model = isDreaminaVideoModelName(action.model) ? action.model : node.model;
   node.x = Math.round(planNumber(action.x, center.x));
@@ -3401,7 +3815,7 @@ function applyAssistantCreateVideoTask(action, touchedIds) {
   node.z = ++canvasState.nextZ;
   if (dreaminaVideoRatioOptions.some(([value]) => value === action.size)) node.size = action.size;
   if (dreaminaVideoResolutionOptions.some(([value]) => value === action.quality)) node.quality = action.quality;
-  if (action.n) node.n = String(action.n);
+  if (action.n || action.count) node.n = String(action.n || action.count);
   canvasState.nodes.push(node);
   touchedIds.add(node.id);
   return true;
@@ -3412,7 +3826,7 @@ function applyAssistantCreateNote(action, touchedIds) {
   const width = clamp(Math.round(planNumber(action.width, defaultNoteWidth)), minNoteWidth, maxNoteWidth);
   const height = clamp(Math.round(planNumber(action.height, defaultNoteHeight)), minNoteHeight, maxNoteHeight);
   const node = {
-    id: createId(),
+    id: assistantPlannedNodeId(action) || createId(),
     type: "note",
     text: String(action.text || "").trim(),
     fontSize: clamp(Math.round(planNumber(action.fontSize, 22)), minNoteFontSize, maxNoteFontSize),
@@ -3544,7 +3958,7 @@ function applyAssistantNotePatch(node, action, touchedIds) {
 }
 
 function applyAssistantTaskFields(node, action) {
-  if (action.n) node.n = String(action.n);
+  if (action.n || action.count) node.n = String(action.n || action.count);
   if (action.size && isSizeAllowedForModel(action.size, node.model, node.mode)) node.size = action.size;
   if (typeof action.quality === "string") node.quality = action.quality;
   if (typeof action.format === "string" && formatOptions.some(([value]) => value === action.format)) node.format = action.format;
@@ -3569,6 +3983,15 @@ function applyAssistantOrganizeNodes(action, touchedIds) {
         ? action.items.map((item) => String(item?.id || "")).filter(Boolean)
         : []
   );
+  if (!ids.size) {
+    if (touchedIds?.size) {
+      for (const id of touchedIds) ids.add(id);
+    } else if (selectedNodeIds.size) {
+      for (const id of selectedNodeIds) ids.add(id);
+    } else {
+      for (const node of assistantLayoutTargetNodes()) ids.add(node.id);
+    }
+  }
   const nodes = canvasState.nodes
     .filter((node) => ids.has(node.id))
     .sort((a, b) => (Number(a.x) || 0) - (Number(b.x) || 0) || (Number(a.y) || 0) - (Number(b.y) || 0));
@@ -3842,7 +4265,8 @@ async function loadAssistantChat() {
   assistantMessages = restoredFromLocal ? localMessages : diskMessages;
 
   const migrated = migrateAssistantSkillAttachmentsFromChat();
-  if (restoredFromLocal || migrated) saveAssistantChat({ immediate: restoredFromLocal });
+  const repaired = repairAssistantSummaryOnlyPlansFromHistory();
+  if (restoredFromLocal || migrated || repaired) saveAssistantChat({ immediate: restoredFromLocal || repaired });
   else if (diskMessages.length) saveAssistantChat({ backup: false });
 
   renderAssistantMessages();
@@ -3954,12 +4378,21 @@ function serializeAssistantMessageForStorage(message) {
 }
 
 function normalizeAssistantChatMessage(message) {
+  const role = ["assistant", "system", "user"].includes(message?.role) ? message.role : "user";
+  let content = String(message?.content || "");
+  let plan = isPlainObject(message?.plan) ? clonePlainValue(message.plan) : null;
+  if (role === "assistant" && !message?.error) {
+    const extractedPlan = extractAssistantPlanFromContent(content);
+    if (!plan && extractedPlan.plan) plan = extractedPlan.plan;
+    if (extractedPlan.plan) content = extractedPlan.content || plan?.summary || "";
+  }
+
   return {
     id: String(message?.id || createId()),
-    role: ["assistant", "system", "user"].includes(message?.role) ? message.role : "user",
-    content: String(message?.content || ""),
+    role,
+    content,
     attachments: Array.isArray(message?.attachments) ? clonePlainValue(message.attachments) : [],
-    plan: isPlainObject(message?.plan) ? clonePlainValue(message.plan) : null,
+    plan,
     error: Boolean(message?.error),
     stopped: Boolean(message?.stopped),
     retryOf: String(message?.retryOf || ""),
@@ -3986,6 +4419,38 @@ function migrateAssistantSkillAttachmentsFromChat() {
   if (records.length) upsertAssistantSkillRecords(records, { enabled: true });
   if (changed) return true;
   return false;
+}
+
+function repairAssistantSummaryOnlyPlansFromHistory() {
+  let changed = false;
+  for (let index = 0; index < assistantMessages.length; index += 1) {
+    const message = assistantMessages[index];
+    if (
+      message?.role !== "assistant" ||
+      message.error ||
+      message.plan?.actions?.length ||
+      !isAssistantPlanSummaryOnly(message.content)
+    ) {
+      continue;
+    }
+
+    const sourceUser = findPreviousAssistantUserMessage(index);
+    const plan = sourceUser ? createAssistantSummaryFallbackPlan(sourceUser.content, message.content) : null;
+    if (!plan?.actions?.length) continue;
+
+    message.plan = plan;
+    message.content = plan.summary;
+    changed = true;
+  }
+  return changed;
+}
+
+function findPreviousAssistantUserMessage(beforeIndex) {
+  for (let index = beforeIndex - 1; index >= 0; index -= 1) {
+    const message = assistantMessages[index];
+    if (message?.role === "user" && String(message.content || "").trim()) return message;
+  }
+  return null;
 }
 
 function buildAssistantContext(options = {}) {
@@ -4156,6 +4621,21 @@ function applySelectionScale() {
 
   renderCanvas();
   saveCanvasState();
+}
+
+function commitSelectionScaleInput() {
+  if (!selectionScaleInput || document.activeElement !== selectionScaleInput) return;
+  const raw = String(selectionScaleInput.value || "").trim();
+  if (!raw) {
+    updateSelectionToolbar();
+    return;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    updateSelectionToolbar();
+    return;
+  }
+  selectionScaleInput.value = String(Math.round(clamp(value, 5, 400)));
 }
 
 function reusePromptFromSelection() {
@@ -5666,6 +6146,58 @@ function createVideoNode(node) {
   return tile;
 }
 
+function displayedMediaScalePercent(node, fallbackScale) {
+  return String(Math.round((Number(node.scale) || fallbackScale) * 100));
+}
+
+function commitMediaScaleInput(node, input, options = {}) {
+  const minScale = Number(options.minScale) || 0.05;
+  const fallbackScale = Number(options.fallbackScale) || 1;
+  const raw = String(input.value || "").trim();
+  const currentScale = Number(node.scale) || fallbackScale;
+  if (!raw) {
+    input.value = String(Math.round(currentScale * 100));
+    return;
+  }
+
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    input.value = String(Math.round(currentScale * 100));
+    return;
+  }
+
+  const nextPercent = Math.round(clamp(value, minScale * 100, 400));
+  node.scale = nextPercent / 100;
+  input.value = String(nextPercent);
+
+  const tile = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === node.id);
+  const fallbackWidth = node.type === "video" ? defaultVideoWidth : 512;
+  const fallbackHeight = node.type === "video" ? defaultVideoHeight : 512;
+  const width = Math.max(1, Number(node.originalWidth) || fallbackWidth);
+  const height = Math.max(1, Number(node.originalHeight) || fallbackHeight);
+  if (tile) {
+    tile.style.width = `${Math.round(width * node.scale)}px`;
+    tile.style.height = `${Math.round(height * node.scale)}px`;
+  }
+
+  updateSelectionToolbar();
+  saveCanvasState();
+  updateMinimap();
+  renderReferenceLinks();
+  syncChatGptHostSoon();
+}
+
+function bindMediaScaleInput(input, node, options) {
+  input.addEventListener("pointerdown", (event) => event.stopPropagation());
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    commitMediaScaleInput(node, input, options);
+    input.select();
+  });
+  input.addEventListener("blur", () => commitMediaScaleInput(node, input, options));
+}
+
 function createVideoToolbar(node) {
   const toolbar = document.createElement("div");
   toolbar.className = "image-toolbar video-toolbar";
@@ -5675,15 +6207,11 @@ function createVideoToolbar(node) {
   scaleInput.min = "10";
   scaleInput.max = "400";
   scaleInput.step = "5";
-  scaleInput.value = String(Math.round((Number(node.scale) || defaultVideoScale) * 100));
+  scaleInput.value = displayedMediaScalePercent(node, defaultVideoScale);
   scaleInput.title = "缩放百分比";
-  scaleInput.addEventListener("pointerdown", (event) => event.stopPropagation());
-  scaleInput.addEventListener("input", () => {
-    node.scale = clamp((Number(scaleInput.value) || 100) / 100, 0.1, 4);
-    updateNode(node);
-    updateSelectionToolbar();
-    saveCanvasState();
-    updateMinimap();
+  bindMediaScaleInput(scaleInput, node, {
+    minScale: 0.1,
+    fallbackScale: defaultVideoScale
   });
 
   const open = document.createElement("a");
@@ -5870,26 +6398,22 @@ function createImageToolbar(node) {
   scaleInput.min = "5";
   scaleInput.max = "400";
   scaleInput.step = "5";
-  scaleInput.value = String(Math.round((Number(node.scale) || 1) * 100));
+  scaleInput.value = displayedMediaScalePercent(node, 1);
   scaleInput.title = "缩放百分比";
-  scaleInput.addEventListener("pointerdown", (event) => event.stopPropagation());
-  scaleInput.addEventListener("input", () => {
-    node.scale = clamp((Number(scaleInput.value) || 100) / 100, 0.05, 4);
-    updateNode(node);
-    updateSelectionToolbar();
-    saveCanvasState();
-    updateMinimap();
+  bindMediaScaleInput(scaleInput, node, {
+    minScale: 0.05,
+    fallbackScale: 1
   });
 
   const reset = document.createElement("button");
   reset.type = "button";
   reset.textContent = "100%";
   reset.addEventListener("click", () => {
-    node.scale = 1;
-    updateNode(node);
-    updateSelectionToolbar();
-    saveCanvasState();
-    updateMinimap();
+    scaleInput.value = "100";
+    commitMediaScaleInput(node, scaleInput, {
+      minScale: 0.05,
+      fallbackScale: 1
+    });
   });
 
   const open = document.createElement("a");
@@ -7785,6 +8309,60 @@ function applyNoteFontSize(node, value, options = {}) {
   updateMinimap();
 }
 
+function normalizeHexColorInput(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^#?([0-9a-f]{3}|[0-9a-f]{6})$/iu);
+  if (!match) return "";
+  const hex = match[1].toLowerCase();
+  if (hex.length === 3) {
+    return `#${hex.split("").map((char) => `${char}${char}`).join("")}`;
+  }
+  return `#${hex}`;
+}
+
+const noteColorPalette = [
+  "#111827",
+  "#ffffff",
+  "#ef4444",
+  "#f97316",
+  "#facc15",
+  "#22c55e",
+  "#14b8a6",
+  "#3b82f6",
+  "#a855f7",
+  "#ec4899",
+  "#7cfc00",
+  "#94a3b8"
+];
+
+function applyNoteColor(node, value, options = {}) {
+  const nextColor = normalizeHexColorInput(value) || normalizeAssistantColor(value, noteDisplayColor(node));
+  node.color = nextColor;
+
+  const tile = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === node.id);
+  tile?.querySelectorAll(".note-text").forEach((text) => {
+    text.style.color = nextColor;
+  });
+
+  if (options.syncInputs) {
+    syncNoteColorInputs(tile, nextColor);
+  }
+
+  saveCanvasState();
+  updateMinimap();
+}
+
+function syncNoteColorInputs(tile, color) {
+  const nextColor = normalizeHexColorInput(color) || noteDisplayColor({ color });
+  const colorInput = tile?.querySelector(".note-toolbar input[type='color']");
+  const codeInput = tile?.querySelector(".note-toolbar .note-color-code");
+  if (colorInput) colorInput.value = nextColor;
+  if (codeInput && document.activeElement !== codeInput) codeInput.value = nextColor;
+  tile?.querySelectorAll(".note-color-swatch").forEach((swatch) => {
+    swatch.classList.toggle("is-active", normalizeHexColorInput(swatch.dataset.color) === nextColor);
+  });
+}
+
 function commitNoteFontSize(node, input) {
   const raw = String(input.value || "").trim();
   const fallback = Number(node.fontSize) || 22;
@@ -7792,6 +8370,41 @@ function commitNoteFontSize(node, input) {
   const nextSize = Math.round(clamp(Number.isFinite(value) ? value : fallback, minNoteFontSize, maxNoteFontSize));
   input.value = String(nextSize);
   applyNoteFontSize(node, nextSize);
+}
+
+function updateNoteColorCode(node, input, options = {}) {
+  const color = normalizeHexColorInput(input.value);
+  if (!color) {
+    input.classList.toggle("is-invalid", Boolean(String(input.value || "").trim()));
+    if (options.commit) input.value = noteDisplayColor(node);
+    return false;
+  }
+  input.classList.remove("is-invalid");
+  if (options.commit) input.value = color;
+  applyNoteColor(node, color, { syncInputs: true });
+  return true;
+}
+
+function createNoteColorPalette(node) {
+  const palette = document.createElement("div");
+  palette.className = "note-color-palette";
+  const currentColor = noteDisplayColor(node);
+  for (const color of noteColorPalette) {
+    const swatch = document.createElement("button");
+    swatch.type = "button";
+    swatch.className = "note-color-swatch";
+    swatch.dataset.color = color;
+    swatch.title = color;
+    swatch.style.backgroundColor = color;
+    swatch.classList.toggle("is-light", color === "#ffffff");
+    swatch.classList.toggle("is-active", color === currentColor);
+    swatch.addEventListener("pointerdown", (event) => event.stopPropagation());
+    swatch.addEventListener("click", () => {
+      applyNoteColor(node, color, { syncInputs: true });
+    });
+    palette.append(swatch);
+  }
+  return palette;
 }
 
 function createNoteToolbar(node) {
@@ -7810,12 +8423,6 @@ function createNoteToolbar(node) {
     event.preventDefault();
     commitNoteFontSize(node, sizeInput);
   });
-  sizeInput.addEventListener("input", () => {
-    const value = Number(sizeInput.value);
-    if (Number.isFinite(value) && value >= minNoteFontSize && value <= maxNoteFontSize) {
-      applyNoteFontSize(node, value);
-    }
-  });
   sizeInput.addEventListener("blur", () => commitNoteFontSize(node, sizeInput));
 
   const colorInput = document.createElement("input");
@@ -7824,10 +8431,32 @@ function createNoteToolbar(node) {
   colorInput.title = "颜色";
   colorInput.addEventListener("pointerdown", (event) => event.stopPropagation());
   colorInput.addEventListener("input", () => {
-    node.color = colorInput.value;
-    updateNode(node);
-    saveCanvasState();
+    applyNoteColor(node, colorInput.value, { syncInputs: true });
   });
+
+  const colorCodeInput = document.createElement("input");
+  colorCodeInput.type = "text";
+  colorCodeInput.className = "note-color-code";
+  colorCodeInput.value = noteDisplayColor(node);
+  colorCodeInput.placeholder = "#7cfc00";
+  colorCodeInput.title = "颜色代码";
+  colorCodeInput.spellcheck = false;
+  colorCodeInput.autocomplete = "off";
+  colorCodeInput.addEventListener("pointerdown", (event) => event.stopPropagation());
+  colorCodeInput.addEventListener("input", () => {
+    updateNoteColorCode(node, colorCodeInput);
+  });
+  colorCodeInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    updateNoteColorCode(node, colorCodeInput, { commit: true });
+    colorCodeInput.select();
+  });
+  colorCodeInput.addEventListener("blur", () => {
+    updateNoteColorCode(node, colorCodeInput, { commit: true });
+  });
+
+  const colorPalette = createNoteColorPalette(node);
 
   const duplicate = document.createElement("button");
   duplicate.type = "button";
@@ -7841,7 +8470,7 @@ function createNoteToolbar(node) {
     deleteNodes([node.id]);
   });
 
-  toolbar.append(sizeInput, colorInput, duplicate, remove);
+  toolbar.append(sizeInput, colorInput, colorCodeInput, colorPalette, duplicate, remove);
   return toolbar;
 }
 

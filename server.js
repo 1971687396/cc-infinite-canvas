@@ -36,7 +36,15 @@ const dreaminaVideoRatios = new Set(["1:1", "3:4", "16:9", "4:3", "9:16", "21:9"
 const dreaminaVideoExtensions = new Set([".mp4", ".mov", ".webm", ".m4v"]);
 const maxMultipartBytes = 512 * 1024 * 1024;
 const assistantDefaultModel = "gpt-5.5";
-const modelKeyModels = ["gpt-image-2", grokKeyModel, assistantDefaultModel];
+const assistantKeyModels = [
+  assistantDefaultModel,
+  "gemini-3.5-flash",
+  "claude-opus-4-8",
+  "doubao-seed-2-1-turbo-260628",
+  "grok-4.3",
+  "deepseek-v4-pro"
+];
+const modelKeyModels = ["gpt-image-2", grokKeyModel, ...assistantKeyModels];
 const serverHost = "127.0.0.1";
 
 loadEnvFile(envFile);
@@ -715,11 +723,12 @@ async function writeSettingsEnv(settings) {
     ["YUNWU_CHAT_ENDPOINT", settings.chatEndpoint],
     ["YUNWU_DEFAULT_MODEL", settings.defaultModel],
     ["YUNWU_ASSISTANT_MODEL", settings.assistantModel],
-    [modelKeyEnvName("gpt-image-2"), settings.modelApiKeys["gpt-image-2"] || ""],
-    [modelKeyEnvName(grokKeyModel), settings.modelApiKeys[grokKeyModel] || ""],
-    [modelKeyEnvName(assistantDefaultModel), settings.modelApiKeys[assistantDefaultModel] || ""],
     ["CC_CANVAS_CACHE_DIR", settings.cacheDir]
   ]);
+  for (const model of modelKeyModels) {
+    const key = normalizeModelName(model);
+    updates.set(modelKeyEnvName(key), settings.modelApiKeys[key] || "");
+  }
   const seen = new Set();
   let existing = "";
 
@@ -926,17 +935,18 @@ async function handleAssistantChat(req, res) {
   }
 
   const content = extractAssistantText(upstreamData);
-  if (!content) {
+  const toolPlanValues = extractAssistantToolPlanValues(upstreamData);
+  if (!content && !toolPlanValues.length) {
     return sendJson(res, 502, {
       error: "Assistant response did not include text content.",
       upstream: upstreamData
     });
   }
 
-  const plan = mode === "action_plan" ? parseAssistantPlan(content) : null;
+  const parsedAssistantPlan = parseAssistantPlanResult(content, toolPlanValues);
   sendJson(res, 200, {
-    message: { role: "assistant", content: plan?.summary || content },
-    plan,
+    message: { role: "assistant", content: parsedAssistantPlan.content },
+    plan: parsedAssistantPlan.plan,
     model,
     usage: upstreamData.usage || null
   });
@@ -1383,6 +1393,11 @@ function buildAssistantMessages(messages, context, mode = "chat") {
       content:
         "画布可用能力表：create_note 用于文字标注、分析报告、提示词、说明、清单和标题；create_task 用于创建生图/作图/图片生成节点，图生图或参考图场景使用 mode:\"edit\"；create_video_task 用于创建生视频/视频生成节点；organize_nodes 用于普通整理排版；organize_groups 用于按人物、道具、场景、风格、用途等分类整理并生成分组标题；update_note/update_notes 用于改文字内容、字号和颜色；update_task 用于改生图节点参数；set_node_scale 用于调整图片或视频缩放。用户说“输出到画布、放到画布、写到画布、做成节点”时，不等于固定创建文字标注，必须根据语境选择动作：文本类结果才用 create_note，图片生成需求用 create_task，视频生成需求用 create_video_task，素材整理需求用 organize_nodes 或 organize_groups。"
     },
+    {
+      role: "system",
+      content:
+        "如果你准备让画布执行操作，绝不能只回复“已识别到 N 个画布操作，请确认后应用”。必须同时给出具体操作 JSON，格式可以是 {\"summary\":\"...\",\"actions\":[...]}，也可以是 [{\"type\":\"create_note\",...}]，或 [{\"type\":\"function\",\"name\":\"create_note\",\"parameters\":{...}}]。如果只是普通聊天建议，才可以不返回 JSON。"
+    },
   ];
 
   if (mode === "action_plan") {
@@ -1422,38 +1437,330 @@ function extractAssistantText(data) {
   return "";
 }
 
+function extractAssistantToolPlanValues(data) {
+  const values = [];
+  const addToolCall = (call) => {
+    if (!isPlainObject(call)) return;
+    const source = isPlainObject(call.function)
+      ? call.function
+      : isPlainObject(call.function_call)
+        ? call.function_call
+        : call;
+    const name = sanitizeOptionalText(source.name || call.name || call.type).slice(0, 160);
+    const args =
+      source.arguments ??
+      source.args ??
+      source.params ??
+      source.parameters ??
+      source.input ??
+      call.arguments ??
+      call.args ??
+      call.params ??
+      call.parameters ??
+      call.input ??
+      null;
+    if (!name && args == null) return;
+    values.push({ name, arguments: args });
+  };
+
+  const choices = Array.isArray(data?.choices) ? data.choices : [];
+  for (const choice of choices) {
+    const message = choice?.message;
+    if (!isPlainObject(message)) continue;
+    addToolCall(message.function_call);
+    if (Array.isArray(message.tool_calls)) {
+      for (const call of message.tool_calls) addToolCall(call);
+    }
+  }
+
+  addToolCall(data?.function_call);
+  if (Array.isArray(data?.tool_calls)) {
+    for (const call of data.tool_calls) addToolCall(call);
+  }
+
+  if (Array.isArray(data?.output)) {
+    for (const item of data.output) {
+      if (isPlainObject(item) && /(?:function|tool)_?call/iu.test(String(item.type || ""))) {
+        addToolCall(item);
+      }
+      const content = Array.isArray(item?.content) ? item.content : [];
+      for (const part of content) {
+        if (isPlainObject(part) && /(?:function|tool)_?call/iu.test(String(part.type || ""))) {
+          addToolCall(part);
+        }
+      }
+    }
+  }
+
+  return values;
+}
+
 function parseAssistantPlan(content) {
-  const parsed = tryParseAssistantJson(content);
-  if (!isPlainObject(parsed)) return null;
-  const actions = Array.isArray(parsed.actions) ? parsed.actions.slice(0, 20).filter(isPlainObject) : [];
-  return {
-    summary: sanitizeOptionalText(parsed.summary) || "已生成可执行计划，请确认后应用。",
+  return parseAssistantPlanResult(content).plan;
+}
+
+function parseAssistantPlanResult(content, extraValues = []) {
+  const text = String(content || "").trim();
+  const candidates = assistantJsonCandidates(text);
+  const actions = [];
+  const seenActions = new Set();
+  const planRanges = [];
+  let summary = "";
+
+  const addParsedPlan = (parsed, range = null) => {
+    const candidateActions = normalizeAssistantPlanActions(parsed);
+    if (!candidateActions.length) return;
+
+    if (!summary) summary = assistantPlanSummary(parsed);
+    if (range) planRanges.push(range);
+
+    for (const action of candidateActions) {
+      const key = JSON.stringify(action);
+      if (seenActions.has(key)) continue;
+      seenActions.add(key);
+      if (actions.length < 20) actions.push(action);
+    }
+  };
+
+  for (const candidate of candidates) {
+    const parsed = tryParseStrictJson(candidate.json);
+    addParsedPlan(parsed, [candidate.start, candidate.end]);
+  }
+
+  for (const value of Array.isArray(extraValues) ? extraValues : []) {
+    addParsedPlan(value);
+  }
+
+  if (!actions.length) {
+    return { plan: null, content: text };
+  }
+  const plan = {
+    summary: summary || `已识别到 ${actions.length} 个画布操作，请确认后应用。`,
     actions
+  };
+  const cleanedContent = removeAssistantPlanRanges(text, planRanges);
+  return {
+    plan,
+    content: isAssistantPlanSummaryOnly(cleanedContent) ? plan.summary : cleanedContent || plan.summary
   };
 }
 
-function tryParseAssistantJson(content) {
-  const text = String(content || "").trim();
-  if (!text) return null;
+function assistantPlanSummary(parsed) {
+  if (isPlainObject(parsed)) {
+    const directSummary = sanitizeOptionalText(parsed.summary);
+    if (directSummary) return directSummary;
+    const args = parseAssistantActionArguments(parsed);
+    if (isPlainObject(args)) return sanitizeOptionalText(args.summary);
+  }
+  return "";
+}
 
-  try {
-    return JSON.parse(stripJsonFence(text));
-  } catch {
-    const start = text.indexOf("{");
-    const end = text.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(stripJsonFence(text.slice(start, end + 1)));
-      } catch {
-        return null;
-      }
-    }
+function isAssistantPlanSummaryOnly(value) {
+  return /^已识别到\s*\d+\s*个画布操作，请确认后应用。?$/u.test(String(value || "").trim());
+}
+
+const assistantPlanActionTypes = new Set([
+  "create_task",
+  "create_video_task",
+  "create_note",
+  "move_node",
+  "move_nodes",
+  "organize_nodes",
+  "organize_groups",
+  "update_task",
+  "update_note",
+  "update_notes",
+  "set_node_scale"
+]);
+
+function normalizeAssistantPlanActions(parsed) {
+  let candidates = [];
+  if (Array.isArray(parsed)) {
+    candidates = parsed;
+  } else if (isPlainObject(parsed) && Array.isArray(parsed.actions)) {
+    candidates = parsed.actions;
+  } else if (isPlainObject(parsed) && assistantPlanActionTypes.has(assistantPlanActionType(parsed))) {
+    candidates = [parsed];
+  } else if (isPlainObject(parsed)) {
+    const args = parseAssistantActionArguments(parsed);
+    if (args) return normalizeAssistantPlanActions(args);
+  }
+
+  return candidates
+    .map(normalizeAssistantPlanAction)
+    .filter(Boolean)
+    .slice(0, 20);
+}
+
+function normalizeAssistantPlanAction(action) {
+  if (!isPlainObject(action)) return null;
+  const type = assistantPlanActionType(action);
+
+  const args = parseAssistantActionArguments(action);
+  if (!assistantPlanActionTypes.has(type)) {
+    if (args) return normalizeAssistantPlanActions(args)[0] || null;
+    return null;
+  }
+  const normalized = args ? { ...args, type } : { ...action, type };
+  delete normalized.name;
+  delete normalized.action;
+  delete normalized.tool;
+  delete normalized.arguments;
+  delete normalized.args;
+  delete normalized.params;
+  delete normalized.parameters;
+  delete normalized.input;
+  return normalized;
+}
+
+function assistantPlanActionType(action) {
+  const values = [action?.type, action?.name, action?.action, action?.tool]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  return values.find((value) => assistantPlanActionTypes.has(value)) || values[0] || "";
+}
+
+function parseAssistantActionArguments(action) {
+  const raw =
+    action.arguments ??
+    action.args ??
+    action.params ??
+    action.parameters ??
+    action.input ??
+    null;
+  if (isPlainObject(raw)) return raw;
+  if (typeof raw !== "string") return null;
+  const parsed = tryParseStrictJson(raw);
+  return isPlainObject(parsed) ? parsed : null;
+}
+
+function tryParseAssistantJson(content) {
+  for (const candidate of assistantJsonCandidates(content)) {
+    const parsed = tryParseStrictJson(candidate.json);
+    if (parsed) return parsed;
   }
   return null;
 }
 
+function tryParseStrictJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 function stripJsonFence(text) {
   return text.replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "").trim();
+}
+
+function assistantJsonCandidates(content) {
+  const text = String(content || "");
+  const candidates = [];
+  const seen = new Set();
+  const fencedRanges = [];
+  const addCandidate = (json, start, end) => {
+    const trimmed = stripJsonFence(json);
+    if (!trimmed) return;
+    const key = `${start}:${end}:${trimmed.length}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push({ json: trimmed, start, end });
+  };
+
+  for (const match of text.matchAll(/```(?:json)?\s*([\s\S]*?)```/giu)) {
+    const start = match.index || 0;
+    const end = start + match[0].length;
+    fencedRanges.push([start, end]);
+    addCandidate(match[1], start, end);
+  }
+
+  const whole = text.trim();
+  if (whole) addCandidate(whole, text.indexOf(whole), text.indexOf(whole) + whole.length);
+
+  for (let index = 0; index < text.length; index += 1) {
+    if (isIndexInRanges(index, fencedRanges)) continue;
+    const char = text[index];
+    if (char !== "{" && char !== "[") continue;
+    const block = readBalancedJsonCandidate(text, index);
+    if (!block) continue;
+    addCandidate(block.json, index, block.end);
+    index = block.end - 1;
+  }
+
+  return candidates;
+}
+
+function readBalancedJsonCandidate(text, start) {
+  const opener = text[start];
+  const closer = opener === "{" ? "}" : "]";
+  const stack = [closer];
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start + 1; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{" || char === "[") {
+      stack.push(char === "{" ? "}" : "]");
+      continue;
+    }
+    if (char !== "}" && char !== "]") continue;
+    if (char !== stack.pop()) return null;
+    if (!stack.length) {
+      const end = index + 1;
+      return { json: text.slice(start, end), end };
+    }
+  }
+
+  return null;
+}
+
+function isIndexInRanges(index, ranges) {
+  return ranges.some(([start, end]) => index >= start && index < end);
+}
+
+function removeAssistantPlanRanges(text, ranges) {
+  if (!ranges.length) return String(text || "").trim();
+  const merged = ranges
+    .map(([start, end]) => [Math.max(0, start), Math.min(text.length, end)])
+    .filter(([start, end]) => end > start)
+    .sort((a, b) => a[0] - b[0])
+    .reduce((list, range) => {
+      const last = list[list.length - 1];
+      if (last && range[0] <= last[1]) {
+        last[1] = Math.max(last[1], range[1]);
+      } else {
+        list.push([...range]);
+      }
+      return list;
+    }, []);
+
+  let output = "";
+  let cursor = 0;
+  for (const [start, end] of merged) {
+    output += text.slice(cursor, start);
+    cursor = end;
+  }
+  output += text.slice(cursor);
+  return output
+    .replace(/[ \t]+\n/gu, "\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
 }
 
 async function handleListProjects(res) {
@@ -2799,7 +3106,7 @@ async function serveFile(res, filePath) {
   res.writeHead(200, {
     "Content-Type": mime,
     "Content-Length": fileStat.size,
-    "Cache-Control": allowedOutputs || allowedAssets ? "no-store" : "public, max-age=60"
+    "Cache-Control": "no-store"
   });
   createReadStream(resolved).pipe(res);
 }

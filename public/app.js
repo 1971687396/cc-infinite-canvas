@@ -88,6 +88,7 @@ const closeSettingsButton = document.querySelector("#closeSettingsButton");
 const settingsApiKey = document.querySelector("#settingsApiKey");
 const settingsGptImageKey = document.querySelector("#settingsGptImageKey");
 const settingsGrokImageKey = document.querySelector("#settingsGrokImageKey");
+const settingsBanana2Key = document.querySelector("#settingsBanana2Key");
 const settingsAssistantKey = document.querySelector("#settingsAssistantKey");
 const settingsAssistantKeyLabel = document.querySelector("#settingsAssistantKeyLabel");
 const settingsGrsaiApiKey = document.querySelector("#settingsGrsaiApiKey");
@@ -215,6 +216,10 @@ const grokImagineModel = "grok-imagine-image";
 const legacyGrokImagineModel = "grok-image-image";
 const grokDefaultModel = "grok-3-image";
 const grokDefaultSize = "960x960";
+const geminiBananaImageModel = "gemini-3.1-flash-image-preview";
+const geminiBananaImageAlias = "banana2";
+const geminiNativeDefaultRatio = "1:1";
+const geminiNativeDefaultImageSize = "4K";
 const grsaiDefaultModel = "nano-banana-2";
 const grsaiDefaultBaseUrl = "https://grsaiapi.com";
 const grsaiGenerateEndpoint = "/v1/api/generate";
@@ -275,6 +280,21 @@ const grsaiSizeOptions = [
   ["1:8|1K", "1:8 (1K)"],
   ["8:1|1K", "8:1 (1K)"]
 ];
+const geminiNativeRatioOptions = [
+  ["1:1", "1:1"],
+  ["16:9", "16:9"],
+  ["9:16", "9:16"],
+  ["4:3", "4:3"],
+  ["3:4", "3:4"],
+  ["3:2", "3:2"],
+  ["2:3", "2:3"],
+  ["21:9", "21:9"]
+];
+const geminiNativeImageSizeOptions = [
+  ["1K", "1K"],
+  ["2K", "2K"],
+  ["4K", "4K"]
+];
 const dreaminaModelOptions = ["5.0", "4.7", "4.6", "4.5", "4.1", "4.0", "3.1", "3.0"].map((version) => [
   `dreamina-${version}`,
   `即梦 ${version}`
@@ -294,6 +314,7 @@ const dreaminaVideoResolutionOptions = [
 ];
 const taskModelOptions = [
   ["gpt-image-2", "gpt-image-2"],
+  [geminiBananaImageModel, geminiBananaImageAlias],
   [grsaiDefaultModel, grsaiDefaultModel],
   ...grokModelOptions,
   ...dreaminaModelOptions
@@ -574,14 +595,15 @@ function applyTaskNodePreset(node, preset) {
 }
 
 function applyTaskModelDefaults(node, options = {}) {
-  node.model = normalizeGrokModelName(node.model || config.defaultModel || "gpt-image-2");
+  node.model = normalizeImageModelName(node.model || config.defaultModel || "gpt-image-2");
   const wasGrok = node.provider === "grok";
   const wasGrsai = node.provider === "grsai";
   const wasDreamina = node.provider === "dreamina";
   const isGrok = isGrokModelName(node.model);
   const isGrsai = isGrsaiModelName(node.model);
   const isDreamina = isDreaminaModelName(node.model);
-  node.provider = isGrok ? "grok" : isGrsai ? "grsai" : isDreamina ? "dreamina" : "";
+  const isGeminiNative = isGeminiNativeImageModelName(node.model);
+  node.provider = isGrok ? "grok" : isGrsai ? "grsai" : isDreamina ? "dreamina" : isGeminiNative ? "gemini" : "";
 
   if (isDreamina) {
     if (node.mode === "edit" && Number(dreaminaModelVersion(node.model)) < 4) {
@@ -612,6 +634,20 @@ function applyTaskModelDefaults(node, options = {}) {
     node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
     node.extraParams.replyType = node.extraParams.replyType || "json";
     delete node.extraParams.response_format;
+  } else if (isGeminiNative) {
+    node.baseUrl = config.baseUrl || "https://yunwu.ai";
+    node.endpointPath = geminiNativeEndpointForModel(node.model);
+    const parsedSize = parseGeminiNativeSizeValue(node.size, node.quality);
+    node.size = geminiNativeRatioOptions.some(([value]) => value === parsedSize.aspectRatio)
+      ? parsedSize.aspectRatio
+      : geminiNativeDefaultRatio;
+    node.quality = geminiNativeImageSizeOptions.some(([value]) => value === parsedSize.imageSize)
+      ? parsedSize.imageSize
+      : geminiNativeDefaultImageSize;
+    node.format = "png";
+    node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
+    delete node.extraParams.response_format;
+    delete node.extraParams.replyType;
   } else if (isGrok) {
     node.model = isGrokModelName(node.model) ? node.model : grokDefaultModel;
     if (wasGrsai || wasDreamina) {
@@ -651,13 +687,57 @@ function applyTaskModelDefaults(node, options = {}) {
 }
 
 function isGrokModelName(model) {
-  return normalizeGrokModelName(model).toLowerCase().startsWith("grok-");
+  return normalizeImageModelName(model).toLowerCase().startsWith("grok-");
 }
 
-function normalizeGrokModelName(model) {
+function normalizeImageModelName(model) {
   const value = String(model || "").trim();
   if (value.toLowerCase() === legacyGrokImagineModel) return grokImagineModel;
+  if (value.toLowerCase() === geminiBananaImageAlias) return geminiBananaImageModel;
   return value;
+}
+
+function isGeminiNativeImageModelName(model) {
+  const normalized = normalizeImageModelName(model).toLowerCase();
+  return normalized === geminiBananaImageModel || normalized.startsWith(`${geminiBananaImageModel}:`);
+}
+
+function geminiNativeEndpointForModel(model) {
+  const normalized = normalizeImageModelName(model) || geminiBananaImageModel;
+  return `/v1beta/models/${normalized}:generateContent`;
+}
+
+function parseGeminiNativeSizeValue(size, imageSize = "") {
+  const rawSize = String(size || "").trim();
+  const rawImageSize = String(imageSize || "").trim().toUpperCase();
+  const [ratioPart, imageSizePart = ""] = rawSize.split(/[|@]/);
+  return {
+    aspectRatio: /^\d+:\d+$/.test(ratioPart) ? ratioPart : geminiNativeDefaultRatio,
+    imageSize: ["1K", "2K", "4K"].includes(rawImageSize)
+      ? rawImageSize
+      : ["1K", "2K", "4K"].includes(imageSizePart.toUpperCase())
+        ? imageSizePart.toUpperCase()
+        : geminiNativeDefaultImageSize
+  };
+}
+
+function taskModelLabel(model) {
+  const normalized = normalizeImageModelName(model);
+  return taskModelOptions.find(([value]) => value === normalized)?.[1] || normalized;
+}
+
+function taskModelSettingsValue(model) {
+  const normalized = normalizeImageModelName(model);
+  if (normalized === geminiBananaImageModel) return geminiBananaImageAlias;
+  return normalized;
+}
+
+function taskMetaParts(model, size, format, quality = "") {
+  const normalized = normalizeImageModelName(model);
+  if (isGeminiNativeImageModelName(normalized)) {
+    return [taskModelLabel(normalized), size || geminiNativeDefaultRatio, quality || geminiNativeDefaultImageSize, format];
+  }
+  return [taskModelLabel(normalized), size, format];
 }
 
 function isGrsaiModelName(model) {
@@ -683,6 +763,7 @@ function isGrsaiBaseUrl(value) {
 
 function sizeOptionsForModel(model, mode = "create") {
   if (isDreaminaModelName(model)) return dreaminaSizeOptionsForModel(model, mode);
+  if (isGeminiNativeImageModelName(model)) return geminiNativeRatioOptions;
   if (isGrsaiModelName(model)) return grsaiSizeOptions;
   return isGrokModelName(model) ? grokSizeOptions : gptSizeOptions;
 }
@@ -696,6 +777,7 @@ function dreaminaSizeOptionsForModel(model, mode = "create") {
 
 function defaultSizeForModel(model, mode = "create") {
   if (isDreaminaModelName(model)) return dreaminaDefaultSize;
+  if (isGeminiNativeImageModelName(model)) return geminiNativeDefaultRatio;
   if (isGrsaiModelName(model)) return grsaiDefaultSize;
   if (isGrokModelName(model)) return mode === "create" ? grokDefaultSize : "";
   return "auto";
@@ -886,7 +968,7 @@ async function generateNode(nodeId) {
       throw new Error(data.error || "生成失败");
     }
 
-    const incoming = (data.images || []).map((image) => normalizeNodeImage(image, node));
+    const incoming = dedupeNodeImages((data.images || []).map((image) => normalizeNodeImage(image, node)));
     if (!incoming.length) {
       throw new Error("接口已返回，但没有识别到图片字段");
     }
@@ -1067,9 +1149,11 @@ function normalizeNodeImage(image, node) {
     url: image.url,
     filename: image.filename || "generated-image",
     sourceUrl: image.sourceUrl || "",
+    contentHash: image.contentHash || "",
     prompt: node.prompt,
     model: node.model,
     size: node.size,
+    quality: node.quality || "",
     width: Number(image.width) || undefined,
     height: Number(image.height) || undefined,
     format: node.format || "",
@@ -1110,7 +1194,7 @@ function dedupeNodeImages(images) {
 }
 
 function getImageKey(image) {
-  return image?.sourceUrl || image?.url || image?.filename || "";
+  return image?.contentHash || image?.sourceUrl || image?.url || image?.filename || "";
 }
 
 function normalizeNodeVideo(video, node) {
@@ -1518,16 +1602,18 @@ function openSettingsDialog() {
   settingsApiKey.value = "";
   settingsGptImageKey.value = "";
   settingsGrokImageKey.value = "";
+  settingsBanana2Key.value = "";
   settingsAssistantKey.value = "";
   settingsGrsaiApiKey.value = "";
   settingsGptImageKey.placeholder = config.modelKeys?.["gpt-image-2"] ? "已配置，留空不修改" : "留空则使用平台总 Key";
   settingsGrokImageKey.placeholder = config.modelKeys?.[grokImagineModel] ? "已配置，留空不修改" : "留空则使用平台总 Key";
+  settingsBanana2Key.placeholder = config.modelKeys?.[geminiBananaImageModel] ? "已配置，留空不修改" : "留空则使用平台总 Key";
   settingsGrsaiApiKey.placeholder = config.hasGrsaiApiKey ? "已配置，留空不修改" : "填写 Grsai API Key";
   settingsBaseUrl.value = config.baseUrl || "https://yunwu.ai";
   settingsImageEndpoint.value = config.imageEndpoint || "/v1/images/generations";
   settingsEditEndpoint.value = config.editEndpoint || "/v1/images/edits";
   settingsChatEndpoint.value = config.chatEndpoint || "/v1/chat/completions";
-  settingsDefaultModel.value = config.defaultModel || "gpt-image-2";
+  settingsDefaultModel.value = taskModelSettingsValue(config.defaultModel || "gpt-image-2");
   renderAssistantModelSelectors();
   updateSettingsAssistantKeyState();
   settingsCacheDir.value = config.cacheDir || "";
@@ -1692,6 +1778,7 @@ async function saveSettings(event) {
       modelApiKeys: {
         "gpt-image-2": settingsGptImageKey.value.trim(),
         [grokImagineModel]: settingsGrokImageKey.value.trim(),
+        [geminiBananaImageModel]: settingsBanana2Key.value.trim(),
         [assistantKeyModel]: settingsAssistantKey.value.trim()
       },
       baseUrl: settingsBaseUrl.value.trim(),
@@ -1731,6 +1818,7 @@ async function saveSettings(event) {
     settingsApiKey.value = "";
     settingsGptImageKey.value = "";
     settingsGrokImageKey.value = "";
+    settingsBanana2Key.value = "";
     settingsAssistantKey.value = "";
     settingsGrsaiApiKey.value = "";
     settingsStatus.textContent = "已保存";
@@ -3253,7 +3341,13 @@ function removeAssistantPlanRanges(text, ranges) {
 function createAssistantFallbackPlan(content, mode, assistantContent = "") {
   if (mode !== "action_plan") return null;
   const text = String(content || "").trim();
-  if (isAssistantCreateTaskInstruction(text)) return createAssistantTaskFallbackPlan(text);
+  const reply = String(assistantContent || "").trim();
+  if (
+    isAssistantCreateTaskInstruction(text) ||
+    (!isAssistantCapabilityRefusal(reply) && isAssistantExecutableCreateTaskResponse(reply))
+  ) {
+    return createAssistantTaskFallbackPlan(text, reply);
+  }
   if (isAssistantCreateVideoTaskInstruction(text)) return createAssistantVideoTaskFallbackPlan(text);
   if (isAssistantCreateNoteInstruction(text)) return createAssistantNoteFallbackPlan(text, assistantContent);
   if (isAssistantCharacterAssetSpec(text)) return createAssistantCharacterAssetFallbackPlan(text, assistantContent);
@@ -3266,6 +3360,7 @@ function createAssistantSummaryFallbackPlan(content, assistantContent = "") {
 }
 
 function isAssistantCreateTaskInstruction(text) {
+  if (isAssistantSelectedImageNewTaskInstruction(text)) return true;
   if (/(生图节点|图生图节点|作图节点|图片生成节点|生成图片节点)/u.test(text)) {
     return /(创建|新建|添加|补充|生成|做一个|来一个|输出|放到|生成到|做成|转成)/u.test(text);
   }
@@ -3273,21 +3368,110 @@ function isAssistantCreateTaskInstruction(text) {
   return hasAssistantImageGenerationIntent(text) && /(画布|节点|生成|输出|放到|做成|转成)/u.test(text);
 }
 
-function createAssistantTaskFallbackPlan(text) {
-  const prompt = extractAssistantCreateTaskPrompt(text) || promptFromSelectedNodes();
-  const isEditMode = /(图生图|参考图|垫图|局部重绘|重绘)/u.test(text);
+function isAssistantExecutableCreateTaskResponse(text) {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  return (
+    isAssistantCreateTaskInstruction(value) &&
+    /(新建|创建|添加|生成|填入|放到|放在|计划|应用)/u.test(value)
+  );
+}
+
+function isAssistantSelectedImageNewTaskInstruction(text) {
+  const value = String(text || "").trim();
+  if (!value || !selectedAssistantImageNodes().length) return false;
+  const wantsNew = /(新建|创建|另建|再建|添加|补一个|来一个|再来一个|做一个|重新开)/u.test(value);
+  if (!wantsNew) return false;
+  return (
+    /(这个|当前|选中|选中的|该).{0,14}(节点|图片|图|成图|结果图)/u.test(value) ||
+    /(节点|图片|图|成图|结果图).{0,14}(已经|本来|现在)?是/u.test(value) ||
+    /(已经|已).{0,8}(成图|是图片|是结果图)/u.test(value) ||
+    /(不能|无法|没法|不要).{0,12}(改|修改|调|调整).{0,8}(参数|尺寸|提示词)?/u.test(value)
+  );
+}
+
+function createAssistantTaskFallbackPlan(text, assistantContent = "") {
+  const selectedGeneration = selectedAssistantImageGeneration();
+  let prompt =
+    extractAssistantCreateTaskPrompt(text) ||
+    extractAssistantCreateTaskPrompt(assistantContent) ||
+    selectedGeneration?.prompt ||
+    promptFromSelectedNodes();
+  prompt = mergeAssistantTaskPrompt(prompt, extractAssistantTaskRefinement(text, assistantContent));
+  const combinedText = `${text}\n${assistantContent}`;
+  const isSelectedImageNewTask = isAssistantSelectedImageNewTaskInstruction(text) || isAssistantSelectedImageNewTaskInstruction(assistantContent);
+  const isEditMode = !isSelectedImageNewTask && /(图生图|参考图|垫图|局部重绘|重绘)/u.test(combinedText);
+  const action = {
+    type: "create_task",
+    mode: isEditMode ? "edit" : "create",
+    prompt
+  };
+  if (isSelectedImageNewTask && selectedGeneration) {
+    action.model = selectedGeneration.model;
+    action.size = selectedGeneration.size;
+    action.n = selectedGeneration.n;
+    action.quality = selectedGeneration.quality;
+    action.format = selectedGeneration.format;
+  }
+  const placement = isSelectedImageNewTask ? selectedAssistantImageTaskPlacement() : null;
+  if (placement) {
+    action.x = placement.x;
+    action.y = placement.y;
+  }
   return {
     summary: prompt
-      ? "已生成创建生图节点的计划，并会把识别到的提示词填入节点。"
+      ? isSelectedImageNewTask
+        ? "已生成新建生图节点的计划，并会放在选中图片下方。"
+        : "已生成创建生图节点的计划，并会把识别到的提示词填入节点。"
       : "已生成创建空白生图节点的计划，应用后可继续填写提示词。",
-    actions: [
-      {
-        type: "create_task",
-        mode: isEditMode ? "edit" : "create",
-        prompt
-      }
-    ]
+    actions: [action]
   };
+}
+
+function selectedAssistantImageNodes() {
+  return canvasState.nodes.filter((node) => selectedNodeIds.has(node.id) && node.type === "image");
+}
+
+function selectedAssistantImageGeneration() {
+  const image = selectedAssistantImageNodes()[0];
+  return image ? getImageGeneration(image) : null;
+}
+
+function selectedAssistantImageTaskPlacement() {
+  const image = selectedAssistantImageNodes()[0];
+  if (!image) return null;
+  const bounds = getNodeBounds(image);
+  return {
+    x: Math.round(bounds.x),
+    y: Math.round(bounds.y + bounds.height + 56)
+  };
+}
+
+function extractAssistantTaskRefinement(...texts) {
+  const patterns = [
+    /填入[“"']?【([^】]{2,180})】[”"']?/u,
+    /补充[“"']?【([^】]{2,180})】[”"']?/u,
+    /加入[“"']?【([^】]{2,180})】[”"']?/u,
+    /【([^】]{2,180})】/u
+  ];
+  for (const source of texts) {
+    const value = String(source || "");
+    for (const pattern of patterns) {
+      const match = value.match(pattern);
+      const refinement = String(match?.[1] || "").trim();
+      if (refinement) return refinement;
+    }
+  }
+  return "";
+}
+
+function mergeAssistantTaskPrompt(prompt, refinement) {
+  const base = String(prompt || "").trim();
+  const extra = String(refinement || "").trim();
+  if (!extra) return base;
+  if (!base) return extra;
+  if (base.includes(extra)) return base;
+  return `${base}\n\n补充要求：${extra}`;
 }
 
 function isAssistantCreateVideoTaskInstruction(text) {
@@ -4425,24 +4609,35 @@ function repairAssistantSummaryOnlyPlansFromHistory() {
   let changed = false;
   for (let index = 0; index < assistantMessages.length; index += 1) {
     const message = assistantMessages[index];
-    if (
-      message?.role !== "assistant" ||
-      message.error ||
-      message.plan?.actions?.length ||
-      !isAssistantPlanSummaryOnly(message.content)
-    ) {
+    if (message?.role !== "assistant" || message.error || message.plan?.actions?.length) {
       continue;
     }
 
     const sourceUser = findPreviousAssistantUserMessage(index);
-    const plan = sourceUser ? createAssistantSummaryFallbackPlan(sourceUser.content, message.content) : null;
+    const plan = sourceUser
+      ? isAssistantPlanSummaryOnly(message.content)
+        ? createAssistantSummaryFallbackPlan(sourceUser.content, message.content)
+        : isAssistantExecutableProsePlan(message.content)
+          ? createAssistantFallbackPlan(sourceUser.content, "action_plan", message.content)
+          : null
+      : null;
     if (!plan?.actions?.length) continue;
 
     message.plan = plan;
-    message.content = plan.summary;
+    if (isAssistantPlanSummaryOnly(message.content)) message.content = plan.summary;
     changed = true;
   }
   return changed;
+}
+
+function isAssistantExecutableProsePlan(text) {
+  const value = String(text || "").trim();
+  if (!value || isAssistantCapabilityRefusal(value)) return false;
+  return (
+    /(?:新建|创建|添加).{0,16}(?:生图|作图|图片生成).{0,8}节点/u.test(value) ||
+    /填入[“"']?【[^】]{2,180}】/u.test(value) ||
+    /放在(?:该图|选中图片|图片|节点).{0,10}(?:下方|旁边|右侧|左侧|空位)/u.test(value)
+  );
 }
 
 function findPreviousAssistantUserMessage(beforeIndex) {
@@ -6450,7 +6645,12 @@ function createImagePromptPanel(node) {
 
   const meta = document.createElement("p");
   meta.className = "image-prompt-meta";
-  meta.textContent = [node.image?.model, node.image?.size, node.image?.format].filter(Boolean).join(" · ");
+  meta.textContent = taskMetaParts(
+    node.image?.model,
+    node.image?.size,
+    node.image?.format,
+    node.image?.quality || node.image?.generation?.quality
+  ).filter(Boolean).join(" · ");
 
   const actions = document.createElement("div");
   actions.className = "image-prompt-actions";
@@ -6835,7 +7035,7 @@ function createTaskHeader(node) {
 
   const meta = document.createElement("span");
   meta.className = "node-meta";
-  meta.textContent = [node.model, node.size, node.format, cacheStatusText(node)].filter(Boolean).join(" · ");
+  meta.textContent = [...taskMetaParts(node.model, node.size, node.format, node.quality), cacheStatusText(node)].filter(Boolean).join(" · ");
 
   header.append(status, titleWrap, modeTabs, meta, createTaskActions(node));
   return header;
@@ -6887,6 +7087,16 @@ function createDebugPanel(node) {
 
   if (isDreaminaModelName(node.model)) {
     settings.append(modelField, createSelectField("尺寸", node, "size", sizeOptionsForModel(node.model, node.mode)));
+  } else if (isGeminiNativeImageModelName(node.model)) {
+    settings.append(
+      modelField,
+      createSelectField("比例", node, "size", geminiNativeRatioOptions),
+      createSelectField("尺寸", node, "quality", geminiNativeImageSizeOptions)
+    );
+    advancedGrid.append(
+      createSelectField("格式", node, "format", formatOptions),
+      createTextField("接口路径", node, "endpointPath")
+    );
   } else {
     settings.append(
       modelField,
@@ -6900,7 +7110,7 @@ function createDebugPanel(node) {
     );
   }
 
-  if (node.mode === "edit" && !isDreaminaModelName(node.model)) {
+  if (node.mode === "edit" && !isDreaminaModelName(node.model) && !isGeminiNativeImageModelName(node.model)) {
     advancedGrid.append(
       createSelectField("背景", node, "background", backgroundOptions),
       createSelectField("审核", node, "moderation", moderationOptions)
@@ -8486,6 +8696,7 @@ function createField(label, control, className = "") {
 }
 
 function createTaskModelField(node) {
+  node.model = normalizeImageModelName(node.model);
   return createSelectField("模型", node, "model", taskModelOptions, {
     onChange: () => {
       applyTaskModelDefaults(node, { modelChanged: true });

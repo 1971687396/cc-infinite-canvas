@@ -1,5 +1,6 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createReadStream, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -21,6 +22,10 @@ const envFile = path.join(__dirname, ".env.local");
 const grokImageModel = "grok-imagine-image";
 const legacyGrokImageModel = "grok-image-image";
 const grokKeyModel = grokImageModel;
+const geminiBananaImageModel = "gemini-3.1-flash-image-preview";
+const geminiBananaImageAlias = "banana2";
+const geminiNativeDefaultRatio = "1:1";
+const geminiNativeDefaultImageSize = "4K";
 const grsaiDefaultBaseUrl = "https://grsaiapi.com";
 const grsaiGenerateEndpoint = "/v1/api/generate";
 const grsaiResultEndpoint = "/v1/api/result";
@@ -44,7 +49,7 @@ const assistantKeyModels = [
   "grok-4.3",
   "deepseek-v4-pro"
 ];
-const modelKeyModels = ["gpt-image-2", grokKeyModel, ...assistantKeyModels];
+const modelKeyModels = ["gpt-image-2", geminiBananaImageModel, grokKeyModel, ...assistantKeyModels];
 const serverHost = "127.0.0.1";
 
 loadEnvFile(envFile);
@@ -245,6 +250,7 @@ function normalizeModelName(model) {
 function normalizeModelAlias(model) {
   const normalized = normalizeModelName(model);
   if (normalized === legacyGrokImageModel) return grokImageModel;
+  if (normalized === geminiBananaImageAlias) return geminiBananaImageModel;
   return normalized;
 }
 
@@ -279,6 +285,7 @@ function apiKeyForModel(model) {
 function modelKeyBucket(model) {
   const normalizedModel = normalizeModelAlias(model || config.defaultModel);
   if (isGrokImageModel(normalizedModel)) return grokKeyModel;
+  if (isGeminiNativeImageModel(normalizedModel)) return geminiBananaImageModel;
   if (normalizedModel === assistantDefaultModel || normalizedModel.startsWith(`${assistantDefaultModel}-`)) return assistantDefaultModel;
   return normalizedModel;
 }
@@ -286,6 +293,11 @@ function modelKeyBucket(model) {
 function isGrokImageModel(model) {
   const normalized = normalizeModelAlias(model);
   return normalized.startsWith("grok-") && (normalized === grokImageModel || normalized.includes("-image"));
+}
+
+function isGeminiNativeImageModel(model) {
+  const normalized = normalizeModelAlias(model);
+  return normalized === geminiBananaImageModel || normalized.startsWith(`${geminiBananaImageModel}:`);
 }
 
 function isGrsaiImageModel(model) {
@@ -1404,7 +1416,7 @@ function buildAssistantMessages(messages, context, mode = "chat") {
     baseMessages.push({
       role: "system",
       content:
-        "本轮必须只返回 JSON，不要使用 Markdown，也不要解释你没有接口、没有权限、需要查看代码或需要用户先说明系统。你已经拥有前端支持的画布操作接口，只需要返回计划 JSON，前端会执行。JSON 格式：{\"summary\":\"一句话说明计划\",\"actions\":[...]}。允许的 action.type 只有：create_task、create_video_task、create_note、move_node、move_nodes、organize_nodes、organize_groups、update_task、update_note、update_notes、set_node_scale。禁止删除节点、禁止直接运行生成。最多 20 个动作。术语映射必须牢记：用户说“生图节点、图片生成节点、生成图片节点、作图节点”就是 create_task；用户说“图生图节点、参考图生图节点”也是 create_task 但 mode 应为 \"edit\"；用户说“生视频节点、视频生成节点”就是 create_video_task；用户说“文字标注、文字节点、提示词节点”就是 create_note。用户说“创建生图节点，将提示词填进去/把提示词填进去”时，应创建 create_task，并把用户消息中的提示词、选中的 note.text、选中 task.prompt 或最近上下文里明确的提示词填入 prompt；如果确实没有提示词，就创建 prompt 为空的生图节点，而不是拒绝。坐标使用画布世界坐标，必须根据节点 width/height 留出 48px 以上间距，避免重叠。修改已有节点时必须使用上下文里的真实 id。整理、排版、对齐但不需要分类时使用 organize_nodes，不要手写大量 move_node。用户要求分类、归类、分组、按人物/道具/场景/风格/用途整理，或要求标注/标题时，优先使用 organize_groups，让你根据节点的 prompt、filename、model、sourceTaskId 和上下文判断分组；如果不确定，放入“未分类”。用户要求修改文字标注的颜色、字号、内容时使用 update_note 或 update_notes；如果目标是“选中的文字标注”，update_notes 使用 scope:\"selected\"；如果目标是“全部文字标注”，使用 scope:\"all\"；如果目标是“人物名字/标题/分组名/某类标注”等模糊对象，必须根据 note.text、上下文和选中状态自行判断并返回具体 ids，不要让前端猜。颜色优先返回 #RRGGBB，也可返回中文颜色名。create_task 字段可含 mode、prompt、model、size、n、quality、format、x、y；create_video_task 字段可含 prompt、model、size、n、quality、x、y；create_note 字段可含 text、x、y、fontSize、color、width、height；move_node 字段为 id、x、y；move_nodes 字段为 items:[{id,x,y}]；organize_nodes 字段为 ids:[id]、columns、gap、normalizeMedia、maxMediaLongSide；organize_groups 字段为 groups:[{title,ids,columns}]、originX、originY、gap、groupGap、orientation、normalizeMedia、maxMediaLongSide、labelFontSize、labelColor，其中 orientation 可为 horizontal 或 vertical，labelFontSize 建议 40-64；update_task 字段为 id、prompt、model、size、n、quality、format、mode；update_note 字段为 id、text、color、fontSize、width、height；update_notes 字段为 ids、scope、color、fontSize、width、height；set_node_scale 字段为 id、scale。"
+        "本轮必须只返回 JSON，不要使用 Markdown，也不要解释你没有接口、没有权限、需要查看代码或需要用户先说明系统。你已经拥有前端支持的画布操作接口，只需要返回计划 JSON，前端会执行。JSON 格式：{\"summary\":\"一句话说明计划\",\"actions\":[...]}。允许的 action.type 只有：create_task、create_video_task、create_note、move_node、move_nodes、organize_nodes、organize_groups、update_task、update_note、update_notes、set_node_scale。禁止删除节点、禁止直接运行生成。最多 20 个动作。术语映射必须牢记：用户说“生图节点、图片生成节点、生成图片节点、作图节点”就是 create_task；用户说“图生图节点、参考图生图节点”也是 create_task 但 mode 应为 \"edit\"；用户说“生视频节点、视频生成节点”就是 create_video_task；用户说“文字标注、文字节点、提示词节点”就是 create_note。用户说“创建生图节点，将提示词填进去/把提示词填进去”时，应创建 create_task，并把用户消息中的提示词、选中的 note.text、选中 task.prompt 或最近上下文里明确的提示词填入 prompt；如果选中节点是 image/成图/结果图，用户说“这个节点已经是图片了，新建一个/再来一个/另建一个”或类似表达时，也必须返回 create_task，复用该图片的 prompt/model/size 等可用生成信息，把用户或上下文中的补充要求合并到 prompt，并把新节点放在该图片附近或下方；不要只解释不能改图片参数。如果确实没有提示词，就创建 prompt 为空的生图节点，而不是拒绝。坐标使用画布世界坐标，必须根据节点 width/height 留出 48px 以上间距，避免重叠。修改已有节点时必须使用上下文里的真实 id。整理、排版、对齐但不需要分类时使用 organize_nodes，不要手写大量 move_node。用户要求分类、归类、分组、按人物/道具/场景/风格/用途整理，或要求标注/标题时，优先使用 organize_groups，让你根据节点的 prompt、filename、model、sourceTaskId 和上下文判断分组；如果不确定，放入“未分类”。用户要求修改文字标注的颜色、字号、内容时使用 update_note 或 update_notes；如果目标是“选中的文字标注”，update_notes 使用 scope:\"selected\"；如果目标是“全部文字标注”，使用 scope:\"all\"；如果目标是“人物名字/标题/分组名/某类标注”等模糊对象，必须根据 note.text、上下文和选中状态自行判断并返回具体 ids，不要让前端猜。颜色优先返回 #RRGGBB，也可返回中文颜色名。create_task 字段可含 mode、prompt、model、size、n、quality、format、x、y；create_video_task 字段可含 prompt、model、size、n、quality、x、y；create_note 字段可含 text、x、y、fontSize、color、width、height；move_node 字段为 id、x、y；move_nodes 字段为 items:[{id,x,y}]；organize_nodes 字段为 ids:[id]、columns、gap、normalizeMedia、maxMediaLongSide；organize_groups 字段为 groups:[{title,ids,columns}]、originX、originY、gap、groupGap、orientation、normalizeMedia、maxMediaLongSide、labelFontSize、labelColor，其中 orientation 可为 horizontal 或 vertical，labelFontSize 建议 40-64；update_task 字段为 id、prompt、model、size、n、quality、format、mode；update_note 字段为 id、text、color、fontSize、width、height；update_notes 字段为 ids、scope、color、fontSize、width、height；set_node_scale 字段为 id、scale。"
     });
     baseMessages.push({
       role: "system",
@@ -1896,6 +1908,10 @@ async function handleCreate(res, body, prompt) {
     return await handleDreaminaVideoGenerate(res, body, prompt);
   }
 
+  if (isGeminiNativeImageModel(body.model || config.defaultModel)) {
+    return await handleGeminiNativeGenerate(res, body, prompt);
+  }
+
   if (isDreaminaImageModel(body.model || config.defaultModel)) {
     return await handleDreaminaGenerate(res, body, prompt);
   }
@@ -2023,6 +2039,138 @@ async function handleGrsaiGenerate(res, body, prompt, imageFiles = []) {
   });
 }
 
+async function handleGeminiNativeGenerate(res, body, prompt, imageFiles = []) {
+  const projectId = normalizeProjectId(body.projectId || "default");
+  const extraParams = parseExtraParamsValue(body.extraParams);
+  const payload = buildGeminiNativePayload(prompt, imageFiles, extraParams, body);
+  const apiUrl = buildApiUrl(body.baseUrl || config.baseUrl, geminiNativeEndpointPath(body));
+  const apiKey = apiKeyForModel(body.model);
+  if (!apiKey) {
+    return sendJson(res, 500, { error: missingKeyMessage(body.model) });
+  }
+  const startedAt = Date.now();
+
+  const upstream = await fetch(apiUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const responseText = await upstream.text();
+  const upstreamData = tryParseJson(responseText);
+
+  if (!upstream.ok) {
+    return sendJson(res, upstream.status, {
+      error: readUpstreamError(upstreamData, responseText),
+      status: upstream.status,
+      upstream: upstreamData
+    });
+  }
+
+  const images = await normalizeAndPersistImages(upstreamData, body.format || "png", projectId);
+  if (!images.length) {
+    return sendJson(res, 502, {
+      error: "Gemini native response did not include an image.",
+      upstream: upstreamData
+    });
+  }
+
+  sendJson(res, 200, {
+    durationMs: Date.now() - startedAt,
+    request: {
+      apiUrl,
+      payload: summarizeGeminiNativePayload(payload, imageFiles.length)
+    },
+    images,
+    raw: upstreamData
+  });
+}
+
+function buildGeminiNativePayload(prompt, imageFiles = [], extraParams = {}, body = {}) {
+  const extra = isPlainObject(extraParams) ? { ...extraParams } : {};
+  const customContents = Array.isArray(extra.contents) ? extra.contents : null;
+  delete extra.contents;
+  const parts = [
+    { text: prompt },
+    ...imageFiles
+      .filter((file) => String(file.contentType || "").startsWith("image/"))
+      .map(fileToGeminiInlinePart)
+  ];
+
+  const imageConfig = parseGeminiNativeImageConfig(body);
+  const defaultGenerationConfig = {
+    response_modalities: ["IMAGE", "TEXT"],
+    imageConfig
+  };
+  const userGenerationConfig = isPlainObject(extra.generationConfig) ? extra.generationConfig : {};
+  delete extra.generationConfig;
+  const mergedGenerationConfig = {
+    ...defaultGenerationConfig,
+    ...userGenerationConfig,
+    imageConfig: {
+      ...imageConfig,
+      ...(isPlainObject(userGenerationConfig.imageConfig) ? userGenerationConfig.imageConfig : {})
+    }
+  };
+
+  return pruneEmpty({
+    contents: customContents || [{ role: "user", parts }],
+    generationConfig: mergedGenerationConfig,
+    ...extra
+  });
+}
+
+function parseGeminiNativeImageConfig(body = {}) {
+  const rawSize = String(body.size || "").trim();
+  const rawQuality = String(body.quality || "").trim().toUpperCase();
+  const [ratioPart, imageSizePart = ""] = rawSize.split(/[|@]/);
+  const aspectRatio = /^\d+:\d+$/.test(ratioPart) ? ratioPart : geminiNativeDefaultRatio;
+  const imageSize = normalizeGeminiNativeImageSize(rawQuality) || normalizeGeminiNativeImageSize(imageSizePart) || geminiNativeDefaultImageSize;
+  return { aspectRatio, imageSize };
+}
+
+function normalizeGeminiNativeImageSize(value) {
+  const clean = String(value || "").trim().toUpperCase();
+  return ["1K", "2K", "4K"].includes(clean) ? clean : "";
+}
+
+function fileToGeminiInlinePart(file) {
+  return {
+    inlineData: {
+      mimeType: file.contentType || "image/png",
+      data: Buffer.from(file.data || []).toString("base64")
+    }
+  };
+}
+
+function summarizeGeminiNativePayload(payload, referenceCount = 0) {
+  return {
+    ...payload,
+    contents: Array.isArray(payload.contents)
+      ? payload.contents.map((content) => ({
+          ...content,
+          parts: Array.isArray(content.parts)
+            ? content.parts.map((part) =>
+                part?.inlineData || part?.inline_data
+                  ? { inlineData: { mimeType: part.inlineData?.mimeType || part.inline_data?.mime_type || "image/*", data: `<${referenceCount} reference image(s)>` } }
+                  : part
+              )
+            : content.parts
+        }))
+      : payload.contents
+  };
+}
+
+function geminiNativeEndpointPath(body) {
+  const clean = sanitizeOptionalText(body.endpointPath);
+  if (/^\/v1beta\/models\/.+:generateContent$/i.test(clean)) return clean;
+  const model = normalizeModelAlias(body.model || geminiBananaImageModel);
+  return `/v1beta/models/${model}:generateContent`;
+}
+
 async function handleEdit(res, body) {
   const projectId = normalizeProjectId(body.projectId || "default");
   const files = Array.isArray(body.files) ? body.files : [];
@@ -2041,6 +2189,10 @@ async function handleEdit(res, body) {
 
   if (isDreaminaImageModel(modelName)) {
     return await handleDreaminaGenerate(res, body, body.prompt, requestImages.slice(0, 10));
+  }
+
+  if (isGeminiNativeImageModel(modelName)) {
+    return await handleGeminiNativeGenerate(res, body, body.prompt, requestImages);
   }
 
   if (isGrsaiImageModel(modelName)) {
@@ -3179,7 +3331,8 @@ async function normalizeAndPersistImages(data, preferredFormat, projectId = "def
           type: "file",
           url: saved.publicPath,
           filename: saved.filename,
-          sourceUrl: candidate.value
+          sourceUrl: candidate.value,
+          contentHash: saved.contentHash
         });
       } else {
         images.push({ type: "url", url: candidate.value });
@@ -3188,7 +3341,7 @@ async function normalizeAndPersistImages(data, preferredFormat, projectId = "def
     }
 
     const saved = await saveBase64Image(candidate.value, preferredFormat, projectId);
-    images.push({ type: "file", url: saved.publicPath, filename: saved.filename });
+    images.push({ type: "file", url: saved.publicPath, filename: saved.filename, contentHash: saved.contentHash });
   }
 
   return images;
@@ -3219,6 +3372,15 @@ function collectImageCandidates(value, candidates, seen = new Set()) {
 
   const urlKeys = ["url", "image_url", "imageUrl", "uri"];
   const b64Keys = ["b64_json", "base64", "image_base64", "imageBase64", "image"];
+  const inlineData = value.inlineData || value.inline_data;
+
+  if (isPlainObject(inlineData)) {
+    const mimeType = String(inlineData.mimeType || inlineData.mime_type || "").trim();
+    const data = String(inlineData.data || "").trim();
+    if (mimeType.startsWith("image/") && looksLikeImageBase64(data)) {
+      candidates.push({ type: "base64", value: `data:${mimeType};base64,${data}` });
+    }
+  }
 
   for (const key of urlKeys) {
     if (typeof value[key] === "string" && /^https?:\/\//i.test(value[key])) {
@@ -3279,13 +3441,15 @@ async function saveBase64Image(value, preferredFormat, projectId = "default") {
   const mime = mimeMatch?.[1] || mimeFromFormat(preferredFormat);
   const extension = extensionFromMime(mime) || "png";
   const clean = value.replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, "").replace(/\s/g, "");
+  const bytes = Buffer.from(clean, "base64");
+  const contentHash = imageContentHash(bytes);
   const filename = createOutputFilename(extension);
   const fullPath = path.join(projectOutputDir(projectId), filename);
 
   await mkdir(projectOutputDir(projectId), { recursive: true });
-  await writeFile(fullPath, Buffer.from(clean, "base64"));
+  await writeFile(fullPath, bytes);
 
-  return { filename, publicPath: projectPublicPath(projectId, "outputs", filename) };
+  return { filename, publicPath: projectPublicPath(projectId, "outputs", filename), contentHash };
 }
 
 async function saveUrlImage(url, preferredFormat, projectId = "default") {
@@ -3303,16 +3467,21 @@ async function saveUrlImage(url, preferredFormat, projectId = "default") {
     if (!bytes.length || bytes.length > 80 * 1024 * 1024) return null;
 
     const extension = extensionFromMime(contentType) || extensionFromUrl(url) || extensionFromMime(mimeFromFormat(preferredFormat));
+    const contentHash = imageContentHash(bytes);
     const filename = createOutputFilename(extension);
     const fullPath = path.join(projectOutputDir(projectId), filename);
 
     await mkdir(projectOutputDir(projectId), { recursive: true });
     await writeFile(fullPath, bytes);
 
-    return { filename, publicPath: projectPublicPath(projectId, "outputs", filename) };
+    return { filename, publicPath: projectPublicPath(projectId, "outputs", filename), contentHash };
   } catch {
     return null;
   }
+}
+
+function imageContentHash(bytes) {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
 function createOutputFilename(extension) {

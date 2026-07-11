@@ -10,6 +10,8 @@ const assistantSkillRequestLimit = 8;
 const assistantChatBackupDelayMs = 600;
 const assistantPendingFileLimit = 5;
 const themeStorageKey = "cc-canvas-theme";
+const photoshopBridgeHeaders = { "X-CC-Canvas-Bridge": "psimageai" };
+const photoshopBridgePollIntervalMs = 1600;
 const minZoom = 0.02;
 const maxZoom = 24;
 const defaultTaskWidth = 620;
@@ -26,6 +28,173 @@ const defaultVideoHeight = 270;
 const defaultVideoScale = 0.75;
 const defaultNoteWidth = 300;
 const defaultNoteHeight = 64;
+const defaultPortraitNodeWidth = 560;
+const defaultPortraitNodeHeight = 334;
+const defaultCameraNodeWidth = 560;
+const defaultCameraNodeHeight = 410;
+const portraitStylePacks = [
+  ["any", "不限风格"],
+  ["realistic", "写实"],
+  ["fashion", "时尚"],
+  ["ancient", "古风"],
+  ["fantasy", "幻想"],
+  ["cyber", "赛博"],
+  ["classic", "复古"]
+];
+const portraitStylePools = {
+  realistic: {
+    style: ["cinematic", "documentary", "studio"],
+    lighting: ["window", "rembrandt", "high-key", "low-key"],
+    background: ["gray", "dark-studio", "interior", "outdoor"]
+  },
+  fashion: {
+    identity: ["model", "executive", "artist"],
+    outfit: ["couture", "suit", "minimal-black", "trench"],
+    style: ["editorial", "studio", "cinematic"]
+  },
+  ancient: {
+    identity: ["royal", "scholar", "swordsman"],
+    outfit: ["hanfu", "royal-robe", "armor"],
+    background: ["palace", "garden", "dark-studio"],
+    style: ["oriental", "cinematic", "painting"]
+  },
+  fantasy: {
+    identity: ["royal", "swordsman", "traveler", "artist"],
+    outfit: ["royal-robe", "armor", "couture"],
+    background: ["palace", "forest", "dark-studio"],
+    style: ["fantasy", "painting", "cinematic"]
+  },
+  cyber: {
+    identity: ["detective", "swordsman", "executive", "traveler"],
+    outfit: ["techwear", "minimal-black", "armor"],
+    lighting: ["neon", "low-key", "rim"],
+    background: ["city-night", "dark-studio", "interior"],
+    style: ["cyberpunk", "cinematic", "editorial"]
+  },
+  classic: {
+    outfit: ["suit", "trench", "royal-robe"],
+    lighting: ["rembrandt", "window", "golden"],
+    background: ["interior", "dark-studio", "garden"],
+    style: ["painting", "documentary", "cinematic"]
+  }
+};
+const portraitTraitGroups = [
+  { id: "gender", label: "人物", options: [
+    ["woman", "成年女性", "adult woman", { gender: "woman" }],
+    ["man", "成年男性", "adult man", { gender: "man" }],
+    ["androgynous", "中性气质人物", "androgynous adult", { gender: "androgynous" }]
+  ] },
+  { id: "age", label: "年龄感", options: [
+    ["twenties", "二十多岁", "in their twenties"], ["thirties", "三十多岁", "in their thirties"],
+    ["forties", "四十多岁", "in their forties"], ["fifties", "五十多岁", "in their fifties"],
+    ["sixties", "六十多岁", "in their sixties"]
+  ] },
+  { id: "identity", label: "身份", options: [
+    ["model", "时装模特", "fashion model"], ["executive", "都市高管", "urban executive"],
+    ["artist", "艺术家", "artist"], ["detective", "侦探", "detective"],
+    ["royal", "王族成员", "royal noble"], ["scholar", "学者", "scholar"],
+    ["swordsman", "剑士", "swordsman"], ["traveler", "神秘旅人", "mysterious traveler"]
+  ] },
+  { id: "face", label: "脸型", options: [
+    ["oval", "窄鹅蛋脸", "narrow oval face", { face: "oval" }],
+    ["heart", "心形脸", "heart-shaped face", { face: "heart" }],
+    ["round", "圆润脸型", "soft round face", { face: "round" }],
+    ["square", "方正脸型", "defined square face", { face: "square" }],
+    ["angular", "骨相清晰", "defined angular bone structure", { face: "angular" }]
+  ] },
+  { id: "skin", label: "肤色", options: [
+    ["cool-fair", "冷白皮", "cool fair skin", { skin: "#f1c9b7" }],
+    ["ivory", "暖象牙肤色", "warm ivory skin", { skin: "#ddb093" }],
+    ["natural", "自然肤色", "natural skin tone", { skin: "#c98f6a" }],
+    ["wheat", "小麦肤色", "wheat-toned skin", { skin: "#ae704f" }],
+    ["bronze", "古铜肤色", "bronze skin", { skin: "#855139" }],
+    ["deep", "深色肌肤", "deep skin tone", { skin: "#593526" }]
+  ] },
+  { id: "eyes", label: "眼睛", options: [
+    ["almond", "杏眼", "almond-shaped eyes", { eyeShape: "almond" }],
+    ["phoenix", "丹凤眼", "phoenix eyes", { eyeShape: "slender" }],
+    ["round", "圆润大眼", "large round eyes", { eyeShape: "round" }],
+    ["cat", "上扬猫眼", "upturned cat eyes", { eyeShape: "cat" }],
+    ["deep-set", "深邃眼窝", "deep-set eyes", { eyeShape: "deep" }]
+  ] },
+  { id: "eyeColor", label: "瞳色", options: [
+    ["brown", "深棕眼眸", "deep brown eyes", { eyes: "#3b241d" }],
+    ["amber", "琥珀眼眸", "amber eyes", { eyes: "#9a5f20" }],
+    ["blue", "冰蓝眼眸", "icy blue eyes", { eyes: "#5797bd" }],
+    ["green", "翡翠绿眼眸", "emerald green eyes", { eyes: "#4f8266" }],
+    ["gray", "灰色眼眸", "gray eyes", { eyes: "#7c8791" }],
+    ["violet", "紫罗兰眼眸", "violet eyes", { eyes: "#76558d" }]
+  ] },
+  { id: "hairStyle", label: "发型", options: [
+    ["long", "长直发", "long straight hair", { hairStyle: "long" }],
+    ["waves", "大波浪卷发", "large wavy hair", { hairStyle: "waves" }],
+    ["bob", "利落短鲍勃", "sharp bob haircut", { hairStyle: "bob" }],
+    ["pixie", "精灵短发", "pixie haircut", { hairStyle: "short" }],
+    ["ponytail", "高马尾", "high ponytail", { hairStyle: "ponytail" }],
+    ["braid", "侧编发", "side braided hair", { hairStyle: "braid" }],
+    ["slick", "背头", "slicked-back hair", { hairStyle: "slick" }]
+  ] },
+  { id: "hairColor", label: "发色", options: [
+    ["black", "黑发", "black hair", { hair: "#17181b" }],
+    ["brown", "深棕发", "dark brown hair", { hair: "#3a241c" }],
+    ["chestnut", "栗色发", "chestnut hair", { hair: "#70412d" }],
+    ["auburn", "赤褐发", "auburn hair", { hair: "#873f2b" }],
+    ["blonde", "金发", "blonde hair", { hair: "#d3b36f" }],
+    ["silver", "银白发", "silver white hair", { hair: "#c9cbd0" }],
+    ["blue-black", "蓝黑发", "blue-black hair", { hair: "#17233b" }]
+  ] },
+  { id: "expression", label: "神态", options: [
+    ["calm", "平静克制", "calm restrained expression", { expression: "neutral" }],
+    ["gentle", "温柔浅笑", "gentle subtle smile", { expression: "smile" }],
+    ["determined", "坚定锐利", "determined sharp gaze", { expression: "firm" }],
+    ["distant", "清冷疏离", "cool distant expression", { expression: "neutral" }],
+    ["melancholy", "含蓄忧郁", "subtle melancholic expression", { expression: "sad" }],
+    ["playful", "自信俏皮", "confident playful smirk", { expression: "smirk" }]
+  ] },
+  { id: "outfit", label: "服装", options: [
+    ["minimal-black", "极简黑色服装", "minimal black outfit", { outfit: "#22252a" }],
+    ["white-shirt", "干净白衬衫", "clean white shirt", { outfit: "#e9ecef" }],
+    ["suit", "剪裁西装", "tailored suit", { outfit: "#263142" }],
+    ["trench", "经典风衣", "classic trench coat", { outfit: "#8d775b" }],
+    ["couture", "高定礼服", "haute couture outfit", { outfit: "#4f294c" }],
+    ["hanfu", "素雅汉服", "elegant traditional hanfu", { outfit: "#9fb6ae" }],
+    ["royal-robe", "华贵长袍", "ornate royal robe", { outfit: "#5b315e" }],
+    ["armor", "精致轻甲", "refined light armor", { outfit: "#5b6670" }],
+    ["techwear", "未来机能服", "futuristic techwear", { outfit: "#182d35" }]
+  ] },
+  { id: "lighting", label: "光线", options: [
+    ["window", "柔和窗光", "soft window light"], ["rembrandt", "伦勃朗光", "Rembrandt lighting"],
+    ["high-key", "明亮高调光", "clean high-key studio lighting"], ["low-key", "低调侧光", "dramatic low-key side lighting"],
+    ["golden", "金色逆光", "golden backlight"], ["neon", "霓虹轮廓光", "neon rim lighting"],
+    ["rim", "冷色边缘光", "cool cinematic rim light"]
+  ] },
+  { id: "shot", label: "景别", options: [
+    ["close-up", "面部特写", "close-up portrait"], ["headshot", "标准头像", "head-and-shoulders portrait"],
+    ["bust", "胸像构图", "bust portrait"], ["half-body", "半身肖像", "half-body portrait"],
+    ["full-body", "全身肖像", "full-body portrait"]
+  ] },
+  { id: "lens", label: "镜头", options: [
+    ["35mm", "35mm 环境人像", "35mm environmental portrait lens"],
+    ["50mm", "50mm 自然透视", "50mm natural perspective"],
+    ["85mm", "85mm 经典人像", "85mm portrait lens"],
+    ["105mm", "105mm 压缩透视", "105mm compressed portrait lens"]
+  ] },
+  { id: "background", label: "背景", options: [
+    ["gray", "中性灰背景", "neutral gray backdrop"], ["dark-studio", "暗色影棚", "dark studio background"],
+    ["interior", "质感室内空间", "refined interior background"], ["city-night", "城市夜景", "cinematic city night background"],
+    ["outdoor", "自然户外", "soft natural outdoor background"], ["forest", "薄雾森林", "misty forest background"],
+    ["garden", "古典庭院", "classical garden background"], ["palace", "宫殿空间", "ornate palace interior"]
+  ] },
+  { id: "style", label: "画面风格", options: [
+    ["cinematic", "电影级写实", "cinematic photorealism"], ["editorial", "时尚编辑大片", "fashion editorial photography"],
+    ["documentary", "纪实人像", "documentary portrait photography"], ["studio", "商业棚拍", "polished studio portrait photography"],
+    ["oriental", "东方美学", "refined oriental visual aesthetics"], ["fantasy", "幻想概念艺术", "fantasy character concept art"],
+    ["cyberpunk", "赛博朋克", "cyberpunk portrait art"], ["painting", "古典绘画质感", "classical painterly portrait"]
+  ] }
+].map((group) => ({
+  ...group,
+  options: group.options.map(([id, zh, en, preview = {}]) => ({ id, zh, en, preview }))
+}));
 const minNoteWidth = 96;
 const minNoteHeight = 44;
 const maxNoteWidth = 4096;
@@ -54,6 +223,8 @@ const addGrokEditTaskButton = document.querySelector("#addGrokEditTaskButton");
 const clearCanvasButton = document.querySelector("#clearCanvasButton");
 const generateAllButton = document.querySelector("#generateAllButton");
 const addNoteButton = document.querySelector("#addNoteButton");
+const addPortraitButton = document.querySelector("#addPortraitButton");
+const addCameraButton = document.querySelector("#addCameraButton");
 const addRegionButton = document.querySelector("#addRegionButton");
 const addChatGptButton = document.querySelector("#addChatGptButton");
 const assistantButton = document.querySelector("#assistantButton");
@@ -82,6 +253,7 @@ const selectionMeta = document.querySelector("#selectionMeta");
 const selectionScaleInput = document.querySelector("#selectionScaleInput");
 const applySelectionScaleButton = document.querySelector("#applySelectionScaleButton");
 const reusePromptButton = document.querySelector("#reusePromptButton");
+const sendSelectionToPhotoshopButton = document.querySelector("#sendSelectionToPhotoshopButton");
 const settingsDialog = document.querySelector("#settingsDialog");
 const settingsForm = document.querySelector("#settingsForm");
 const closeSettingsButton = document.querySelector("#closeSettingsButton");
@@ -99,6 +271,7 @@ const settingsChatEndpoint = document.querySelector("#settingsChatEndpoint");
 const settingsDefaultModel = document.querySelector("#settingsDefaultModel");
 const settingsAssistantModel = document.querySelector("#settingsAssistantModel");
 const settingsCacheDir = document.querySelector("#settingsCacheDir");
+const settingsPhotoshopBridgeEnabled = document.querySelector("#settingsPhotoshopBridgeEnabled");
 const settingsStatus = document.querySelector("#settingsStatus");
 const dreaminaStatusText = document.querySelector("#dreaminaStatusText");
 const dreaminaAccountMeta = document.querySelector("#dreaminaAccountMeta");
@@ -234,6 +407,7 @@ const assistantDefaultModel = "gpt-5.5";
 const assistantPendingImageLimit = 8;
 const assistantModelOptions = [
   [assistantDefaultModel, assistantDefaultModel],
+  ["gpt-5.6-sol", "gpt-5.6-sol"],
   ["gemini-3.5-flash", "gemini-3.5-flash"],
   ["claude-opus-4-8", "claude-opus-4-8"],
   ["doubao-seed-2-1-turbo-260628", "doubao-seed-2-1-turbo-260628"],
@@ -363,6 +537,10 @@ let assistantChatBackupTimer = 0;
 let assistantCopyMenu = null;
 let assistantCopyText = "";
 let lastCanvasPointer = null;
+let photoshopBridgePollTimer = 0;
+let photoshopBridgeImporting = false;
+let photoshopReferenceSelectionRequest = null;
+let photoshopReferenceSelectionBusy = false;
 let canvasState = {
   nodes: [],
   viewport: { x: 120, y: 90, zoom: 1 },
@@ -391,6 +569,7 @@ async function init() {
   await refreshProjectList();
   const preferredProjectId = localStorage.getItem(currentProjectStorageKey) || projectList[0]?.id || "default";
   await loadProjectById(preferredProjectId, { initial: true });
+  applyPhotoshopBridgeAvailability();
   refreshDreaminaStatus();
   checkForUpdates({ automatic: true });
 }
@@ -411,6 +590,8 @@ generateAllButton.addEventListener("click", () => {
 });
 
 addNoteButton.addEventListener("click", addNoteNode);
+addPortraitButton?.addEventListener("click", () => addPortraitNode());
+addCameraButton?.addEventListener("click", () => addCameraNode());
 addRegionButton?.addEventListener("click", () => addRegionNode());
 addChatGptButton?.addEventListener("click", addChatGptNode);
 assistantButton?.addEventListener("click", openAssistantPanel);
@@ -488,6 +669,7 @@ async function refreshRuntimeConfig() {
   config = data;
   setKeyStatus(config.hasAnyKey ?? config.hasApiKey);
   renderAssistantModelSelectors();
+  applyPhotoshopBridgeAvailability({ render: false });
   return config;
 }
 
@@ -541,6 +723,7 @@ function noteDisplayColor(node) {
 settingsForm.addEventListener("submit", saveSettings);
 applySelectionScaleButton.addEventListener("click", applySelectionScale);
 reusePromptButton.addEventListener("click", reusePromptFromSelection);
+sendSelectionToPhotoshopButton?.addEventListener("click", completePhotoshopReferenceSelection);
 selectionScaleInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
@@ -809,6 +992,8 @@ function createDefaultTaskNode(mode = "create") {
     extraParamsText: "{}",
     cachedImages: [],
     referenceImageNodeIds: [],
+    promptNoteNodeIds: [],
+    promptNotePlacements: {},
     cachedMask: null,
     cacheStatus: normalizedMode === "edit" ? "pending" : "none",
     sessionFiles: [],
@@ -844,6 +1029,8 @@ function createDefaultVideoTaskNode() {
     extraParamsText: "{}",
     cachedImages: [],
     referenceImageNodeIds: [],
+    promptNoteNodeIds: [],
+    promptNotePlacements: {},
     cacheStatus: "pending",
     sessionFiles: [],
     videos: [],
@@ -879,6 +1066,61 @@ function addNoteNode(point = null) {
   canvasState.nodes.push(node);
   editingNoteId = node.id;
   selectOnly(node.id, { focusSelector: ".note-editor" });
+  saveCanvasState();
+  updateCanvasMeta();
+}
+
+function addPortraitNode(point = null) {
+  const center = point || getViewportCenterWorld();
+  const offset = point ? 0 : canvasState.nodes.length % 8;
+  const node = {
+    id: createId(),
+    type: "portrait",
+    language: "zh",
+    stylePack: "realistic",
+    seed: "",
+    selection: {},
+    locks: {},
+    customText: "",
+    width: defaultPortraitNodeWidth,
+    height: defaultPortraitNodeHeight,
+    x: Math.round(center.x - defaultPortraitNodeWidth / 2 + offset * 24),
+    y: Math.round(center.y - defaultPortraitNodeHeight / 2 + offset * 24),
+    z: ++canvasState.nextZ,
+    createdAt: new Date().toISOString()
+  };
+  randomizePortraitNode(node);
+  canvasState.nodes.push(node);
+  selectOnly(node.id);
+  saveCanvasState();
+  updateCanvasMeta();
+}
+
+function addCameraNode(point = null) {
+  const center = point || getViewportCenterWorld();
+  const offset = point ? 0 : canvasState.nodes.length % 8;
+  const node = {
+    id: createId(),
+    type: "camera",
+    subject: "场景主体",
+    objectX: 0.5,
+    objectY: 0.5,
+    cameraX: 0.5,
+    cameraY: 0.86,
+    azimuth: 0,
+    elevation: 12,
+    distance: 0.36,
+    focalLength: 35,
+    width: defaultCameraNodeWidth,
+    height: defaultCameraNodeHeight,
+    x: Math.round(center.x - defaultCameraNodeWidth / 2 + offset * 24),
+    y: Math.round(center.y - defaultCameraNodeHeight / 2 + offset * 24),
+    z: ++canvasState.nextZ,
+    createdAt: new Date().toISOString()
+  };
+
+  canvasState.nodes.push(node);
+  selectOnly(node.id);
   saveCanvasState();
   updateCanvasMeta();
 }
@@ -936,7 +1178,7 @@ async function generateNode(nodeId) {
   if (node.type === "video-task") return await generateVideoNode(nodeId);
   if (node.type !== "task") return;
 
-  if (!node.prompt.trim()) {
+  if (!effectivePromptForNode(node)) {
     showToast("节点提示词不能为空");
     return;
   }
@@ -997,7 +1239,7 @@ async function generateVideoNode(nodeId) {
   const node = canvasState.nodes.find((item) => item.id === nodeId);
   if (!node || node.type !== "video-task" || node.status === "running") return;
 
-  if (!node.prompt.trim()) {
+  if (!effectivePromptForNode(node)) {
     showToast("视频节点提示词不能为空");
     return;
   }
@@ -1104,7 +1346,7 @@ function buildNodePayload(node) {
   return {
     projectId: currentProjectId,
     mode: node.mode,
-    prompt: node.prompt.trim(),
+    prompt: effectivePromptForNode(node),
     model: node.model,
     n: node.n,
     size: node.size,
@@ -1123,7 +1365,7 @@ function buildNodePayload(node) {
 function appendNodeFields(formData, node, options = {}) {
   formData.append("projectId", currentProjectId);
   formData.append("mode", node.mode);
-  formData.append("prompt", node.prompt.trim());
+  formData.append("prompt", effectivePromptForNode(node));
   formData.append("model", node.model);
   formData.append("n", node.n);
   formData.append("size", node.size);
@@ -1150,7 +1392,7 @@ function normalizeNodeImage(image, node) {
     filename: image.filename || "generated-image",
     sourceUrl: image.sourceUrl || "",
     contentHash: image.contentHash || "",
-    prompt: node.prompt,
+    prompt: effectivePromptForNode(node),
     model: node.model,
     size: node.size,
     quality: node.quality || "",
@@ -1165,7 +1407,7 @@ function normalizeNodeImage(image, node) {
 function buildGenerationSnapshot(node) {
   return {
     mode: node.mode === "edit" ? "edit" : "create",
-    prompt: node.prompt || "",
+    prompt: effectivePromptForNode(node),
     model: node.model || config.defaultModel || "gpt-image-2",
     n: String(node.n || "1"),
     size: node.size || "auto",
@@ -1178,6 +1420,8 @@ function buildGenerationSnapshot(node) {
     extraParams: clonePlainValue(node.extraParams || {}),
     cachedImages: clonePlainValue(node.cachedImages || []),
     referenceImageNodeIds: dedupeStrings(node.referenceImageNodeIds || []),
+    promptNoteNodeIds: dedupeStrings(node.promptNoteNodeIds || []),
+    promptNotePlacements: normalizePromptNotePlacements(node.promptNotePlacements, node.promptNoteNodeIds),
     cachedMask: node.cachedMask ? clonePlainValue(node.cachedMask) : null
   };
 }
@@ -1204,7 +1448,7 @@ function normalizeNodeVideo(video, node) {
     url: video.url,
     filename: video.filename || "dreamina-video.mp4",
     sourceUrl: video.sourceUrl || "",
-    prompt: node.prompt,
+    prompt: effectivePromptForNode(node),
     model: node.model,
     size: node.size,
     format: video.format || "mp4",
@@ -1242,7 +1486,7 @@ function createImageNodesForTask(taskNode, images) {
   );
 
   let cursorY = taskNode.y;
-  const x = taskNode.x + (taskNode.width || defaultTaskWidth) + 48;
+  const x = taskNode.x;
 
   for (const image of images) {
     const key = getImageKey(image);
@@ -1617,6 +1861,9 @@ function openSettingsDialog() {
   renderAssistantModelSelectors();
   updateSettingsAssistantKeyState();
   settingsCacheDir.value = config.cacheDir || "";
+  if (settingsPhotoshopBridgeEnabled) {
+    settingsPhotoshopBridgeEnabled.checked = Boolean(config.photoshopBridgeEnabled);
+  }
   settingsStatus.textContent = config.hasApiKey ? "Key 已配置" : "Key 未配置";
   const modelKeyCount = Object.values(config.modelKeys || {}).filter(Boolean).length;
   const keyCount = Number(Boolean(config.hasApiKey)) + Number(Boolean(config.hasGrsaiApiKey)) + modelKeyCount;
@@ -1787,7 +2034,8 @@ async function saveSettings(event) {
       chatEndpoint: settingsChatEndpoint.value.trim(),
       defaultModel: settingsDefaultModel.value.trim(),
       assistantModel: assistantKeyModel,
-      cacheDir: settingsCacheDir.value.trim()
+      cacheDir: settingsCacheDir.value.trim(),
+      photoshopBridgeEnabled: Boolean(settingsPhotoshopBridgeEnabled?.checked)
     };
 
     const response = await fetch("/api/settings", {
@@ -1810,10 +2058,12 @@ async function saveSettings(event) {
       defaultModel: data.defaultModel,
       assistantModel: data.assistantModel,
       modelKeys: data.modelKeys,
-      cacheDir: data.cacheDir
+      cacheDir: data.cacheDir,
+      photoshopBridgeEnabled: Boolean(data.photoshopBridgeEnabled)
     };
     setKeyStatus(config.hasAnyKey ?? config.hasApiKey, config.dreaminaLoggedIn);
     renderAssistantModelSelectors();
+    applyPhotoshopBridgeAvailability();
     await refreshProjectList();
     settingsApiKey.value = "";
     settingsGptImageKey.value = "";
@@ -3701,6 +3951,8 @@ function promptFromSelectedNodes() {
     .filter((node) => selectedNodeIds.has(node.id))
     .map((node) => {
       if (node.type === "note") return node.text || "";
+      if (node.type === "portrait") return portraitPromptForNode(node);
+      if (node.type === "camera") return cameraPromptForNode(node);
       if (node.type === "task" || node.type === "video-task") return node.prompt || "";
       if (node.type === "image") return getImagePrompt(node) || getImageGeneration(node)?.prompt || "";
       if (node.type === "video") return node.video?.prompt || node.video?.generation?.prompt || "";
@@ -3717,7 +3969,7 @@ function isAssistantLayoutInstruction(content) {
 }
 
 function assistantLayoutTargetNodes() {
-  const allowedTypes = new Set(["image", "video", "note", "task", "video-task"]);
+  const allowedTypes = new Set(["image", "video", "note", "portrait", "camera", "task", "video-task"]);
   const selected = canvasState.nodes.filter((node) => selectedNodeIds.has(node.id) && allowedTypes.has(node.type || "task"));
   const source = selected.length ? selected : canvasState.nodes.filter((node) => allowedTypes.has(node.type || "task"));
   return source
@@ -4765,6 +5017,27 @@ function summarizeNodeForAssistant(node, textLimit = 1200) {
     };
   }
 
+  if (node.type === "portrait") {
+    return {
+      ...common,
+      summary: portraitSummaryForNode(node, 16),
+      language: node.language === "en" ? "en" : "zh",
+      stylePack: node.stylePack || "realistic",
+      prompt: trimAssistantText(portraitPromptForNode(node), textLimit)
+    };
+  }
+
+  if (node.type === "camera") {
+    return {
+      ...common,
+      subject: node.subject || "场景主体",
+      angle: cameraAngleLabel(node),
+      elevation: Number(node.elevation) || 0,
+      focalLength: normalizeCameraFocalLength(node.focalLength),
+      prompt: trimAssistantText(cameraPromptForNode(node), textLimit)
+    };
+  }
+
   if (node.type === "region") {
     return {
       ...common,
@@ -4917,6 +5190,8 @@ function applyGenerationToTask(task, generation) {
   applyTaskModelDefaults(task, { modeChanged: true, modelChanged: true });
 
   task.prompt = generation.prompt || "";
+  task.promptNoteNodeIds = [];
+  task.promptNotePlacements = {};
   task.n = String(generation.n || "1");
   task.size = generation.size || defaultSizeForModel(task.model, task.mode);
   task.quality = generation.quality || "";
@@ -4962,6 +5237,13 @@ function updateSelectionToolbar() {
   selectionScaleInput.disabled = !canScaleImages;
   applySelectionScaleButton.disabled = !canScaleImages;
   reusePromptButton.disabled = !canReusePrompt;
+  if (sendSelectionToPhotoshopButton) {
+    sendSelectionToPhotoshopButton.hidden = !config.photoshopBridgeEnabled || !photoshopReferenceSelectionRequest;
+    sendSelectionToPhotoshopButton.disabled = !selectedImages.length || photoshopReferenceSelectionBusy;
+    sendSelectionToPhotoshopButton.textContent = photoshopReferenceSelectionBusy
+      ? "发送中..."
+      : `作为 PS 参考图${selectedImages.length ? ` (${Math.min(15, selectedImages.length)})` : ""}`;
+  }
 
   if (canScaleImages && document.activeElement !== selectionScaleInput) {
     const averageScale =
@@ -5183,9 +5465,9 @@ async function addLocalImageFilesToCanvas(files, point) {
   return await addLocalMediaFilesToCanvas(files.filter(isCanvasImageFile), point);
 }
 
-async function addLocalMediaFilesToCanvas(files, point) {
+async function addLocalMediaFilesToCanvas(files, point, options = {}) {
   const mediaFiles = files.filter(isCanvasMediaFile);
-  if (!mediaFiles.length) return;
+  if (!mediaFiles.length) return false;
 
   const formData = new FormData();
   formData.append("projectId", currentProjectId);
@@ -5247,9 +5529,163 @@ async function addLocalMediaFilesToCanvas(files, point) {
     createdIds.forEach((id) => selectedNodeIds.add(id));
     renderCanvas();
     saveCanvasState();
-    showToast(localMediaToastText(imageCount, videoCount));
+    if (options.toast !== false) showToast(localMediaToastText(imageCount, videoCount));
+    return true;
   } catch (error) {
     showToast(error.message || "拖入媒体失败");
+    return false;
+  }
+}
+
+function applyPhotoshopBridgeAvailability(options = {}) {
+  const enabled = Boolean(config.photoshopBridgeEnabled);
+  if (enabled) {
+    startPhotoshopBridgePolling();
+  } else {
+    if (photoshopBridgePollTimer) window.clearInterval(photoshopBridgePollTimer);
+    photoshopBridgePollTimer = 0;
+    photoshopReferenceSelectionRequest = null;
+    photoshopReferenceSelectionBusy = false;
+    if (sendSelectionToPhotoshopButton) sendSelectionToPhotoshopButton.hidden = true;
+  }
+  if (options.render !== false && canvasStage) renderCanvas();
+  updateSelectionToolbar();
+}
+
+function startPhotoshopBridgePolling() {
+  if (photoshopBridgePollTimer) window.clearInterval(photoshopBridgePollTimer);
+  photoshopBridgePollTimer = 0;
+  if (!config.photoshopBridgeEnabled) return;
+  pollPhotoshopBridgeInbox();
+  photoshopBridgePollTimer = window.setInterval(() => {
+    if (!document.hidden) pollPhotoshopBridgeInbox();
+  }, photoshopBridgePollIntervalMs);
+}
+
+async function pollPhotoshopBridgeInbox() {
+  if (!config.photoshopBridgeEnabled || photoshopBridgeImporting || isLoadingProject) return;
+  photoshopBridgeImporting = true;
+  try {
+    const params = new URLSearchParams({
+      projectId: currentProjectId || "default",
+      projectName: currentProjectName || "未命名画布"
+    });
+    const [response, referenceResponse] = await Promise.all([
+      fetch(`/api/photoshop/inbox?${params}`, { headers: photoshopBridgeHeaders }),
+      fetch(`/api/photoshop/reference-selection/request?${params}`, { headers: photoshopBridgeHeaders })
+    ]);
+    if (referenceResponse.ok) {
+      const referenceData = await referenceResponse.json();
+      const nextRequest = referenceData.request?.status === "pending" ? referenceData.request : null;
+      if (nextRequest && nextRequest.id !== photoshopReferenceSelectionRequest?.id) {
+        photoshopReferenceSelectionRequest = nextRequest;
+        updateSelectionToolbar();
+        showToast("Photoshop 正在等待参考图，请在画布中选择图片后点击“作为 PS 参考图”");
+      } else if (!nextRequest && photoshopReferenceSelectionRequest) {
+        photoshopReferenceSelectionRequest = null;
+        updateSelectionToolbar();
+      }
+    }
+    if (!response.ok) return;
+    const data = await response.json();
+    const items = Array.isArray(data.items) ? data.items : [];
+    if (!items.length) return;
+
+    const files = [];
+    const importedIds = [];
+    for (const item of items) {
+      const imageResponse = await fetch(item.url, { headers: photoshopBridgeHeaders });
+      if (!imageResponse.ok) continue;
+      const blob = await imageResponse.blob();
+      const type = blob.type || item.contentType || "image/png";
+      const filename = item.originalName || item.filename || `photoshop-${Date.now()}.png`;
+      files.push(new File([blob], filename, { type, lastModified: Date.now() }));
+      importedIds.push(item.id);
+    }
+    if (!files.length) return;
+
+    const imported = await addLocalMediaFilesToCanvas(files, getViewportCenterWorld(), { toast: false });
+    if (!imported) return;
+
+    await fetch("/api/photoshop/inbox/ack", {
+      method: "POST",
+      headers: { ...photoshopBridgeHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: importedIds })
+    });
+    showToast(`${files.length} 张 Photoshop 图片已加入当前画布`);
+  } catch {
+    // Photoshop integration is optional and stays quiet while the plugin or bridge is unavailable.
+  } finally {
+    photoshopBridgeImporting = false;
+  }
+}
+
+async function completePhotoshopReferenceSelection() {
+  if (!config.photoshopBridgeEnabled) return;
+  const request = photoshopReferenceSelectionRequest;
+  if (!request || photoshopReferenceSelectionBusy) return;
+  const nodeIds = canvasState.nodes
+    .filter((node) => node.type === "image" && selectedNodeIds.has(node.id))
+    .map((node) => node.id)
+    .slice(0, 15);
+  if (!nodeIds.length) {
+    showToast("请先选择至少一张画布图片");
+    return;
+  }
+
+  photoshopReferenceSelectionBusy = true;
+  updateSelectionToolbar();
+  try {
+    const response = await fetch("/api/photoshop/reference-selection/complete", {
+      method: "POST",
+      headers: { ...photoshopBridgeHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requestId: request.id,
+        projectId: currentProjectId || "default",
+        nodeIds
+      })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "参考图发送失败");
+    photoshopReferenceSelectionRequest = null;
+    showToast(`已向 Photoshop 发送 ${data.images?.length || nodeIds.length} 张参考图`);
+  } catch (error) {
+    showToast(error.message || "参考图发送失败");
+  } finally {
+    photoshopReferenceSelectionBusy = false;
+    updateSelectionToolbar();
+  }
+}
+
+async function queueImageForPhotoshop(node, button) {
+  if (!config.photoshopBridgeEnabled) {
+    showToast("请先在设置中开启 Photoshop 插件联动");
+    return;
+  }
+  const imageUrl = String(node?.image?.url || "").trim();
+  if (!imageUrl) {
+    showToast("这张图片暂时无法发送到 Photoshop");
+    return;
+  }
+
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch("/api/photoshop/outbox", {
+      method: "POST",
+      headers: { ...photoshopBridgeHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        imageUrl: new URL(imageUrl, window.location.origin).href,
+        filename: node.image?.filename || "cc-canvas-image.png",
+        sourceLabel: currentProjectName
+      })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "发送到 Photoshop 失败");
+    showToast(`图片已发送到 PS 队列${data.queueCount > 1 ? `（共 ${data.queueCount} 张）` : ""}`);
+  } catch (error) {
+    showToast(error.message || "发送到 Photoshop 失败");
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 
@@ -5701,18 +6137,10 @@ function renderReferenceLinks() {
   if (!links.length) return;
 
   const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
-  const marker = document.createElementNS("http://www.w3.org/2000/svg", "marker");
-  marker.id = "reference-link-arrow";
-  marker.setAttribute("viewBox", "0 0 10 10");
-  marker.setAttribute("refX", "9");
-  marker.setAttribute("refY", "5");
-  marker.setAttribute("markerWidth", "6");
-  marker.setAttribute("markerHeight", "6");
-  marker.setAttribute("orient", "auto-start-reverse");
-  const arrow = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  arrow.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
-  marker.append(arrow);
-  defs.append(marker);
+  defs.append(
+    createReferenceLinkMarker("reference-link-arrow", "reference-link-arrow-shape"),
+    createReferenceLinkMarker("prompt-link-arrow", "prompt-link-arrow-shape")
+  );
   layer.append(defs);
 
   for (const link of links) {
@@ -5724,24 +6152,58 @@ function renderReferenceLinks() {
 
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
     path.classList.add("reference-link-path");
+    if (link.kind === "prompt") {
+      path.classList.add("prompt-link-path", `prompt-link-${normalizePromptNotePlacement(link.placement)}`);
+    }
     path.setAttribute("d", `M ${start.x} ${start.y} C ${midX} ${start.y}, ${midX} ${end.y}, ${end.x} ${end.y}`);
 
     const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
-    title.textContent = "参考图连接";
+    const promptPlacementLabels = { prefix: "前缀", body: "正文", suffix: "后缀" };
+    title.textContent =
+      link.kind === "prompt"
+        ? `提示词连接 · ${promptPlacementLabels[normalizePromptNotePlacement(link.placement)]}`
+        : "参考图连接";
     path.append(title);
     layer.append(path);
   }
 }
 
+function createReferenceLinkMarker(id, shapeClass) {
+  const marker = document.createElementNS("http://www.w3.org/2000/svg", "marker");
+  marker.id = id;
+  marker.setAttribute("viewBox", "0 0 10 10");
+  marker.setAttribute("refX", "9");
+  marker.setAttribute("refY", "5");
+  marker.setAttribute("markerWidth", "6");
+  marker.setAttribute("markerHeight", "6");
+  marker.setAttribute("orient", "auto-start-reverse");
+  const arrow = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  arrow.classList.add(shapeClass);
+  arrow.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+  marker.append(arrow);
+  return marker;
+}
+
 function referenceLinksForCanvas() {
   const imageIds = new Set(canvasState.nodes.filter((node) => node.type === "image").map((node) => node.id));
+  const promptSourceIds = new Set(canvasState.nodes.filter(isPromptSourceNode).map((node) => node.id));
   const links = [];
   for (const target of canvasState.nodes) {
     if (!["task", "video-task"].includes(target.type)) continue;
-    if (target.type === "task" && target.mode !== "edit") continue;
-    for (const sourceId of referenceSourceNodeIdsForTask(target)) {
-      if (!imageIds.has(sourceId)) continue;
-      links.push({ sourceId, targetId: target.id });
+    if (target.type !== "task" || target.mode === "edit") {
+      for (const sourceId of referenceSourceNodeIdsForTask(target)) {
+        if (!imageIds.has(sourceId)) continue;
+        links.push({ sourceId, targetId: target.id, kind: "image" });
+      }
+    }
+    for (const sourceId of promptSourceNodeIdsForTask(target)) {
+      if (!promptSourceIds.has(sourceId)) continue;
+      links.push({
+        sourceId,
+        targetId: target.id,
+        kind: "prompt",
+        placement: promptNotePlacementForTask(target, sourceId)
+      });
     }
   }
   return links;
@@ -5753,6 +6215,77 @@ function referenceSourceNodeIdsForTask(node) {
     ...(Array.isArray(node.referenceImageNodeIds) ? node.referenceImageNodeIds : [])
   ];
   return dedupeStrings(ids);
+}
+
+function promptSourceNodeIdsForTask(node) {
+  return dedupeStrings(Array.isArray(node?.promptNoteNodeIds) ? node.promptNoteNodeIds : []);
+}
+
+function normalizePromptNotePlacement(value) {
+  return ["prefix", "body", "suffix"].includes(value) ? value : "suffix";
+}
+
+function normalizePromptNotePlacements(value, noteIds = []) {
+  const source = isPlainObject(value) ? value : {};
+  return Object.fromEntries(
+    dedupeStrings(noteIds).map((id) => [id, normalizePromptNotePlacement(source[id])])
+  );
+}
+
+function promptNotePlacementForTask(node, noteId) {
+  const placements = isPlainObject(node?.promptNotePlacements) ? node.promptNotePlacements : {};
+  return normalizePromptNotePlacement(placements[noteId]);
+}
+
+function setPromptNotePlacement(node, noteId, placement) {
+  node.promptNotePlacements = {
+    ...normalizePromptNotePlacements(node.promptNotePlacements, promptSourceNodeIdsForTask(node)),
+    [noteId]: normalizePromptNotePlacement(placement)
+  };
+}
+
+function isPromptSourceNode(node) {
+  return Boolean(node && ["note", "camera", "portrait"].includes(node.type));
+}
+
+function promptTextForSource(node) {
+  if (node?.type === "camera") return cameraPromptForNode(node);
+  if (node?.type === "portrait") return portraitPromptForNode(node);
+  return String(node?.text || "");
+}
+
+function promptSourceTypeName(node) {
+  if (node?.type === "camera") return "机位";
+  if (node?.type === "portrait") return "肖像";
+  return "文字";
+}
+
+function promptSourceNodesForTask(node) {
+  const sourcesById = new Map(canvasState.nodes.filter(isPromptSourceNode).map((item) => [item.id, item]));
+  return promptSourceNodeIdsForTask(node).map((id) => sourcesById.get(id)).filter(Boolean);
+}
+
+function effectivePromptForNode(node) {
+  const sources = promptSourceNodesForTask(node);
+  const sourcesForPlacement = (placement) =>
+    sources
+      .filter((source) => promptNotePlacementForTask(node, source.id) === placement)
+      .map(promptTextForSource);
+  const promptParts = [
+    ...sourcesForPlacement("prefix"),
+    node?.prompt,
+    ...sourcesForPlacement("body"),
+    ...sourcesForPlacement("suffix")
+  ];
+  const seen = new Set();
+  return promptParts
+    .map((part) => String(part || "").trim())
+    .filter((part) => {
+      if (!part || seen.has(part)) return false;
+      seen.add(part);
+      return true;
+    })
+    .join("\n\n");
 }
 
 function referenceLinkAnchors(sourceRect, targetRect) {
@@ -5797,6 +6330,8 @@ function getNodeVisualWorldRect(nodeId) {
 function createCanvasNode(node) {
   if (node.type === "region") return createRegionNode(node);
   if (node.type === "note") return createNoteNode(node);
+  if (node.type === "portrait") return createPortraitNode(node);
+  if (node.type === "camera") return createCameraNode(node);
   if (node.type === "image") return createImageNode(node);
   if (node.type === "video") return createVideoNode(node);
   if (node.type === "video-task") return createVideoTaskNode(node);
@@ -6558,7 +7093,9 @@ function createImageNode(node) {
   tile.append(img, createReferenceConnectHandle(node));
 
   if (selected) {
-    tile.append(createImageToolbar(node), createImagePromptPanel(node), createImageResizeHandle(node));
+    tile.append(createImageToolbar(node));
+    if (node.promptPanelOpen) tile.append(createImagePromptPanel(node));
+    tile.append(createImageResizeHandle(node));
   }
 
   tile.addEventListener("pointerdown", (event) => {
@@ -6578,8 +7115,10 @@ function createReferenceConnectHandle(node) {
   const handle = document.createElement("button");
   handle.type = "button";
   handle.className = "reference-connect-handle";
-  handle.title = "拖到生图或视频节点，添加为参考图";
-  handle.setAttribute("aria-label", "拖动连线添加参考图");
+  if (isPromptSourceNode(node)) handle.classList.add("prompt-connect-handle");
+  const isPromptSource = isPromptSourceNode(node);
+  handle.title = isPromptSource ? "拖到生图或视频节点，连接为提示词" : "拖到生图或视频节点，添加为参考图";
+  handle.setAttribute("aria-label", isPromptSource ? "拖动连线添加提示词" : "拖动连线添加参考图");
   handle.addEventListener("pointerdown", (event) => startReferenceConnection(event, node.id));
   return handle;
 }
@@ -6622,6 +7161,24 @@ function createImageToolbar(node) {
   download.download = node.image?.filename || "generated-image";
   download.textContent = "下载";
 
+  const togglePrompt = document.createElement("button");
+  togglePrompt.type = "button";
+  togglePrompt.textContent = "提示词";
+  togglePrompt.title = node.promptPanelOpen ? "收起图片提示词" : "查看图片提示词";
+  togglePrompt.classList.toggle("is-active", Boolean(node.promptPanelOpen));
+  togglePrompt.setAttribute("aria-pressed", String(Boolean(node.promptPanelOpen)));
+  togglePrompt.addEventListener("click", () => {
+    node.promptPanelOpen = !node.promptPanelOpen;
+    updateNode(node);
+    saveCanvasState();
+  });
+
+  const sendToPhotoshop = document.createElement("button");
+  sendToPhotoshop.type = "button";
+  sendToPhotoshop.textContent = "发送到 PS";
+  sendToPhotoshop.title = "将图片发送到 PS Image AI 插件";
+  sendToPhotoshop.addEventListener("click", () => queueImageForPhotoshop(node, sendToPhotoshop));
+
   const remove = document.createElement("button");
   remove.type = "button";
   remove.textContent = "删除";
@@ -6629,7 +7186,9 @@ function createImageToolbar(node) {
     deleteNodes([node.id]);
   });
 
-  toolbar.append(scaleInput, reset, open, download, remove);
+  toolbar.append(scaleInput, reset, open, download, togglePrompt);
+  if (config.photoshopBridgeEnabled) toolbar.append(sendToPhotoshop);
+  toolbar.append(remove);
   return toolbar;
 }
 
@@ -6745,7 +7304,10 @@ function createTaskNode(node) {
   tile.style.zIndex = node.z;
 
   if (selected) {
-    tile.append(createTaskHeader(node), createPromptField(node), createDebugPanel(node));
+    tile.append(createTaskHeader(node), createPromptField(node));
+    const linkedPrompts = createLinkedPromptSources(node);
+    if (linkedPrompts) tile.append(linkedPrompts);
+    tile.append(createDebugPanel(node));
   }
 
   tile.append(createImageArea(node, selected));
@@ -6778,7 +7340,10 @@ function createVideoTaskNode(node) {
   tile.style.zIndex = node.z;
 
   if (selected) {
-    tile.append(createVideoTaskHeader(node), createPromptField(node), createVideoTaskSettings(node), createVideoReferenceFields(node));
+    tile.append(createVideoTaskHeader(node), createPromptField(node));
+    const linkedPrompts = createLinkedPromptSources(node);
+    if (linkedPrompts) tile.append(linkedPrompts);
+    tile.append(createVideoTaskSettings(node), createVideoReferenceFields(node));
   }
 
   tile.append(createVideoTaskStatusArea(node));
@@ -7002,12 +7567,20 @@ function nodeIconSvg(name) {
       '<svg viewBox="0 0 24 24"><path d="M12 3.5 14.7 9l5.8 3-5.8 3L12 20.5 9.3 15l-5.8-3 5.8-3L12 3.5Z"/></svg>',
     copy:
       '<svg viewBox="0 0 24 24"><path d="M8 8h10v11H8z"/><path d="M5 16V5h10"/></svg>',
+    shuffle:
+      '<svg viewBox="0 0 24 24"><path d="M4 7h3c5 0 5 10 10 10h3"/><path d="m17 14 3 3-3 3M4 17h3c2.4 0 3.6-2.2 4.8-4.5M15 7h5M17 4l3 3-3 3"/></svg>',
     trash:
       '<svg viewBox="0 0 24 24"><path d="M7 7h10M10 7V5h4v2M9 10v7M15 10v7M8 7l1 12h6l1-12"/></svg>',
     image:
       '<svg viewBox="0 0 24 24"><path d="M5 5h14v14H5z"/><path d="m7 16 3-3 2 2 3-4 2 5"/><path d="M9 9.5h.01"/></svg>',
     mask:
-      '<svg viewBox="0 0 24 24"><path d="M5 5h5M14 5h5M5 19h5M14 19h5M5 5v5M19 5v5M5 14v5M19 14v5"/><path d="M9 12h6M12 9v6"/></svg>'
+      '<svg viewBox="0 0 24 24"><path d="M5 5h5M14 5h5M5 19h5M14 19h5M5 5v5M19 5v5M5 14v5M19 14v5"/><path d="M9 12h6M12 9v6"/></svg>',
+    camera:
+      '<svg viewBox="0 0 24 24"><path d="M4.5 8.5h10A2.5 2.5 0 0 1 17 11v5.5A2.5 2.5 0 0 1 14.5 19h-10A2.5 2.5 0 0 1 2 16.5V11a2.5 2.5 0 0 1 2.5-2.5Z"/><path d="m17 12 5-3v9l-5-3M6 8.5l1.2-3h4.6l1.2 3"/><circle cx="9.5" cy="13.7" r="2.6"/></svg>',
+    portrait:
+      '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5.5 19a6.5 6.5 0 0 1 13 0M5 7.5C6.2 3.8 9 2 12 2s5.8 1.8 7 5.5M8.5 12.5c1 .8 2.2 1.2 3.5 1.2s2.5-.4 3.5-1.2"/></svg>',
+    object:
+      '<svg viewBox="0 0 24 24"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg>'
   };
   return icons[name] || icons.image;
 }
@@ -7059,6 +7632,76 @@ function createPromptField(node) {
     saveCanvasState();
   });
   return prompt;
+}
+
+function createLinkedPromptSources(node) {
+  const sources = promptSourceNodesForTask(node);
+  if (!sources.length) return null;
+
+  const section = document.createElement("section");
+  section.className = "linked-prompt-sources";
+
+  const heading = document.createElement("strong");
+  heading.textContent = `已连接提示词 ${sources.length}`;
+  section.append(heading);
+
+  const list = document.createElement("div");
+  list.className = "linked-prompt-list";
+  sources.forEach((source, index) => {
+    const item = document.createElement("div");
+    item.className = "linked-prompt-item";
+    const sourceText = promptTextForSource(source);
+    const sourceName = promptSourceTypeName(source);
+    item.title = sourceText || `空${sourceName}节点`;
+
+    const label = document.createElement("span");
+    label.className = "linked-prompt-label";
+    label.textContent = `${index + 1}. ${sourceName} · ${trimAssistantText(sourceText, 58) || `空${sourceName}节点`}`;
+
+    const placementToggle = document.createElement("div");
+    placementToggle.className = "prompt-placement-toggle";
+    placementToggle.setAttribute("aria-label", "提示词位置");
+    const currentPlacement = promptNotePlacementForTask(node, source.id);
+    [
+      ["prefix", "前缀"],
+      ["body", "正文"],
+      ["suffix", "后缀"]
+    ].forEach(([placement, text]) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = text;
+      button.classList.toggle("is-active", currentPlacement === placement);
+      button.setAttribute("aria-pressed", String(currentPlacement === placement));
+      button.addEventListener("pointerdown", (event) => event.stopPropagation());
+      button.addEventListener("click", () => {
+        setPromptNotePlacement(node, source.id, placement);
+        updateNode(node);
+        saveCanvasState();
+        showToast(`已设为${text}`);
+      });
+      placementToggle.append(button);
+    });
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "linked-prompt-remove";
+    remove.textContent = "×";
+    remove.title = "解除提示词连接";
+    remove.setAttribute("aria-label", "解除提示词连接");
+    remove.addEventListener("pointerdown", (event) => event.stopPropagation());
+    remove.addEventListener("click", () => {
+      node.promptNoteNodeIds = promptSourceNodeIdsForTask(node).filter((id) => id !== source.id);
+      node.promptNotePlacements = normalizePromptNotePlacements(node.promptNotePlacements, node.promptNoteNodeIds);
+      updateNode(node);
+      saveCanvasState();
+      showToast("已解除提示词连接");
+    });
+
+    item.append(label, placementToggle, remove);
+    list.append(item);
+  });
+  section.append(list);
+  return section;
 }
 
 function createDebugPanel(node) {
@@ -8006,10 +8649,13 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
   });
 }
 
-function startReferenceConnection(event, sourceImageNodeId) {
+function startReferenceConnection(event, sourceNodeId) {
   if (event.button !== 0) return;
-  const sourceNode = canvasState.nodes.find((node) => node.id === sourceImageNodeId && node.type === "image");
-  if (!sourceNode?.image?.url) {
+  const sourceNode = canvasState.nodes.find(
+    (node) => node.id === sourceNodeId && (node.type === "image" || isPromptSourceNode(node))
+  );
+  if (!sourceNode) return;
+  if (sourceNode.type === "image" && !sourceNode.image?.url) {
     showToast("这张画布图片暂时不能作为参考图");
     return;
   }
@@ -8025,12 +8671,14 @@ function startReferenceConnection(event, sourceImageNodeId) {
   } catch {
     // Some embedded browsers do not allow capture on every element.
   }
-  const start = nodeViewportCenter(sourceImageNodeId) || clientToViewportPoint(event.clientX, event.clientY);
+  const start = nodeViewportCenter(sourceNodeId) || clientToViewportPoint(event.clientX, event.clientY);
   const layer = ensureReferenceConnectLayer();
   const line = layer.querySelector(".reference-connect-line");
   const hit = layer.querySelector(".reference-connect-hit");
+  line?.classList.toggle("is-prompt-connection", isPromptSourceNode(sourceNode));
   referenceConnectState = {
-    sourceImageNodeId,
+    sourceNodeId,
+    sourceType: sourceNode.type,
     targetNodeId: "",
     start,
     layer,
@@ -8062,7 +8710,11 @@ function startReferenceConnection(event, sourceImageNodeId) {
       showToast("请把连线拖到生图节点或视频节点上");
       return;
     }
-    await useCanvasImagesAsReference(targetNodeId, [sourceImageNodeId]);
+    if (isPromptSourceNode(sourceNode)) {
+      useCanvasPromptSource(targetNodeId, sourceNodeId);
+    } else {
+      await useCanvasImagesAsReference(targetNodeId, [sourceNodeId]);
+    }
   };
 
   window.addEventListener("pointermove", move);
@@ -8098,7 +8750,7 @@ function updateReferenceConnectionLine(clientX, clientY) {
     line.setAttribute("y2", end.y);
   }
 
-  const target = referenceTargetFromPoint(clientX, clientY, referenceConnectState.sourceImageNodeId);
+  const target = referenceTargetFromPoint(clientX, clientY, referenceConnectState.sourceNodeId);
   setReferenceConnectionTarget(target?.id || "");
 }
 
@@ -8121,11 +8773,11 @@ function nodeViewportCenter(nodeId) {
   };
 }
 
-function referenceTargetFromPoint(clientX, clientY, sourceImageNodeId) {
+function referenceTargetFromPoint(clientX, clientY, sourceNodeId) {
   const element = document.elementFromPoint(clientX, clientY);
   const tile = element?.closest?.(".canvas-node");
   const nodeId = tile?.dataset?.nodeId || "";
-  if (!nodeId || nodeId === sourceImageNodeId) return null;
+  if (!nodeId || nodeId === sourceNodeId) return null;
   const node = canvasState.nodes.find((item) => item.id === nodeId);
   return node && ["task", "video-task"].includes(node.type) ? node : null;
 }
@@ -8165,6 +8817,26 @@ async function useSelectedCanvasImagesAsReference(targetNodeId) {
   }
 
   await useCanvasImagesAsReference(targetNodeId, imageNodeIds);
+}
+
+function useCanvasPromptSource(targetNodeId, sourceNodeId) {
+  const target = canvasState.nodes.find((node) => node.id === targetNodeId);
+  const source = canvasState.nodes.find((node) => node.id === sourceNodeId && isPromptSourceNode(node));
+  if (!target || !["task", "video-task"].includes(target.type) || !source) return;
+
+  const previousIds = promptSourceNodeIdsForTask(target);
+  target.promptNoteNodeIds = dedupeStrings([...previousIds, source.id]);
+  target.promptNotePlacements = normalizePromptNotePlacements(target.promptNotePlacements, target.promptNoteNodeIds);
+  if (!previousIds.includes(source.id)) setPromptNotePlacement(target, source.id, "suffix");
+  selectedNodeIds.clear();
+  selectedNodeIds.add(target.id);
+  updateNode(target);
+  saveCanvasState();
+  showToast(
+    previousIds.includes(source.id)
+      ? "这个提示词节点已经连接"
+      : `${promptSourceTypeName(source)}节点已连接为${target.type === "video-task" ? "视频" : "生图"}后缀提示词`
+  );
 }
 
 async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
@@ -8267,6 +8939,897 @@ function extensionFromContentType(contentType = "") {
   return "png";
 }
 
+function portraitGroupById(groupId) {
+  return portraitTraitGroups.find((group) => group.id === groupId) || null;
+}
+
+function portraitOptionFor(groupId, optionId) {
+  return portraitGroupById(groupId)?.options.find((option) => option.id === optionId) || null;
+}
+
+function normalizePortraitSelection(value) {
+  const source = isPlainObject(value) ? value : {};
+  return Object.fromEntries(
+    portraitTraitGroups
+      .map((group) => [group.id, portraitOptionFor(group.id, source[group.id])?.id || ""])
+      .filter(([, optionId]) => optionId)
+  );
+}
+
+function normalizePortraitLocks(value) {
+  const source = isPlainObject(value) ? value : {};
+  return Object.fromEntries(portraitTraitGroups.map((group) => [group.id, Boolean(source[group.id])]));
+}
+
+function portraitSeedNumber(value) {
+  const text = String(value || "");
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function portraitRandomGenerator(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state += 0x6d2b79f5;
+    let value = Math.imul(state ^ (state >>> 15), 1 | state);
+    value ^= value + Math.imul(value ^ (value >>> 7), 61 | value);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function portraitOptionsForGroup(group, stylePack) {
+  const ids = portraitStylePools[stylePack]?.[group.id];
+  if (!Array.isArray(ids) || !ids.length) return group.options;
+  const filtered = group.options.filter((option) => ids.includes(option.id));
+  return filtered.length ? filtered : group.options;
+}
+
+function randomizePortraitNode(node, options = {}) {
+  node.selection = normalizePortraitSelection(node.selection);
+  node.locks = normalizePortraitLocks(node.locks);
+  const explicitSeed = String(options.seed ?? node.seed ?? "").trim();
+  const seedText = explicitSeed || `${Date.now()}-${Math.random()}`;
+  const random = portraitRandomGenerator(portraitSeedNumber(seedText));
+  const next = { ...node.selection };
+  for (const group of portraitTraitGroups) {
+    if (node.locks[group.id]) continue;
+    const pool = portraitOptionsForGroup(group, node.stylePack);
+    const option = pool[Math.floor(random() * pool.length)] || pool[0];
+    if (option) next[group.id] = option.id;
+  }
+  node.selection = next;
+  return node;
+}
+
+function normalizePortraitNodeState(node) {
+  node.language = node.language === "en" ? "en" : "zh";
+  node.stylePack = portraitStylePacks.some(([id]) => id === node.stylePack) ? node.stylePack : "realistic";
+  node.seed = String(node.seed || "");
+  node.selection = normalizePortraitSelection(node.selection);
+  node.locks = normalizePortraitLocks(node.locks);
+  node.customText = String(node.customText || "");
+  node.width = defaultPortraitNodeWidth;
+  node.height = defaultPortraitNodeHeight;
+  if (!Object.keys(node.selection).length) randomizePortraitNode(node, { seed: node.seed || node.id || Date.now() });
+  return node;
+}
+
+function portraitSelectedOptions(node) {
+  normalizePortraitNodeState(node);
+  return portraitTraitGroups
+    .map((group) => ({ group, option: portraitOptionFor(group.id, node.selection[group.id]) }))
+    .filter((entry) => entry.option);
+}
+
+function portraitSummaryForNode(node, limit = 8) {
+  const labels = portraitSelectedOptions(node).map(({ option }) => option.zh);
+  if (!labels.length) return "尚未选择肖像特征";
+  return labels.slice(0, limit).join(" / ") + (labels.length > limit ? ` / +${labels.length - limit}` : "");
+}
+
+function portraitPromptForNode(node) {
+  const language = node.language === "en" ? "en" : "zh";
+  const parts = portraitSelectedOptions(node).map(({ option }) => language === "en" ? option.en : option.zh);
+  const custom = String(node.customText || "").trim();
+  if (custom) parts.push(custom);
+  if (language === "en") {
+    return ["high-quality character portrait", ...parts, "natural skin texture", "clearly defined facial features", "layered lighting", "high detail"].join(", ");
+  }
+  return ["高质量人物肖像", ...parts, "自然皮肤纹理", "五官清晰", "光影层次丰富", "高细节"].join("，");
+}
+
+function portraitPreviewForNode(node) {
+  const preview = {
+    skin: "#ddb093",
+    hair: "#241a18",
+    eyes: "#3b241d",
+    outfit: "#263142",
+    gender: "woman",
+    face: "oval",
+    eyeShape: "almond",
+    hairStyle: "long",
+    expression: "neutral"
+  };
+  for (const { option } of portraitSelectedOptions(node)) Object.assign(preview, option.preview || {});
+  return preview;
+}
+
+function createPortraitAvatar(node, compact = false) {
+  const preview = portraitPreviewForNode(node);
+  const stage = document.createElement("div");
+  stage.className = ["portrait-avatar", compact ? "is-compact" : ""].filter(Boolean).join(" ");
+  stage.dataset.hairStyle = preview.hairStyle;
+  stage.dataset.face = preview.face;
+  stage.dataset.eyeShape = preview.eyeShape;
+  stage.dataset.expression = preview.expression;
+  stage.dataset.gender = preview.gender;
+  stage.style.setProperty("--portrait-skin", preview.skin);
+  stage.style.setProperty("--portrait-hair", preview.hair);
+  stage.style.setProperty("--portrait-eyes", preview.eyes);
+  stage.style.setProperty("--portrait-outfit", preview.outfit);
+  stage.innerHTML = [
+    '<span class="portrait-avatar-label">AVATAR</span>',
+    '<div class="portrait-avatar-figure">',
+    '<span class="portrait-avatar-hair-back"></span>',
+    '<span class="portrait-avatar-shoulders"></span>',
+    '<span class="portrait-avatar-neck"></span>',
+    '<span class="portrait-avatar-ear portrait-avatar-ear-left"></span>',
+    '<span class="portrait-avatar-ear portrait-avatar-ear-right"></span>',
+    '<span class="portrait-avatar-face">',
+    '<i class="portrait-avatar-brow portrait-avatar-brow-left"></i>',
+    '<i class="portrait-avatar-brow portrait-avatar-brow-right"></i>',
+    '<i class="portrait-avatar-eye portrait-avatar-eye-left"><b></b></i>',
+    '<i class="portrait-avatar-eye portrait-avatar-eye-right"><b></b></i>',
+    '<i class="portrait-avatar-nose"></i>',
+    '<i class="portrait-avatar-mouth"></i>',
+    '</span>',
+    '<span class="portrait-avatar-hair-front"></span>',
+    '</div>'
+  ].join("");
+  const tags = document.createElement("div");
+  tags.className = "portrait-avatar-tags";
+  ["skin", "hairColor", "eyes", "expression"]
+    .map((groupId) => portraitOptionFor(groupId, node.selection[groupId]))
+    .filter(Boolean)
+    .forEach((option) => {
+      const tag = document.createElement("span");
+      tag.textContent = option.zh;
+      tags.append(tag);
+    });
+  stage.append(tags);
+  return stage;
+}
+
+function createPortraitNode(node) {
+  normalizePortraitNodeState(node);
+  const selected = selectedNodeIds.has(node.id);
+  const tile = document.createElement("article");
+  tile.className = ["canvas-node", "portrait-node", selected ? "is-selected" : ""].filter(Boolean).join(" ");
+  tile.dataset.nodeId = node.id;
+  tile.style.left = `${node.x}px`;
+  tile.style.top = `${node.y}px`;
+  tile.style.width = `${defaultPortraitNodeWidth}px`;
+  tile.style.zIndex = node.z;
+
+  const header = document.createElement("header");
+  header.className = "portrait-node-header";
+  const title = document.createElement("div");
+  title.className = "portrait-node-title";
+  title.append(createNodeIcon("portrait"));
+  const titleText = document.createElement("strong");
+  titleText.textContent = "随机肖像";
+  title.append(titleText);
+  const badge = document.createElement("span");
+  badge.className = "portrait-node-badge";
+  badge.textContent = `${portraitSelectedOptions(node).length}/${portraitTraitGroups.length} 项`;
+  header.append(title, badge);
+
+  if (selected) {
+    const actions = document.createElement("div");
+    actions.className = "portrait-node-actions";
+    const duplicate = document.createElement("button");
+    duplicate.type = "button";
+    duplicate.textContent = "复制节点";
+    duplicate.addEventListener("click", () => duplicateNode(node.id));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "删除";
+    remove.addEventListener("click", () => deleteNodes([node.id]));
+    actions.append(duplicate, remove);
+    header.append(actions);
+  }
+
+  const body = document.createElement("div");
+  body.className = "portrait-node-body";
+  body.append(createPortraitAvatar(node, true));
+  const content = document.createElement("div");
+  content.className = "portrait-node-content";
+  const summary = document.createElement("section");
+  summary.className = "portrait-summary";
+  summary.innerHTML = '<strong>角色摘要</strong><span>本地随机词库</span>';
+  const summaryText = document.createElement("p");
+  summaryText.textContent = portraitSummaryForNode(node);
+  summary.append(summaryText);
+  const output = document.createElement("section");
+  output.className = "portrait-output";
+  const outputTitle = document.createElement("strong");
+  outputTitle.textContent = "输出提示词";
+  const prompt = document.createElement("p");
+  prompt.textContent = portraitPromptForNode(node);
+  output.append(outputTitle, prompt);
+  content.append(summary, output);
+  body.append(content);
+
+  const footer = document.createElement("footer");
+  footer.className = "portrait-node-footer";
+  const edit = document.createElement("button");
+  edit.type = "button";
+  edit.append(createNodeIcon("pencil"), document.createTextNode("编辑"));
+  edit.addEventListener("click", () => openPortraitEditor(node.id));
+  const random = document.createElement("button");
+  random.type = "button";
+  random.append(createNodeIcon("shuffle"), document.createTextNode("随机"));
+  random.addEventListener("click", () => {
+    randomizePortraitNode(node);
+    renderCanvas();
+    saveCanvasState();
+  });
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.append(createNodeIcon("copy"), document.createTextNode("复制提示词"));
+  copy.addEventListener("click", () => copyTextToClipboard(portraitPromptForNode(node), "肖像提示词已复制"));
+  footer.append(edit, random, copy);
+  tile.append(header, body, footer, createReferenceConnectHandle(node));
+  tile.addEventListener("pointerdown", (event) => startNodeDrag(event, node.id));
+  return tile;
+}
+
+function openPortraitEditor(nodeId) {
+  const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "portrait");
+  if (!node) return;
+  normalizePortraitNodeState(node);
+  document.querySelector(".portrait-editor-dialog")?.remove();
+  const dialog = document.createElement("dialog");
+  dialog.className = "portrait-editor-dialog";
+  const shell = document.createElement("div");
+  shell.className = "portrait-editor-shell";
+  const header = document.createElement("header");
+  header.className = "portrait-editor-header";
+  const heading = document.createElement("div");
+  heading.append(createNodeIcon("portrait"));
+  const headingText = document.createElement("span");
+  headingText.innerHTML = "<strong>随机肖像编辑器</strong><small>锁定的项目不会参与下次随机</small>";
+  heading.append(headingText);
+  const close = document.createElement("button");
+  close.type = "button";
+  close.textContent = "关闭";
+  header.append(heading, close);
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "portrait-editor-toolbar";
+  const languageField = document.createElement("label");
+  languageField.innerHTML = '<span>输出语言</span><select><option value="zh">中文提示词</option><option value="en">English prompt</option></select>';
+  const language = languageField.querySelector("select");
+  language.value = node.language;
+  const styleField = document.createElement("label");
+  styleField.innerHTML = "<span>随机风格</span>";
+  const style = document.createElement("select");
+  portraitStylePacks.forEach(([id, label]) => {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = label;
+    style.append(option);
+  });
+  style.value = node.stylePack;
+  styleField.append(style);
+  const seedField = document.createElement("label");
+  seedField.innerHTML = "<span>随机种子</span>";
+  const seed = document.createElement("input");
+  seed.type = "text";
+  seed.value = node.seed;
+  seed.placeholder = "留空则每次不同";
+  seedField.append(seed);
+  toolbar.append(languageField, styleField, seedField);
+
+  const main = document.createElement("div");
+  main.className = "portrait-editor-main";
+  const previewColumn = document.createElement("aside");
+  previewColumn.className = "portrait-editor-preview";
+  const avatarSlot = document.createElement("div");
+  avatarSlot.className = "portrait-editor-avatar-slot";
+  const summary = document.createElement("p");
+  summary.className = "portrait-editor-summary";
+  const prompt = document.createElement("p");
+  prompt.className = "portrait-editor-prompt";
+  const custom = document.createElement("textarea");
+  custom.rows = 3;
+  custom.value = node.customText;
+  custom.placeholder = "自定义补充，会追加到最终提示词";
+  previewColumn.append(avatarSlot, summary, prompt, custom);
+
+  const traitGrid = document.createElement("div");
+  traitGrid.className = "portrait-trait-grid";
+  const fieldRefs = new Map();
+  portraitTraitGroups.forEach((group) => {
+    const field = document.createElement("div");
+    field.className = "portrait-trait-field";
+    const fieldHeader = document.createElement("span");
+    const label = document.createElement("strong");
+    label.textContent = group.label;
+    const lockLabel = document.createElement("label");
+    lockLabel.className = "portrait-lock-toggle";
+    const lock = document.createElement("input");
+    lock.type = "checkbox";
+    lock.checked = Boolean(node.locks[group.id]);
+    lockLabel.title = "锁定随机";
+    lockLabel.append(lock, document.createTextNode("锁"));
+    fieldHeader.append(label, lockLabel);
+    const select = document.createElement("select");
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = "不选";
+    select.append(empty);
+    group.options.forEach((item) => {
+      const option = document.createElement("option");
+      option.value = item.id;
+      option.textContent = `${item.zh} / ${item.en}`;
+      select.append(option);
+    });
+    select.value = node.selection[group.id] || "";
+    field.append(fieldHeader, select);
+    traitGrid.append(field);
+    fieldRefs.set(group.id, { select, lock });
+  });
+  main.append(previewColumn, traitGrid);
+
+  const footer = document.createElement("footer");
+  footer.className = "portrait-editor-footer";
+  const selectedCount = document.createElement("span");
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.textContent = "复制提示词";
+  const random = document.createElement("button");
+  random.type = "button";
+  random.className = "primary";
+  random.textContent = "按规则随机";
+  footer.append(selectedCount, copy, random);
+  shell.append(header, toolbar, main, footer);
+  dialog.append(shell);
+  document.body.append(dialog);
+
+  const refresh = (options = {}) => {
+    normalizePortraitNodeState(node);
+    avatarSlot.replaceChildren(createPortraitAvatar(node));
+    summary.textContent = portraitSummaryForNode(node, 16);
+    prompt.textContent = portraitPromptForNode(node);
+    selectedCount.textContent = `${portraitSelectedOptions(node).length}/${portraitTraitGroups.length} 项已选择`;
+    for (const [groupId, refs] of fieldRefs) {
+      refs.select.value = node.selection[groupId] || "";
+      refs.lock.checked = Boolean(node.locks[groupId]);
+    }
+    renderCanvas();
+    saveCanvasState({ history: options.history !== false });
+  };
+
+  language.addEventListener("change", () => { node.language = language.value; refresh(); });
+  style.addEventListener("change", () => { node.stylePack = style.value; refresh(); });
+  seed.addEventListener("input", () => { node.seed = seed.value; saveCanvasState({ history: false }); });
+  seed.addEventListener("change", () => saveCanvasState());
+  custom.addEventListener("input", () => { node.customText = custom.value; refresh({ history: false }); });
+  custom.addEventListener("change", () => saveCanvasState());
+  for (const [groupId, refs] of fieldRefs) {
+    refs.select.addEventListener("change", () => {
+      if (refs.select.value) node.selection[groupId] = refs.select.value;
+      else delete node.selection[groupId];
+      refresh();
+    });
+    refs.lock.addEventListener("change", () => {
+      node.locks[groupId] = refs.lock.checked;
+      refresh();
+    });
+  }
+  random.addEventListener("click", () => {
+    randomizePortraitNode(node, { seed: node.seed });
+    refresh();
+  });
+  copy.addEventListener("click", () => copyTextToClipboard(portraitPromptForNode(node), "肖像提示词已复制"));
+  const closeDialog = () => {
+    saveCanvasState();
+    dialog.close();
+    dialog.remove();
+  };
+  close.addEventListener("click", closeDialog);
+  dialog.addEventListener("cancel", (event) => { event.preventDefault(); closeDialog(); });
+  dialog.addEventListener("click", (event) => { if (event.target === dialog) closeDialog(); });
+  refresh({ history: false });
+  dialog.showModal();
+}
+
+function normalizeCameraFocalLength(value) {
+  const focalLengths = [18, 24, 35, 50, 85, 120];
+  const numeric = Number(value) || 35;
+  return focalLengths.reduce((closest, current) =>
+    Math.abs(current - numeric) < Math.abs(closest - numeric) ? current : closest
+  , 35);
+}
+
+function normalizeCameraAzimuth(value) {
+  const numeric = Number(value) || 0;
+  const normalized = ((numeric + 180) % 360 + 360) % 360 - 180;
+  return normalized === -180 ? 180 : normalized;
+}
+
+function hasCameraNumber(value) {
+  return value !== null && value !== "" && Number.isFinite(Number(value));
+}
+
+function syncLegacyCameraPosition(node) {
+  const radians = normalizeCameraAzimuth(node.azimuth) * Math.PI / 180;
+  const distance = clamp(Number(node.distance) || 0.36, 0.16, 0.72);
+  node.objectX = 0.5;
+  node.objectY = 0.5;
+  node.cameraX = clamp(0.5 + Math.sin(radians) * distance, 0.06, 0.94);
+  node.cameraY = clamp(0.5 + Math.cos(radians) * distance, 0.06, 0.94);
+}
+
+function normalizeCameraNodeState(node) {
+  node.subject = String(node.subject || "场景主体");
+  const legacyObjectX = clamp(Number(node.objectX) || 0.5, 0.08, 0.92);
+  const legacyObjectY = clamp(Number(node.objectY) || 0.5, 0.08, 0.92);
+  const legacyCameraX = clamp(Number(node.cameraX) || 0.5, 0.06, 0.94);
+  const legacyCameraY = clamp(Number(node.cameraY) || 0.86, 0.06, 0.94);
+  const legacyDx = legacyCameraX - legacyObjectX;
+  const legacyDy = legacyCameraY - legacyObjectY;
+  node.azimuth = hasCameraNumber(node.azimuth)
+    ? normalizeCameraAzimuth(node.azimuth)
+    : normalizeCameraAzimuth(Math.atan2(legacyDx, legacyDy) * 180 / Math.PI);
+  node.elevation = clamp(hasCameraNumber(node.elevation) ? Number(node.elevation) : 12, -25, 85);
+  node.distance = clamp(
+    hasCameraNumber(node.distance) ? Number(node.distance) : Math.hypot(legacyDx, legacyDy) || 0.36,
+    0.16,
+    0.72
+  );
+  node.focalLength = normalizeCameraFocalLength(node.focalLength);
+  node.width = defaultCameraNodeWidth;
+  node.height = defaultCameraNodeHeight;
+  syncLegacyCameraPosition(node);
+  return node;
+}
+
+function cameraRelationForNode(node) {
+  normalizeCameraNodeState(node);
+  const signedDegrees = normalizeCameraAzimuth(node.azimuth);
+  const degrees = (signedDegrees + 360) % 360;
+  const radians = degrees * Math.PI / 180;
+  const sector = Math.round(degrees / 45) % 8;
+  const angles = [
+    ["正前方", "正面视角"],
+    ["右前方", "右前方三分之四视角"],
+    ["正右侧", "右侧面视角"],
+    ["右后方", "右后方三分之四视角"],
+    ["正后方", "背面视角"],
+    ["左后方", "左后方三分之四视角"],
+    ["正左侧", "左侧面视角"],
+    ["左前方", "左前方三分之四视角"]
+  ];
+  return {
+    dx: Math.sin(radians) * node.distance,
+    dy: Math.cos(radians) * node.distance,
+    distance: node.distance,
+    degrees,
+    signedDegrees,
+    position: angles[sector][0],
+    view: angles[sector][1]
+  };
+}
+
+function cameraAngleLabel(node) {
+  return cameraRelationForNode(node).view;
+}
+
+function cameraDistanceLabel(node) {
+  const distance = cameraRelationForNode(node).distance;
+  if (distance < 0.2) return "近距离特写";
+  if (distance < 0.38) return "中近景";
+  if (distance < 0.58) return "全景构图";
+  return "远景建立镜头";
+}
+
+function cameraElevationLabel(node) {
+  const elevation = Number(node.elevation) || 0;
+  if (elevation <= -10) return "低机位仰拍";
+  if (elevation < 8) return "平视机位";
+  if (elevation < 28) return "轻微俯拍";
+  if (elevation < 58) return "高机位俯拍";
+  return "鸟瞰视角";
+}
+
+function cameraFocalLabel(node) {
+  const focal = normalizeCameraFocalLength(node.focalLength);
+  if (focal <= 18) return "超广角镜头，强调空间纵深";
+  if (focal <= 24) return "广角镜头，展现场景环境";
+  if (focal <= 35) return "自然广角镜头，兼顾主体与环境";
+  if (focal <= 50) return "标准镜头，自然透视";
+  if (focal <= 85) return "中长焦镜头，轻微压缩空间";
+  return "长焦镜头，明显压缩空间层次";
+}
+
+function cameraPromptForNode(node) {
+  const relation = cameraRelationForNode(node);
+  const subject = String(node.subject || "场景主体").trim() || "场景主体";
+  const focal = normalizeCameraFocalLength(node.focalLength);
+  return [
+    `场景多角度参考图，以${subject}为视觉中心。`,
+    `摄像机位于主体${relation.position}，水平环绕角约 ${Math.round(relation.degrees)}°（0° 为正前方），呈现${relation.view}。`,
+    `${cameraElevationLabel(node)}，机位高度角约 ${Math.round(Number(node.elevation) || 0)}°，${cameraDistanceLabel(node)}。`,
+    `使用 ${focal}mm ${cameraFocalLabel(node)}，镜头始终朝向主体。`,
+    "保持同一场景的空间布局、建筑结构、物体位置关系、材质、光线和美术风格一致，仅改变观察角度与镜头构图。"
+  ].join(" ");
+}
+
+function createCameraNode(node) {
+  normalizeCameraNodeState(node);
+  const selected = selectedNodeIds.has(node.id);
+  const tile = document.createElement("article");
+  tile.className = ["canvas-node", "camera-node", selected ? "is-selected" : ""].filter(Boolean).join(" ");
+  tile.dataset.nodeId = node.id;
+  tile.style.left = node.x + "px";
+  tile.style.top = node.y + "px";
+  tile.style.width = defaultCameraNodeWidth + "px";
+  tile.style.zIndex = node.z;
+
+  const header = document.createElement("header");
+  header.className = "camera-node-header";
+  const title = document.createElement("div");
+  title.className = "camera-node-title";
+  title.append(createNodeIcon("camera"));
+  const titleText = document.createElement("strong");
+  titleText.textContent = "场景多角度";
+  title.append(titleText);
+  const angle = document.createElement("span");
+  angle.className = "camera-angle-badge";
+  angle.textContent = cameraAngleLabel(node);
+  header.append(title, angle);
+
+  if (selected) {
+    const actions = document.createElement("div");
+    actions.className = "camera-node-actions";
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.textContent = "复位";
+    reset.addEventListener("click", () => {
+      node.azimuth = 0;
+      node.elevation = 0;
+      node.distance = 0.36;
+      syncLegacyCameraPosition(node);
+      updateNode(node);
+      saveCanvasState();
+    });
+    const duplicate = document.createElement("button");
+    duplicate.type = "button";
+    duplicate.textContent = "复制";
+    duplicate.addEventListener("click", () => duplicateNode(node.id));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "删除";
+    remove.addEventListener("click", () => deleteNodes([node.id]));
+    actions.append(reset, duplicate, remove);
+    header.append(actions);
+  }
+
+  const subjectField = document.createElement("label");
+  subjectField.className = "camera-subject-field";
+  const subjectLabel = document.createElement("span");
+  subjectLabel.textContent = "参考主体";
+  const subject = document.createElement("input");
+  subject.type = "text";
+  subject.value = node.subject;
+  subject.placeholder = "例如：客厅、建筑、汽车";
+  subject.addEventListener("input", () => {
+    node.subject = subject.value;
+    updateCameraNodeVisual(tile, node);
+    saveCanvasState({ history: false });
+  });
+  subject.addEventListener("change", () => saveCanvasState());
+  subjectField.append(subjectLabel, subject);
+
+  const layout = document.createElement("div");
+  layout.className = "camera-orbit-layout";
+  const stage = document.createElement("div");
+  stage.className = "camera-orbit-stage";
+  const sphere = document.createElement("div");
+  sphere.className = "camera-orbit-sphere";
+  sphere.tabIndex = 0;
+  sphere.setAttribute("role", "slider");
+  sphere.setAttribute("aria-label", "拖动调整摄像机水平和垂直角度");
+  sphere.title = "拖动球体调整摄像机方位";
+  sphere.innerHTML = [
+    '<span class="camera-orbit-hint orbit-hint-top">↑</span>',
+    '<span class="camera-orbit-hint orbit-hint-right">→</span>',
+    '<span class="camera-orbit-hint orbit-hint-bottom">↓</span>',
+    '<span class="camera-orbit-hint orbit-hint-left">←</span>',
+    '<span class="camera-orbit-wireframe" aria-hidden="true">',
+    '<i class="orbit-ring orbit-ring-equator"></i>',
+    '<i class="orbit-ring orbit-ring-latitude orbit-ring-latitude-top"></i>',
+    '<i class="orbit-ring orbit-ring-latitude orbit-ring-latitude-bottom"></i>',
+    '<i class="orbit-ring orbit-ring-longitude orbit-ring-longitude-a"></i>',
+    '<i class="orbit-ring orbit-ring-longitude orbit-ring-longitude-b"></i>',
+    '</span>'
+  ].join("");
+  const orbitSubject = document.createElement("div");
+  orbitSubject.className = "camera-orbit-subject";
+  orbitSubject.append(createNodeIcon("object"));
+  const orbitSubjectText = document.createElement("span");
+  orbitSubjectText.textContent = node.subject;
+  orbitSubject.append(orbitSubjectText);
+  const orbitCamera = document.createElement("span");
+  orbitCamera.className = "camera-orbit-camera";
+  orbitCamera.append(createNodeIcon("camera"));
+  sphere.append(orbitSubject, orbitCamera);
+  const orbitReadout = document.createElement("div");
+  orbitReadout.className = "camera-orbit-readout";
+  stage.append(sphere, orbitReadout);
+
+  const panel = document.createElement("div");
+  panel.className = "camera-orbit-panel";
+  const presetTitle = document.createElement("strong");
+  presetTitle.textContent = "摄像机方位";
+  const presets = [
+    ["↖", "左上", -45, 30],
+    ["↓", "俯视", 0, 75],
+    ["↗", "右上", 45, 30],
+    ["←", "左视", -90, 0],
+    ["•", "正视", 0, 0],
+    ["→", "右视", 90, 0],
+    ["↙", "左下", -45, -20],
+    ["↑", "仰视", 0, -25],
+    ["↘", "右下", 45, -20]
+  ];
+  const presetGrid = document.createElement("div");
+  presetGrid.className = "camera-preset-grid";
+  presets.forEach(([icon, label, azimuth, elevation]) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.azimuth = String(azimuth);
+    button.dataset.elevation = String(elevation);
+    button.innerHTML = '<span aria-hidden="true">' + icon + '</span>' + label;
+    button.addEventListener("click", () => {
+      node.azimuth = azimuth;
+      node.elevation = elevation;
+      syncLegacyCameraPosition(node);
+      updateCameraNodeVisual(tile, node);
+      saveCanvasState();
+    });
+    presetGrid.append(button);
+  });
+
+  const createAngleControl = (className, labelText, min, max, value, onInput) => {
+    const field = document.createElement("label");
+    field.className = "camera-angle-control " + className;
+    const row = document.createElement("span");
+    const label = document.createElement("strong");
+    label.textContent = labelText;
+    const output = document.createElement("output");
+    output.textContent = Math.round(value) + "°";
+    row.append(label, output);
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = String(min);
+    input.max = String(max);
+    input.step = "1";
+    input.value = String(value);
+    input.addEventListener("input", () => {
+      onInput(Number(input.value));
+      updateCameraNodeVisual(tile, node);
+      saveCanvasState({ history: false });
+    });
+    input.addEventListener("change", () => saveCanvasState());
+    field.append(row, input);
+    return field;
+  };
+
+  const horizontalField = createAngleControl(
+    "camera-horizontal-control",
+    "水平",
+    -180,
+    180,
+    node.azimuth,
+    (value) => {
+      node.azimuth = value;
+      syncLegacyCameraPosition(node);
+    }
+  );
+  const verticalField = createAngleControl(
+    "camera-vertical-control",
+    "垂直",
+    -25,
+    85,
+    node.elevation,
+    (value) => {
+      node.elevation = value;
+    }
+  );
+
+  const lensRow = document.createElement("div");
+  lensRow.className = "camera-lens-row";
+  const focalField = document.createElement("label");
+  focalField.innerHTML = "<span>焦距</span>";
+  const focal = document.createElement("select");
+  [18, 24, 35, 50, 85, 120].forEach((value) => {
+    const option = document.createElement("option");
+    option.value = String(value);
+    option.textContent = value + "mm";
+    focal.append(option);
+  });
+  focal.value = String(node.focalLength);
+  focal.addEventListener("change", () => {
+    node.focalLength = Number(focal.value);
+    updateCameraNodeVisual(tile, node);
+    saveCanvasState();
+  });
+  focalField.append(focal);
+
+  const distanceField = document.createElement("label");
+  const distanceTitle = document.createElement("span");
+  distanceTitle.textContent = "景别";
+  const distance = document.createElement("input");
+  distance.type = "range";
+  distance.className = "camera-distance-input";
+  distance.min = "0.16";
+  distance.max = "0.72";
+  distance.step = "0.01";
+  distance.value = String(node.distance);
+  distance.addEventListener("input", () => {
+    node.distance = Number(distance.value);
+    syncLegacyCameraPosition(node);
+    updateCameraNodeVisual(tile, node);
+    saveCanvasState({ history: false });
+  });
+  distance.addEventListener("change", () => saveCanvasState());
+  distanceField.append(distanceTitle, distance);
+  lensRow.append(focalField, distanceField);
+  panel.append(presetTitle, presetGrid, horizontalField, verticalField, lensRow);
+  layout.append(stage, panel);
+
+  const promptDetails = document.createElement("details");
+  promptDetails.className = "camera-prompt-details";
+  const promptSummary = document.createElement("summary");
+  promptSummary.textContent = "连接提示词预览";
+  const preview = document.createElement("p");
+  preview.className = "camera-prompt-preview";
+  preview.textContent = cameraPromptForNode(node);
+  promptDetails.append(promptSummary, preview);
+
+  tile.append(header, subjectField, layout, promptDetails, createReferenceConnectHandle(node));
+  updateCameraNodeVisual(tile, node);
+  sphere.addEventListener("pointerdown", (event) => startCameraOrbitDrag(event, node, sphere));
+  sphere.addEventListener("keydown", (event) => {
+    const amount = event.shiftKey ? 15 : 5;
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+    event.preventDefault();
+    if (event.key === "ArrowLeft") node.azimuth = normalizeCameraAzimuth(node.azimuth - amount);
+    if (event.key === "ArrowRight") node.azimuth = normalizeCameraAzimuth(node.azimuth + amount);
+    if (event.key === "ArrowUp") node.elevation = clamp(node.elevation + amount, -25, 85);
+    if (event.key === "ArrowDown") node.elevation = clamp(node.elevation - amount, -25, 85);
+    syncLegacyCameraPosition(node);
+    updateCameraNodeVisual(tile, node);
+    saveCanvasState();
+  });
+  tile.addEventListener("pointerdown", (event) => startNodeDrag(event, node.id));
+  return tile;
+}
+
+function updateCameraNodeVisual(tile, node) {
+  if (!tile) return;
+  normalizeCameraNodeState(node);
+  const relation = cameraRelationForNode(node);
+  const sphere = tile.querySelector(".camera-orbit-sphere");
+  const wireframe = tile.querySelector(".camera-orbit-wireframe");
+  const orbitSubject = tile.querySelector(".camera-orbit-subject");
+  const orbitSubjectText = tile.querySelector(".camera-orbit-subject span:last-child");
+  const orbitCamera = tile.querySelector(".camera-orbit-camera");
+  const elevationRadians = node.elevation * Math.PI / 180;
+  const azimuthRadians = node.azimuth * Math.PI / 180;
+  if (sphere) {
+    sphere.setAttribute("aria-valuenow", String(Math.round(node.azimuth)));
+    sphere.setAttribute("aria-valuetext", cameraAngleLabel(node) + "，" + cameraElevationLabel(node));
+  }
+  if (wireframe) {
+    wireframe.style.setProperty("--orbit-y", -node.azimuth + "deg");
+    wireframe.style.setProperty("--orbit-x", node.elevation * 0.55 + "deg");
+  }
+  if (orbitSubject) {
+    orbitSubject.style.transform =
+      "translate(-50%, -50%) perspective(300px) rotateX(" +
+      (-node.elevation * 0.28) +
+      "deg) rotateY(" +
+      (-node.azimuth * 0.42) +
+      "deg)";
+  }
+  if (orbitSubjectText) orbitSubjectText.textContent = node.subject;
+  if (orbitCamera) {
+    const elevationDepth = Math.cos(elevationRadians);
+    const markerX = 50 + Math.sin(azimuthRadians) * elevationDepth * 41;
+    const markerY = 50 - Math.sin(elevationRadians) * 35 + Math.cos(azimuthRadians) * elevationDepth * 40;
+    orbitCamera.style.left = markerX + "%";
+    orbitCamera.style.top = markerY + "%";
+    orbitCamera.style.setProperty("--camera-depth", String(0.82 + (Math.cos(azimuthRadians) + 1) * 0.12));
+  }
+  const badge = tile.querySelector(".camera-angle-badge");
+  if (badge) badge.textContent = cameraAngleLabel(node);
+  const readout = tile.querySelector(".camera-orbit-readout");
+  if (readout) {
+    readout.textContent =
+      "水平 " +
+      Math.round(relation.signedDegrees) +
+      "° · 垂直 " +
+      Math.round(node.elevation) +
+      "° · " +
+      cameraDistanceLabel(node);
+  }
+  const horizontal = tile.querySelector(".camera-horizontal-control input");
+  const horizontalOutput = tile.querySelector(".camera-horizontal-control output");
+  if (horizontal) horizontal.value = String(node.azimuth);
+  if (horizontalOutput) horizontalOutput.textContent = Math.round(node.azimuth) + "°";
+  const vertical = tile.querySelector(".camera-vertical-control input");
+  const verticalOutput = tile.querySelector(".camera-vertical-control output");
+  if (vertical) vertical.value = String(node.elevation);
+  if (verticalOutput) verticalOutput.textContent = Math.round(node.elevation) + "°";
+  const distance = tile.querySelector(".camera-distance-input");
+  if (distance) {
+    distance.value = String(node.distance);
+    distance.title = cameraDistanceLabel(node);
+  }
+  tile.querySelectorAll(".camera-preset-grid button").forEach((button) => {
+    const azimuth = Number(button.dataset.azimuth);
+    const elevation = Number(button.dataset.elevation);
+    const active =
+      Math.abs(normalizeCameraAzimuth(node.azimuth - azimuth)) < 1 &&
+      Math.abs(node.elevation - elevation) < 1;
+    button.classList.toggle("is-active", active);
+  });
+  const preview = tile.querySelector(".camera-prompt-preview");
+  if (preview) preview.textContent = cameraPromptForNode(node);
+}
+
+function startCameraOrbitDrag(event, node, sphere) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const startX = event.clientX;
+  const startY = event.clientY;
+  const startAzimuth = node.azimuth;
+  const startElevation = node.elevation;
+  const rect = sphere.getBoundingClientRect();
+  let changed = false;
+  sphere.classList.add("is-dragging");
+  sphere.setPointerCapture?.(event.pointerId);
+  const move = (moveEvent) => {
+    const horizontal = (moveEvent.clientX - startX) / Math.max(160, rect.width) * 270;
+    const vertical = (startY - moveEvent.clientY) / Math.max(160, rect.height) * 150;
+    node.azimuth = normalizeCameraAzimuth(startAzimuth + horizontal);
+    node.elevation = clamp(startElevation + vertical, -25, 85);
+    syncLegacyCameraPosition(node);
+    changed = true;
+    updateCameraNodeVisual(sphere.closest(".camera-node"), node);
+  };
+  const stop = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", stop);
+    sphere.classList.remove("is-dragging");
+    sphere.releasePointerCapture?.(event.pointerId);
+    if (!changed) return;
+    renderCanvas();
+    saveCanvasState();
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", stop, { once: true });
+}
+
 function createNoteNode(node) {
   const selected = selectedNodeIds.has(node.id);
   const editing = selected && editingNoteId === node.id;
@@ -8287,7 +9850,7 @@ function createNoteNode(node) {
     tile.append(createNoteToolbar(node));
   }
 
-  tile.append(editing ? createNoteEditor(node) : createNoteDisplay(node));
+  tile.append(editing ? createNoteEditor(node) : createNoteDisplay(node), createReferenceConnectHandle(node));
 
   if (selected) {
     tile.append(createNoteResizeHandle(node));
@@ -8387,6 +9950,7 @@ function createNoteEditor(node) {
     autoResizeNoteEditor(text, node);
     saveCanvasState();
     updateMinimap();
+    renderReferenceLinks();
   });
   window.requestAnimationFrame(() => {
     text.focus();
@@ -8487,6 +10051,7 @@ function startNoteResize(event, nodeId) {
     const sizeInput = tile?.querySelector(".note-toolbar input[type='number']");
     if (sizeInput && !start.editing) sizeInput.value = String(node.fontSize || 22);
     updateMinimap();
+    renderReferenceLinks();
   };
 
   const stop = () => {
@@ -8798,6 +10363,8 @@ function createContextMenu() {
     ["即梦视频", () => addDreaminaVideoNode(pendingCreatePoint)],
     ["ChatGPT 节点", () => addChatGptNode(pendingCreatePoint)],
     ["文字节点", () => addNoteNode(pendingCreatePoint)],
+    ["随机肖像", () => addPortraitNode(pendingCreatePoint)],
+    ["机位节点", () => addCameraNode(pendingCreatePoint)],
     ["区域规划", () => addRegionNode(pendingCreatePoint)]
   ];
 
@@ -9018,6 +10585,19 @@ function preparePastedNode(source, idMap, offset, createdAt) {
     copy.referenceImageNodeIds = dedupeStrings(copy.referenceImageNodeIds.map((id) => idMap.get(id) || id));
   }
 
+  if (Array.isArray(copy.promptNoteNodeIds)) {
+    copy.promptNoteNodeIds = dedupeStrings(copy.promptNoteNodeIds.map((id) => idMap.get(id) || id));
+  }
+  if (isPlainObject(copy.promptNotePlacements)) {
+    copy.promptNotePlacements = Object.fromEntries(
+      Object.entries(copy.promptNotePlacements).map(([id, placement]) => [
+        idMap.get(id) || id,
+        normalizePromptNotePlacement(placement)
+      ])
+    );
+  }
+  copy.promptNotePlacements = normalizePromptNotePlacements(copy.promptNotePlacements, copy.promptNoteNodeIds);
+
   if (Array.isArray(copy.cachedImages)) {
     copy.cachedImages = copy.cachedImages.map((image) => {
       if (!image?.sourceImageNodeId || !idMap.has(image.sourceImageNodeId)) return image;
@@ -9070,12 +10650,17 @@ function deleteNodes(nodeIds) {
     selectedNodeIds.delete(id);
     fileStore.delete(id);
   }
+  for (const node of canvasState.nodes) {
+    if (!["task", "video-task"].includes(node.type)) continue;
+    node.promptNoteNodeIds = promptSourceNodeIdsForTask(node).filter((id) => !ids.has(id));
+    node.promptNotePlacements = normalizePromptNotePlacements(node.promptNotePlacements, node.promptNoteNodeIds);
+  }
   if (referencePickTargetNodeId && ids.has(referencePickTargetNodeId)) {
     referencePickTargetNodeId = null;
   }
   if (
     referenceConnectState &&
-    (ids.has(referenceConnectState.sourceImageNodeId) || ids.has(referenceConnectState.targetNodeId))
+    (ids.has(referenceConnectState.sourceNodeId) || ids.has(referenceConnectState.targetNodeId))
   ) {
     cleanupReferenceConnection();
   }
@@ -9204,6 +10789,10 @@ function getNodeBounds(node) {
         ? clamp(Number(node.width) || defaultRegionWidth, minRegionWidth, maxRegionWidth)
       : node.type === "note"
         ? clamp(Number(node.width) || defaultNoteWidth, minNoteWidth, maxNoteWidth)
+        : node.type === "portrait"
+          ? defaultPortraitNodeWidth
+        : node.type === "camera"
+          ? defaultCameraNodeWidth
         : node.type === "chatgpt"
           ? clamp(Number(node.width) || defaultChatGptWidth, minChatGptWidth, maxChatGptWidth)
           : node.type === "video-task"
@@ -9218,6 +10807,10 @@ function getNodeBounds(node) {
         ? clamp(Number(node.height) || defaultRegionHeight, minRegionHeight, maxRegionHeight)
       : node.type === "note"
         ? clamp(Number(node.height) || defaultNoteHeight, minNoteHeight, maxNoteHeight)
+        : node.type === "portrait"
+          ? defaultPortraitNodeHeight
+        : node.type === "camera"
+          ? defaultCameraNodeHeight
         : node.type === "chatgpt"
           ? clamp(Number(node.height) || defaultChatGptHeight, minChatGptHeight, maxChatGptHeight)
           : node.type === "video-task"
@@ -9268,6 +10861,8 @@ function updateCanvasMeta() {
   const imageNodes = canvasState.nodes.filter((node) => node.type === "image");
   const videoNodes = canvasState.nodes.filter((node) => node.type === "video");
   const noteNodes = canvasState.nodes.filter((node) => node.type === "note");
+  const portraitNodes = canvasState.nodes.filter((node) => node.type === "portrait");
+  const cameraNodes = canvasState.nodes.filter((node) => node.type === "camera");
   const chatNodes = canvasState.nodes.filter((node) => node.type === "chatgpt");
   const regionNodes = canvasState.nodes.filter((node) => node.type === "region");
   const running = [...taskNodes, ...videoTaskNodes].filter((node) => node.status === "running").length;
@@ -9279,11 +10874,11 @@ function updateCanvasMeta() {
     requestMeta.textContent = "等待添加节点";
     return;
   }
-  requestMeta.textContent = `${taskNodes.length} 个生图 · ${videoTaskNodes.length} 个视频任务 · ${imageNodes.length} 张图 · ${videoNodes.length} 个视频 · ${noteNodes.length} 个文字 · ${regionNodes.length} 个区域 · ${chatNodes.length} 个 ChatGPT`;
+  requestMeta.textContent = `${taskNodes.length} 个生图 · ${videoTaskNodes.length} 个视频任务 · ${imageNodes.length} 张图 · ${videoNodes.length} 个视频 · ${noteNodes.length} 个文字 · ${portraitNodes.length} 个肖像 · ${cameraNodes.length} 个机位 · ${regionNodes.length} 个区域 · ${chatNodes.length} 个 ChatGPT`;
 }
 
 function isRunnableTask(node) {
-  if (!["task", "video-task"].includes(node.type) || node.status === "running" || !node.prompt.trim()) return false;
+  if (!["task", "video-task"].includes(node.type) || node.status === "running" || !effectivePromptForNode(node)) return false;
   if (node.type === "video-task") return true;
   if (node.mode !== "edit") return true;
   return Boolean(fileStore.get(node.id)?.images?.length || node.cachedImages?.length);
@@ -9338,6 +10933,49 @@ function migrateNode(node) {
       z: node.z || 1,
       createdAt: node.createdAt || new Date().toISOString()
     };
+  }
+
+  if (node.type === "portrait") {
+    return normalizePortraitNodeState({
+      ...node,
+      id: node.id || createId(),
+      type: "portrait",
+      language: node.language,
+      stylePack: node.stylePack,
+      seed: node.seed,
+      selection: node.selection,
+      locks: node.locks,
+      customText: node.customText,
+      width: defaultPortraitNodeWidth,
+      height: defaultPortraitNodeHeight,
+      x: node.x || 0,
+      y: node.y || 0,
+      z: node.z || 1,
+      createdAt: node.createdAt || new Date().toISOString()
+    });
+  }
+
+  if (node.type === "camera") {
+    return normalizeCameraNodeState({
+      ...node,
+      id: node.id || createId(),
+      type: "camera",
+      subject: String(node.subject || "场景主体"),
+      objectX: clamp(Number(node.objectX) || 0.5, 0.08, 0.92),
+      objectY: clamp(Number(node.objectY) || 0.5, 0.08, 0.92),
+      cameraX: clamp(Number(node.cameraX) || 0.5, 0.06, 0.94),
+      cameraY: clamp(Number(node.cameraY) || 0.86, 0.06, 0.94),
+      azimuth: node.azimuth,
+      elevation: clamp(Number(node.elevation) || 0, -25, 85),
+      distance: node.distance,
+      focalLength: normalizeCameraFocalLength(node.focalLength),
+      width: defaultCameraNodeWidth,
+      height: defaultCameraNodeHeight,
+      x: node.x || 0,
+      y: node.y || 0,
+      z: node.z || 1,
+      createdAt: node.createdAt || new Date().toISOString()
+    });
   }
 
   if (node.type === "image") {
@@ -9422,6 +11060,7 @@ function migrateVideoNode(node) {
 function migrateTaskNode(node) {
   const mode = node.mode === "edit" ? "edit" : "create";
   const extraParams = isPlainObject(node.extraParams) ? node.extraParams : {};
+  const promptNoteNodeIds = dedupeStrings(node.promptNoteNodeIds || []);
   const migrated = {
     ...node,
     id: node.id || createId(),
@@ -9442,6 +11081,8 @@ function migrateTaskNode(node) {
     extraParamsText: node.extraParamsText || JSON.stringify(extraParams, null, 2),
     cachedImages: node.cachedImages || [],
     referenceImageNodeIds: dedupeStrings(node.referenceImageNodeIds || []),
+    promptNoteNodeIds,
+    promptNotePlacements: normalizePromptNotePlacements(node.promptNotePlacements, promptNoteNodeIds),
     cachedMask: node.cachedMask || null,
     cacheStatus: node.cacheStatus || (mode === "edit" ? "session-only" : "none"),
     sessionFiles: node.sessionFiles || [],
@@ -9463,6 +11104,7 @@ function migrateTaskNode(node) {
 
 function migrateVideoTaskNode(node) {
   const extraParams = isPlainObject(node.extraParams) ? node.extraParams : {};
+  const promptNoteNodeIds = dedupeStrings(node.promptNoteNodeIds || []);
   return {
     ...node,
     id: node.id || createId(),
@@ -9481,6 +11123,8 @@ function migrateVideoTaskNode(node) {
     extraParamsText: node.extraParamsText || JSON.stringify(extraParams, null, 2),
     cachedImages: node.cachedImages || [],
     referenceImageNodeIds: dedupeStrings(node.referenceImageNodeIds || []),
+    promptNoteNodeIds,
+    promptNotePlacements: normalizePromptNotePlacements(node.promptNotePlacements, promptNoteNodeIds),
     cacheStatus: node.cacheStatus || "pending",
     sessionFiles: node.sessionFiles || [],
     videos: dedupeNodeVideos(node.videos || []),

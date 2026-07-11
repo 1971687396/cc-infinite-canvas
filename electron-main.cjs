@@ -15,6 +15,8 @@ const chatGptPartition = "persist:cc-canvas-chatgpt";
 let mainWindow = null;
 let appUrl = "";
 let localServer = null;
+let photoshopBridgeServer = null;
+let photoshopBridgeEvents = null;
 let chatGptView = null;
 let chatGptViewAttached = false;
 let chatGptUrl = "";
@@ -29,6 +31,8 @@ app.on("ready", () => log("ready event"));
 app.on("before-quit", () => {
   log("before quit");
   if (localServer?.listening) localServer.close();
+  if (photoshopBridgeServer?.listening) photoshopBridgeServer.close();
+  photoshopBridgeEvents?.removeAllListeners?.("reference-selection-requested");
 });
 app.on("quit", (_event, code) => log(`quit code ${code}`));
 app.on("web-contents-created", (_event, contents) => attachProxyAuth(contents));
@@ -39,14 +43,26 @@ app.commandLine.appendSwitch("disable-gpu");
 app.setName("cc无限画布");
 if (process.platform === "win32") app.setAppUserModelId("ccInfiniteCanvas");
 
-app.whenReady().then(async () => {
-  log("app ready");
-  await ensureServer();
-  createMainWindow();
-}).catch((error) => {
-  log(`startup failed: ${error.stack || error.message || error}`);
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
   app.quit();
-});
+} else {
+  app.on("second-instance", () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+
+  app.whenReady().then(async () => {
+    log("app ready");
+    await ensureServer();
+    createMainWindow();
+  }).catch((error) => {
+    log(`startup failed: ${error.stack || error.message || error}`);
+    app.quit();
+  });
+}
 
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
@@ -60,6 +76,9 @@ async function ensureServer() {
   process.env.PORT = "0";
   const serverModule = await import(pathToFileURL(path.join(__dirname, "server.js")).href);
   localServer = serverModule.server;
+  photoshopBridgeServer = serverModule.photoshopBridgeServer;
+  photoshopBridgeEvents = serverModule.photoshopBridgeEvents;
+  photoshopBridgeEvents?.on?.("reference-selection-requested", focusMainWindow);
   if (!localServer) throw new Error("The embedded server module did not export a server instance.");
   if (!localServer.listening) await once(localServer, "listening");
 
@@ -75,6 +94,13 @@ async function ensureServer() {
     if (Date.now() - started > 12000) throw new Error(`Local server did not start at ${appUrl}`);
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
+}
+
+function focusMainWindow() {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
 }
 
 function isServerReady() {

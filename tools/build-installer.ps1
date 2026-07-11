@@ -532,7 +532,10 @@ if (-not $installerBuilt) {
     throw "IExpress was not found at $iexpress"
   }
 
-  & $iexpress /N /Q $sedPath
+  $iexpressProcess = Start-Process -FilePath $iexpress -ArgumentList @("/N", "/Q", $sedPath) -Wait -PassThru
+  if ($iexpressProcess.ExitCode -ne 0) {
+    throw "IExpress failed with exit code $($iexpressProcess.ExitCode)."
+  }
 
   if (-not (Test-Path $installerTempPath)) {
     throw "IExpress did not create an installer."

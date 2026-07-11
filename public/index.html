@@ -68,6 +68,18 @@
               </span>
               <span class="rail-label">文本</span>
             </button>
+            <button id="addPortraitButton" type="button" class="rail-button" title="随机肖像" aria-label="随机肖像">
+              <span class="rail-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5.5 19a6.5 6.5 0 0 1 13 0M5 7.5C6.2 3.8 9 2 12 2s5.8 1.8 7 5.5M8.5 12.5c1 .8 2.2 1.2 3.5 1.2s2.5-.4 3.5-1.2"/></svg>
+              </span>
+              <span class="rail-label">肖像</span>
+            </button>
+            <button id="addCameraButton" type="button" class="rail-button" title="机位" aria-label="机位">
+              <span class="rail-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M4.5 8.5h10A2.5 2.5 0 0 1 17 11v5.5A2.5 2.5 0 0 1 14.5 19h-10A2.5 2.5 0 0 1 2 16.5V11a2.5 2.5 0 0 1 2.5-2.5Z"/><path d="m17 12 5-3v9l-5-3M6 8.5l1.2-3h4.6l1.2 3"/><circle cx="9.5" cy="13.7" r="2.6"/></svg>
+              </span>
+              <span class="rail-label">机位</span>
+            </button>
             <button id="addRegionButton" type="button" class="rail-button" title="区域" aria-label="区域">
               <span class="rail-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><path d="M5 5h5M14 5h5M5 19h5M14 19h5M5 5v5M19 5v5M5 14v5M19 14v5"/><path d="M9 12h6M12 9v6"/></svg>
@@ -214,6 +226,7 @@
       </label>
       <button id="applySelectionScaleButton" type="button">应用</button>
       <button id="reusePromptButton" type="button">复用提示词</button>
+      <button id="sendSelectionToPhotoshopButton" type="button" hidden>作为 PS 参考图</button>
     </div>
 
     <dialog id="settingsDialog" class="settings-dialog">
@@ -289,6 +302,14 @@
         <label class="settings-field settings-field-full">
           <span>文件缓存位置</span>
           <input id="settingsCacheDir" type="text" autocomplete="off" placeholder="例如 D:\ccCanvasCache" />
+        </label>
+
+        <label class="settings-switch settings-field-full">
+          <span>
+            <strong>Photoshop 插件联动</strong>
+            <small>开启后显示发送到 PS、接收图片和画布参考图按钮</small>
+          </span>
+          <input id="settingsPhotoshopBridgeEnabled" type="checkbox" role="switch" />
         </label>
 
         <section class="dreamina-settings settings-field-full" aria-label="即梦 CLI">

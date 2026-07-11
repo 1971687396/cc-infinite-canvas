@@ -1,8 +1,10 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createReadStream, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +12,8 @@ import { inflateRawSync } from "node:zlib";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const require = createRequire(import.meta.url);
+const electronNativeImage = loadElectronNativeImage();
 const packageInfo = JSON.parse(readFileSync(path.join(__dirname, "package.json"), "utf8"));
 const publicDir = path.join(__dirname, "public");
 const skillsDir = path.join(__dirname, "skills");
@@ -43,6 +47,7 @@ const maxMultipartBytes = 512 * 1024 * 1024;
 const assistantDefaultModel = "gpt-5.5";
 const assistantKeyModels = [
   assistantDefaultModel,
+  "gpt-5.6-sol",
   "gemini-3.5-flash",
   "claude-opus-4-8",
   "doubao-seed-2-1-turbo-260628",
@@ -51,6 +56,22 @@ const assistantKeyModels = [
 ];
 const modelKeyModels = ["gpt-image-2", geminiBananaImageModel, grokKeyModel, ...assistantKeyModels];
 const serverHost = "127.0.0.1";
+const photoshopBridgeHeader = "x-cc-canvas-bridge";
+const photoshopBridgeHeaderValue = "psimageai";
+const photoshopBridgePort = 32145;
+const photoshopBridgeQueueLimit = 40;
+const photoshopReferenceSelectionLimit = 15;
+const photoshopReferenceSelectionTtlMs = 15 * 60 * 1000;
+const photoshopBridgeEvents = new EventEmitter();
+
+let photoshopBridgeState = {
+  inbox: [],
+  outbox: [],
+  activeProjectId: "default",
+  activeProjectName: ""
+};
+let photoshopBridgeStatePath = "";
+let photoshopReferenceSelection = null;
 
 loadEnvFile(envFile);
 
@@ -67,7 +88,8 @@ const config = {
   defaultModel: normalizeModelAlias(process.env.YUNWU_DEFAULT_MODEL || "gpt-image-2"),
   assistantModel: process.env.YUNWU_ASSISTANT_MODEL || assistantDefaultModel,
   modelApiKeys: loadModelApiKeys(),
-  cacheDir: sanitizeCacheDir(process.env.CC_CANVAS_CACHE_DIR || process.env.YUNWU_CACHE_DIR || defaultCacheDir, defaultCacheDir)
+  cacheDir: sanitizeCacheDir(process.env.CC_CANVAS_CACHE_DIR || process.env.YUNWU_CACHE_DIR || defaultCacheDir, defaultCacheDir),
+  photoshopBridgeEnabled: parseEnvBoolean(process.env.CC_CANVAS_PHOTOSHOP_BRIDGE_ENABLED, false)
 };
 
 const mimeTypes = new Map([
@@ -166,6 +188,10 @@ const server = http.createServer(async (req, res) => {
       return await handleAssistantBuiltInSkills(res);
     }
 
+    if (url.pathname.startsWith("/api/photoshop/")) {
+      return await handlePhotoshopBridgeRequest(req, res, url);
+    }
+
     if (req.method === "GET" && url.pathname.startsWith("/outputs/")) {
       return await serveFile(res, path.join(__dirname, decodeURIComponent(url.pathname)));
     }
@@ -189,6 +215,18 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+const photoshopBridgeServer = http.createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url || "/", `http://${req.headers.host || `${serverHost}:${photoshopBridgePort}`}`);
+    if (!url.pathname.startsWith("/api/photoshop/")) {
+      return sendJson(res, 404, { error: "Not found." });
+    }
+    return await handlePhotoshopBridgeRequest(req, res, url);
+  } catch (error) {
+    sendJson(res, 500, { error: error.message || "Unexpected Photoshop bridge error" });
+  }
+});
+
 let usedPortFallback = false;
 server.on("error", (error) => {
   if (error?.code === "EADDRINUSE" && config.port !== 0 && !usedPortFallback) {
@@ -202,13 +240,25 @@ server.on("error", (error) => {
 server.on("listening", logServerAddress);
 server.listen(config.port, serverHost);
 
+photoshopBridgeServer.on("error", (error) => {
+  if (error?.code === "EADDRINUSE") {
+    console.warn(`Photoshop bridge port ${photoshopBridgePort} is already in use.`);
+    return;
+  }
+  console.warn(`Photoshop bridge failed: ${error.message || error}`);
+});
+photoshopBridgeServer.on("listening", () => {
+  console.log(`Photoshop bridge is running at http://${serverHost}:${photoshopBridgePort}`);
+});
+photoshopBridgeServer.listen(photoshopBridgePort, serverHost);
+
 function logServerAddress() {
   const address = server.address();
   const activePort = typeof address === "object" && address ? address.port : config.port;
   console.log(`cc无限画布 is running at http://${serverHost}:${activePort}`);
 }
 
-export { server };
+export { server, photoshopBridgeServer, photoshopBridgeEvents };
 
 function publicSettings() {
   return {
@@ -224,7 +274,9 @@ function publicSettings() {
     modelKeys: publicModelKeyStatus(),
     cacheDir: config.cacheDir,
     version: config.version,
-    updateRepo: config.updateRepo
+    updateRepo: config.updateRepo,
+    photoshopBridgePort,
+    photoshopBridgeEnabled: Boolean(config.photoshopBridgeEnabled)
   };
 }
 
@@ -602,7 +654,9 @@ async function handleSaveSettings(req, res) {
     defaultModel: normalizeModelAlias(sanitizeOptionalText(body.defaultModel) || config.defaultModel),
     assistantModel: sanitizeOptionalText(body.assistantModel) || config.assistantModel,
     modelApiKeys: mergeModelApiKeys(body),
-    cacheDir: sanitizeCacheDir(body.cacheDir, config.cacheDir)
+    cacheDir: sanitizeCacheDir(body.cacheDir, config.cacheDir),
+    photoshopBridgeEnabled:
+      typeof body.photoshopBridgeEnabled === "boolean" ? body.photoshopBridgeEnabled : config.photoshopBridgeEnabled
   };
 
   config.apiKey = nextSettings.apiKey;
@@ -615,6 +669,7 @@ async function handleSaveSettings(req, res) {
   config.assistantModel = nextSettings.assistantModel;
   config.modelApiKeys = nextSettings.modelApiKeys;
   config.cacheDir = nextSettings.cacheDir;
+  config.photoshopBridgeEnabled = nextSettings.photoshopBridgeEnabled;
 
   await writeSettingsEnv(nextSettings);
   sendJson(res, 200, publicSettings());
@@ -725,6 +780,13 @@ function sanitizeOptionalText(value) {
   return value.trim();
 }
 
+function parseEnvBoolean(value, fallback = false) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
 async function writeSettingsEnv(settings) {
   const updates = new Map([
     ["YUNWU_API_KEY", settings.apiKey],
@@ -735,7 +797,8 @@ async function writeSettingsEnv(settings) {
     ["YUNWU_CHAT_ENDPOINT", settings.chatEndpoint],
     ["YUNWU_DEFAULT_MODEL", settings.defaultModel],
     ["YUNWU_ASSISTANT_MODEL", settings.assistantModel],
-    ["CC_CANVAS_CACHE_DIR", settings.cacheDir]
+    ["CC_CANVAS_CACHE_DIR", settings.cacheDir],
+    ["CC_CANVAS_PHOTOSHOP_BRIDGE_ENABLED", settings.photoshopBridgeEnabled ? "1" : "0"]
   ]);
   for (const model of modelKeyModels) {
     const key = normalizeModelName(model);
@@ -1207,7 +1270,7 @@ function normalizeAssistantStoredAttachments(attachments) {
 
 function assistantRequestTimeoutMs(model, mode = "chat") {
   const normalized = normalizeModelName(model);
-  if (normalized === assistantDefaultModel || normalized.startsWith(`${assistantDefaultModel}-`)) {
+  if (normalized.startsWith("gpt-5.")) {
     return 10 * 60 * 1000;
   }
   if (mode === "action_plan") return 5 * 60 * 1000;
@@ -1901,6 +1964,552 @@ async function handleCacheAssets(req, res) {
   }
 
   sendJson(res, 200, { assets });
+}
+
+async function handlePhotoshopBridgeRequest(req, res, url) {
+  applyPhotoshopBridgeCors(req, res);
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  const thumbnailRequest = req.method === "GET" && url.pathname.startsWith("/api/photoshop/canvas-images/");
+  const hasHeaderCredential = req.headers[photoshopBridgeHeader] === photoshopBridgeHeaderValue;
+  const hasThumbnailCredential = thumbnailRequest && url.searchParams.get("bridge") === photoshopBridgeHeaderValue;
+  if (!hasHeaderCredential && !hasThumbnailCredential) {
+    return sendJson(res, 403, { error: "Photoshop bridge request was rejected." });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/photoshop/status") {
+    if (config.photoshopBridgeEnabled) {
+      await ensurePhotoshopBridgeState();
+      noteActivePhotoshopProject(url);
+    }
+    return sendJson(res, 200, {
+      ok: Boolean(config.photoshopBridgeEnabled),
+      enabled: Boolean(config.photoshopBridgeEnabled),
+      port: photoshopBridgePort,
+      inboxCount: config.photoshopBridgeEnabled ? photoshopBridgeState.inbox.length : 0,
+      outboxCount: config.photoshopBridgeEnabled ? photoshopBridgeState.outbox.length : 0,
+      activeProjectId: photoshopBridgeState.activeProjectId,
+      activeProjectName: photoshopBridgeState.activeProjectName
+    });
+  }
+
+  if (!config.photoshopBridgeEnabled) {
+    return sendJson(res, 503, { error: "Photoshop integration is disabled in cc无限画布 settings." });
+  }
+
+  await ensurePhotoshopBridgeState();
+  noteActivePhotoshopProject(url);
+
+  if (req.method === "GET" && url.pathname === "/api/photoshop/canvas-images") {
+    return await handlePhotoshopCanvasImageList(res, url);
+  }
+  if (thumbnailRequest) {
+    return await servePhotoshopCanvasImage(res, url);
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/photoshop/inbox") {
+    return await handlePhotoshopInboxPush(req, res);
+  }
+  if (req.method === "GET" && url.pathname === "/api/photoshop/inbox") {
+    return await handlePhotoshopQueueList(res, "inbox");
+  }
+  if (req.method === "POST" && url.pathname === "/api/photoshop/inbox/ack") {
+    return await handlePhotoshopQueueAck(req, res, "inbox");
+  }
+  if (req.method === "POST" && url.pathname === "/api/photoshop/outbox") {
+    return await handlePhotoshopOutboxPush(req, res);
+  }
+  if (req.method === "GET" && url.pathname === "/api/photoshop/outbox") {
+    return await handlePhotoshopQueueList(res, "outbox");
+  }
+  if (req.method === "POST" && url.pathname === "/api/photoshop/outbox/ack") {
+    return await handlePhotoshopQueueAck(req, res, "outbox");
+  }
+  if (req.method === "GET" && url.pathname.startsWith("/api/photoshop/assets/")) {
+    return await servePhotoshopBridgeAsset(res, url.pathname);
+  }
+  if (req.method === "POST" && url.pathname === "/api/photoshop/reference-selection/request") {
+    return handlePhotoshopReferenceSelectionCreate(res);
+  }
+  if (req.method === "GET" && url.pathname === "/api/photoshop/reference-selection/request") {
+    return handlePhotoshopReferenceSelectionRequest(res);
+  }
+  if (req.method === "POST" && url.pathname === "/api/photoshop/reference-selection/complete") {
+    return await handlePhotoshopReferenceSelectionComplete(req, res);
+  }
+  if (req.method === "POST" && url.pathname === "/api/photoshop/reference-selection/cancel") {
+    return await handlePhotoshopReferenceSelectionCancel(req, res);
+  }
+  if (req.method === "GET" && url.pathname === "/api/photoshop/reference-selection/result") {
+    return handlePhotoshopReferenceSelectionResult(res, url);
+  }
+
+  sendJson(res, 404, { error: "Photoshop bridge endpoint was not found." });
+}
+
+function applyPhotoshopBridgeCors(req, res) {
+  const origin = String(req.headers.origin || "").trim();
+  res.setHeader("Access-Control-Allow-Origin", origin || "*");
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Vary", "Origin");
+  }
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, X-CC-Canvas-Bridge, X-CC-Filename, X-CC-Source-Label"
+  );
+  res.setHeader("Access-Control-Allow-Private-Network", "true");
+  res.setHeader("Access-Control-Max-Age", "86400");
+}
+
+function noteActivePhotoshopProject(url) {
+  const rawProjectId = String(url.searchParams.get("projectId") || "").trim();
+  if (!rawProjectId) return;
+  photoshopBridgeState.activeProjectId = normalizeProjectId(rawProjectId);
+  photoshopBridgeState.activeProjectName = sanitizeOptionalText(url.searchParams.get("projectName")).slice(0, 180);
+}
+
+function photoshopBridgeRoot() {
+  return path.join(config.cacheDir, "photoshop-bridge");
+}
+
+function photoshopBridgeQueueFile() {
+  return path.join(photoshopBridgeRoot(), "queue.json");
+}
+
+function photoshopBridgeAssetDir(channel) {
+  return path.join(photoshopBridgeRoot(), channel === "outbox" ? "outbox" : "inbox");
+}
+
+async function ensurePhotoshopBridgeState() {
+  const nextStatePath = photoshopBridgeQueueFile();
+  if (photoshopBridgeStatePath === nextStatePath) return;
+
+  photoshopBridgeStatePath = nextStatePath;
+  photoshopBridgeState = {
+    inbox: [],
+    outbox: [],
+    activeProjectId: "default",
+    activeProjectName: ""
+  };
+  await mkdir(photoshopBridgeAssetDir("inbox"), { recursive: true });
+  await mkdir(photoshopBridgeAssetDir("outbox"), { recursive: true });
+
+  try {
+    const stored = JSON.parse(await readFile(nextStatePath, "utf8"));
+    photoshopBridgeState = {
+      inbox: normalizePhotoshopBridgeItems(stored?.inbox),
+      outbox: normalizePhotoshopBridgeItems(stored?.outbox),
+      activeProjectId: normalizeProjectId(stored?.activeProjectId || "default"),
+      activeProjectName: sanitizeOptionalText(stored?.activeProjectName).slice(0, 180)
+    };
+  } catch {
+    // A new cache starts with empty bridge queues.
+  }
+}
+
+function normalizePhotoshopBridgeItems(items) {
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((item) => {
+      const filename = path.basename(String(item?.filename || ""));
+      if (!filename) return null;
+      return {
+        id: sanitizeOptionalText(item.id) || filename,
+        filename,
+        originalName: sanitizeBridgeFilename(item.originalName || filename),
+        contentType: sanitizeOptionalText(item.contentType) || "image/png",
+        sourceLabel: sanitizeOptionalText(item.sourceLabel).slice(0, 180),
+        createdAt: item.createdAt || new Date().toISOString(),
+        contentHash: sanitizeOptionalText(item.contentHash)
+      };
+    })
+    .filter(Boolean)
+    .slice(-photoshopBridgeQueueLimit);
+}
+
+async function savePhotoshopBridgeState() {
+  await mkdir(photoshopBridgeRoot(), { recursive: true });
+  await writeFile(photoshopBridgeQueueFile(), JSON.stringify(photoshopBridgeState, null, 2), "utf8");
+}
+
+async function handlePhotoshopCanvasImageList(res, url) {
+  const projectId = normalizeProjectId(
+    url.searchParams.get("projectId") || photoshopBridgeState.activeProjectId || "default"
+  );
+  const project = await readPhotoshopBridgeProject(projectId);
+  if (!project) {
+    return sendJson(res, 200, {
+      project: { id: projectId, name: photoshopBridgeState.activeProjectName || projectId },
+      images: []
+    });
+  }
+
+  const images = project.nodes
+    .filter((node) => node?.type === "image" && String(node.image?.url || "").trim())
+    .sort((a, b) => (Number(b.z) || 0) - (Number(a.z) || 0))
+    .slice(0, 240)
+    .map((node) => publicPhotoshopCanvasImage(node, projectId));
+
+  sendJson(res, 200, {
+    project: { id: project.id, name: project.name },
+    images,
+    count: images.length
+  });
+}
+
+function publicPhotoshopCanvasImage(node, projectId) {
+  const filename = sanitizeBridgeFilename(node.image?.filename || `canvas-${node.id}.png`);
+  const params = new URLSearchParams({
+    projectId,
+    bridge: photoshopBridgeHeaderValue
+  });
+  const assetPath = `/api/photoshop/canvas-images/${encodeURIComponent(String(node.id))}`;
+  const downloadUrl = `${assetPath}?${params}`;
+  params.set("thumbnail", "1");
+  const thumbnailUrl = `${assetPath}?${params}`;
+  return {
+    id: String(node.id),
+    filename,
+    prompt: sanitizeOptionalText(node.image?.prompt).slice(0, 240),
+    model: sanitizeOptionalText(node.image?.model).slice(0, 120),
+    width: Math.max(0, Number(node.originalWidth) || 0),
+    height: Math.max(0, Number(node.originalHeight) || 0),
+    createdAt: node.createdAt || "",
+    thumbnailUrl,
+    downloadUrl
+  };
+}
+
+function handlePhotoshopReferenceSelectionCreate(res) {
+  const now = Date.now();
+  photoshopReferenceSelection = {
+    id: `ps-ref-${now}-${Math.random().toString(16).slice(2)}`,
+    status: "pending",
+    projectId: photoshopBridgeState.activeProjectId || "default",
+    projectName: photoshopBridgeState.activeProjectName || "",
+    createdAt: new Date(now).toISOString(),
+    expiresAt: now + photoshopReferenceSelectionTtlMs,
+    images: []
+  };
+  photoshopBridgeEvents.emit("reference-selection-requested", photoshopReferenceSelection);
+  sendJson(res, 201, { request: publicPhotoshopReferenceSelection(photoshopReferenceSelection) });
+}
+
+function handlePhotoshopReferenceSelectionRequest(res) {
+  const request = activePhotoshopReferenceSelection();
+  sendJson(res, 200, {
+    request: request?.status === "pending" ? publicPhotoshopReferenceSelection(request) : null
+  });
+}
+
+async function handlePhotoshopReferenceSelectionComplete(req, res) {
+  const body = await readJsonBody(req, { maxBytes: 256 * 1024 });
+  const request = activePhotoshopReferenceSelection();
+  if (!request || request.status !== "pending" || String(body.requestId || "") !== request.id) {
+    return sendJson(res, 409, { error: "Photoshop reference selection request is no longer active." });
+  }
+
+  const projectId = normalizeProjectId(body.projectId || request.projectId || photoshopBridgeState.activeProjectId || "default");
+  const nodeIds = new Set(dedupeTextValues(body.nodeIds).slice(0, photoshopReferenceSelectionLimit));
+  if (!nodeIds.size) return sendJson(res, 400, { error: "Select at least one canvas image." });
+
+  const project = await readPhotoshopBridgeProject(projectId);
+  if (!project) return sendJson(res, 404, { error: "Canvas project was not found." });
+  const images = project.nodes
+    .filter((node) => node?.type === "image" && nodeIds.has(String(node.id)) && String(node.image?.url || "").trim())
+    .map((node) => publicPhotoshopCanvasImage(node, projectId));
+  if (!images.length) return sendJson(res, 400, { error: "The selection does not contain usable canvas images." });
+
+  request.status = "complete";
+  request.projectId = projectId;
+  request.projectName = project.name || request.projectName;
+  request.images = images;
+  request.completedAt = new Date().toISOString();
+  sendJson(res, 200, { request: publicPhotoshopReferenceSelection(request), images });
+}
+
+async function handlePhotoshopReferenceSelectionCancel(req, res) {
+  const body = await readJsonBody(req, { maxBytes: 64 * 1024 });
+  const requestId = String(body.requestId || "");
+  if (photoshopReferenceSelection && (!requestId || photoshopReferenceSelection.id === requestId)) {
+    photoshopReferenceSelection = null;
+  }
+  sendJson(res, 200, { ok: true });
+}
+
+function handlePhotoshopReferenceSelectionResult(res, url) {
+  const request = activePhotoshopReferenceSelection();
+  const requestId = String(url.searchParams.get("requestId") || "");
+  if (!request || request.id !== requestId) {
+    return sendJson(res, 200, { status: "expired", images: [] });
+  }
+  sendJson(res, 200, {
+    status: request.status,
+    request: publicPhotoshopReferenceSelection(request),
+    images: request.status === "complete" ? request.images : []
+  });
+}
+
+function activePhotoshopReferenceSelection() {
+  if (!photoshopReferenceSelection) return null;
+  if (Date.now() <= photoshopReferenceSelection.expiresAt) return photoshopReferenceSelection;
+  photoshopReferenceSelection = null;
+  return null;
+}
+
+function publicPhotoshopReferenceSelection(request) {
+  return {
+    id: request.id,
+    status: request.status,
+    projectId: request.projectId,
+    projectName: request.projectName,
+    createdAt: request.createdAt,
+    completedAt: request.completedAt || ""
+  };
+}
+
+async function servePhotoshopCanvasImage(res, url) {
+  const parts = url.pathname.split("/").filter(Boolean);
+  const nodeId = decodeURIComponent(parts.slice(3).join("/"));
+  const projectId = normalizeProjectId(
+    url.searchParams.get("projectId") || photoshopBridgeState.activeProjectId || "default"
+  );
+  const project = await readPhotoshopBridgeProject(projectId);
+  const node = project?.nodes?.find((item) => item?.type === "image" && String(item.id) === nodeId);
+  const imageUrl = String(node?.image?.url || "").trim();
+  if (!imageUrl) return sendText(res, 404, "Not found");
+  const thumbnail = url.searchParams.get("thumbnail") === "1";
+
+  const pathname = photoshopCanvasImagePathname(imageUrl);
+  if (pathname?.startsWith("/project-cache/")) {
+    return await serveProjectCacheFile(res, pathname, { imageThumbnail: thumbnail });
+  }
+  if (pathname?.startsWith("/outputs/") || pathname?.startsWith("/cache/assets/")) {
+    return await serveFile(res, path.join(__dirname, decodeURIComponent(pathname)), { imageThumbnail: thumbnail });
+  }
+  if (pathname?.startsWith("/assets/")) {
+    return await serveFile(res, path.join(publicDir, decodeURIComponent(pathname)), { imageThumbnail: thumbnail });
+  }
+
+  const loaded = await loadPhotoshopBridgeImage(imageUrl, `${serverHost}:${config.port}`);
+  if (!loaded?.bytes?.length) return sendText(res, 404, "Not found");
+  const thumbnailImage = thumbnail ? createPhotoshopThumbnail(loaded.bytes) : null;
+  const responseBytes = thumbnailImage?.bytes || loaded.bytes;
+  const responseType = thumbnailImage?.contentType || loaded.contentType || "image/png";
+  res.writeHead(200, {
+    "Content-Type": responseType,
+    "Content-Length": responseBytes.length,
+    "Cache-Control": "no-store"
+  });
+  res.end(responseBytes);
+}
+
+async function readPhotoshopBridgeProject(projectId) {
+  try {
+    const raw = await readFile(projectFile(projectId), "utf8");
+    return normalizeProjectRecord(JSON.parse(raw), projectId);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  if (projectId !== "default") return null;
+  try {
+    const raw = await readFile(projectCacheFile, "utf8");
+    return normalizeProjectRecord(JSON.parse(raw), "default");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return null;
+  }
+}
+
+function photoshopCanvasImagePathname(imageUrl) {
+  try {
+    return new URL(imageUrl, "http://127.0.0.1").pathname;
+  } catch {
+    return "";
+  }
+}
+
+async function handlePhotoshopInboxPush(req, res) {
+  const contentType = String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+  if (!contentType.startsWith("image/")) {
+    return sendJson(res, 400, { error: "Photoshop bridge only accepts image files." });
+  }
+
+  const bytes = await readBinaryBody(req, 120 * 1024 * 1024);
+  if (!bytes.length) return sendJson(res, 400, { error: "Photoshop exported an empty image." });
+
+  await ensurePhotoshopBridgeState();
+  const originalName = decodeBridgeHeader(req.headers["x-cc-filename"]) || `photoshop-${Date.now()}.png`;
+  const sourceLabel = decodeBridgeHeader(req.headers["x-cc-source-label"]);
+  const extension = extensionFromMime(contentType) || extensionFromUrl(originalName) || "png";
+  const filename = createOutputFilename(extension);
+  await writeFile(path.join(photoshopBridgeAssetDir("inbox"), filename), bytes);
+
+  const item = {
+    id: createPhotoshopBridgeId(),
+    filename,
+    originalName: sanitizeBridgeFilename(originalName),
+    contentType,
+    sourceLabel: sanitizeOptionalText(sourceLabel).slice(0, 180),
+    createdAt: new Date().toISOString(),
+    contentHash: imageContentHash(bytes)
+  };
+  photoshopBridgeState.inbox.push(item);
+  await trimPhotoshopBridgeQueue("inbox");
+  await savePhotoshopBridgeState();
+  sendJson(res, 201, { ok: true, item: publicPhotoshopBridgeItem(item, "inbox") });
+}
+
+async function handlePhotoshopOutboxPush(req, res) {
+  const body = await readJsonBody(req, { maxBytes: 120 * 1024 * 1024 });
+  const imageUrl = sanitizeOptionalText(body.imageUrl || body.url);
+  if (!imageUrl) return sendJson(res, 400, { error: "Canvas image URL is required." });
+
+  const loaded = await loadPhotoshopBridgeImage(imageUrl, req.headers.host);
+  if (!loaded?.bytes?.length) {
+    return sendJson(res, 502, { error: "Unable to read the canvas image for Photoshop." });
+  }
+
+  await ensurePhotoshopBridgeState();
+  const originalName = sanitizeBridgeFilename(body.filename || extensionFilenameFromUrl(imageUrl, loaded.contentType));
+  const extension = extensionFromMime(loaded.contentType) || extensionFromUrl(originalName) || "png";
+  const filename = createOutputFilename(extension);
+  await writeFile(path.join(photoshopBridgeAssetDir("outbox"), filename), loaded.bytes);
+
+  const item = {
+    id: createPhotoshopBridgeId(),
+    filename,
+    originalName,
+    contentType: loaded.contentType,
+    sourceLabel: sanitizeOptionalText(body.sourceLabel || "cc无限画布").slice(0, 180),
+    createdAt: new Date().toISOString(),
+    contentHash: imageContentHash(loaded.bytes)
+  };
+  photoshopBridgeState.outbox.push(item);
+  await trimPhotoshopBridgeQueue("outbox");
+  await savePhotoshopBridgeState();
+  sendJson(res, 201, {
+    ok: true,
+    queueCount: photoshopBridgeState.outbox.length,
+    item: publicPhotoshopBridgeItem(item, "outbox")
+  });
+}
+
+async function handlePhotoshopQueueList(res, channel) {
+  await ensurePhotoshopBridgeState();
+  const items = photoshopBridgeState[channel]
+    .slice(0, 12)
+    .map((item) => publicPhotoshopBridgeItem(item, channel));
+  sendJson(res, 200, { items, count: photoshopBridgeState[channel].length });
+}
+
+async function handlePhotoshopQueueAck(req, res, channel) {
+  const body = await readJsonBody(req, { maxBytes: 512 * 1024 });
+  const ids = new Set(dedupeTextValues(body.ids || [body.id]));
+  if (!ids.size) return sendJson(res, 400, { error: "At least one bridge item id is required." });
+
+  await ensurePhotoshopBridgeState();
+  const removed = photoshopBridgeState[channel].filter((item) => ids.has(item.id));
+  photoshopBridgeState[channel] = photoshopBridgeState[channel].filter((item) => !ids.has(item.id));
+  await Promise.all(
+    removed.map((item) => rm(path.join(photoshopBridgeAssetDir(channel), item.filename), { force: true }).catch(() => {}))
+  );
+  await savePhotoshopBridgeState();
+  sendJson(res, 200, { ok: true, removed: removed.length, remaining: photoshopBridgeState[channel].length });
+}
+
+async function trimPhotoshopBridgeQueue(channel) {
+  const overflow = Math.max(0, photoshopBridgeState[channel].length - photoshopBridgeQueueLimit);
+  if (!overflow) return;
+  const removed = photoshopBridgeState[channel].splice(0, overflow);
+  await Promise.all(
+    removed.map((item) => rm(path.join(photoshopBridgeAssetDir(channel), item.filename), { force: true }).catch(() => {}))
+  );
+}
+
+function publicPhotoshopBridgeItem(item, channel) {
+  return {
+    ...item,
+    url: `/api/photoshop/assets/${channel}/${encodeURIComponent(item.filename)}`
+  };
+}
+
+async function servePhotoshopBridgeAsset(res, pathname) {
+  await ensurePhotoshopBridgeState();
+  const parts = pathname.split("/").filter(Boolean);
+  const channel = parts[3] === "outbox" ? "outbox" : parts[3] === "inbox" ? "inbox" : "";
+  const filename = path.basename(decodeURIComponent(parts.slice(4).join("/")));
+  if (!channel || !filename) return sendText(res, 404, "Not found");
+  return await serveFile(res, path.join(photoshopBridgeAssetDir(channel), filename));
+}
+
+async function loadPhotoshopBridgeImage(imageUrl, host) {
+  if (/^data:image\//i.test(imageUrl)) {
+    const match = imageUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/s);
+    if (!match) return null;
+    const bytes = Buffer.from(match[2].replace(/\s/g, ""), "base64");
+    if (!bytes.length || bytes.length > 120 * 1024 * 1024) return null;
+    return { bytes, contentType: match[1].toLowerCase() };
+  }
+
+  let url;
+  try {
+    url = new URL(imageUrl, `http://${host || `${serverHost}:${config.port}`}`);
+  } catch {
+    return null;
+  }
+  if (!["http:", "https:"].includes(url.protocol)) return null;
+
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(30000) });
+    if (!response.ok) return null;
+    const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() || "";
+    const extension = extensionFromUrl(url.href);
+    if (!contentType.startsWith("image/") && !["png", "jpg", "jpeg", "webp", "gif"].includes(extension)) return null;
+    const contentLength = Number(response.headers.get("content-length") || 0);
+    if (contentLength > 120 * 1024 * 1024) return null;
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (!bytes.length || bytes.length > 120 * 1024 * 1024) return null;
+    return { bytes, contentType: contentType.startsWith("image/") ? contentType : mimeTypes.get(`.${extension}`) || "image/png" };
+  } catch {
+    return null;
+  }
+}
+
+function createPhotoshopBridgeId() {
+  return `ps-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function decodeBridgeHeader(value) {
+  try {
+    return decodeURIComponent(String(value || ""));
+  } catch {
+    return String(value || "");
+  }
+}
+
+function sanitizeBridgeFilename(value) {
+  const filename = path.basename(String(value || "image.png"))
+    .replace(/[\\/:*?"<>|]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+  return filename.slice(0, 180) || "image.png";
+}
+
+function extensionFilenameFromUrl(url, contentType) {
+  const extension = extensionFromUrl(url) || extensionFromMime(contentType) || "png";
+  return `cc-canvas-${Date.now()}.${extension}`;
+}
+
+function dedupeTextValues(values) {
+  return Array.from(new Set((Array.isArray(values) ? values : []).map((value) => sanitizeOptionalText(value)).filter(Boolean)));
 }
 
 async function handleCreate(res, body, prompt) {
@@ -3105,6 +3714,17 @@ async function readJsonBody(req, options = {}) {
   }
 }
 
+async function readBinaryBody(req, maxBytes = 120 * 1024 * 1024) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > maxBytes) throw new Error("Request body is too large.");
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
 async function readMultipartBody(req, contentType) {
   const boundary = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/)?.[1] || contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/)?.[2];
   if (!boundary) {
@@ -3219,7 +3839,7 @@ async function loadCachedAssets(refs, projectId = "default") {
   return assets;
 }
 
-async function serveProjectCacheFile(res, pathname) {
+async function serveProjectCacheFile(res, pathname, options = {}) {
   const parts = pathname.split("/").filter(Boolean);
   const [, rawProjectId, kind, ...rest] = parts;
   const filename = path.basename(decodeURIComponent(rest.join("/")));
@@ -3229,10 +3849,10 @@ async function serveProjectCacheFile(res, pathname) {
 
   const projectId = normalizeProjectId(decodeURIComponent(rawProjectId));
   const root = kind === "assets" ? projectAssetDir(projectId) : projectOutputDir(projectId);
-  return await serveFile(res, path.join(root, filename));
+  return await serveFile(res, path.join(root, filename), options);
 }
 
-async function serveFile(res, filePath) {
+async function serveFile(res, filePath, options = {}) {
   const resolved = path.resolve(filePath);
   const allowedPublic = isPathInside(resolved, publicDir);
   const allowedOutputs = isPathInside(resolved, outputDir);
@@ -3255,12 +3875,57 @@ async function serveFile(res, filePath) {
   }
 
   const mime = mimeTypes.get(path.extname(resolved).toLowerCase()) || "application/octet-stream";
+  if (options.imageThumbnail && mime.startsWith("image/") && electronNativeImage) {
+    const sourceBytes = await readFile(resolved);
+    const thumbnail = createPhotoshopThumbnail(sourceBytes);
+    if (thumbnail) {
+      res.writeHead(200, {
+        "Content-Type": thumbnail.contentType,
+        "Content-Length": thumbnail.bytes.length,
+        "Cache-Control": "private, max-age=60"
+      });
+      res.end(thumbnail.bytes);
+      return;
+    }
+  }
   res.writeHead(200, {
     "Content-Type": mime,
     "Content-Length": fileStat.size,
     "Cache-Control": "no-store"
   });
   createReadStream(resolved).pipe(res);
+}
+
+function loadElectronNativeImage() {
+  if (!process.versions.electron) return null;
+  try {
+    return require("electron").nativeImage || null;
+  } catch {
+    return null;
+  }
+}
+
+function createPhotoshopThumbnail(bytes) {
+  if (!electronNativeImage || !bytes?.length) return null;
+  try {
+    const source = electronNativeImage.createFromBuffer(Buffer.from(bytes));
+    if (source.isEmpty()) return null;
+    const size = source.getSize();
+    const longestEdge = Math.max(size.width, size.height);
+    if (!longestEdge) return null;
+    const scale = Math.min(1, 360 / longestEdge);
+    const thumbnail = scale < 1
+      ? source.resize({
+        width: Math.max(1, Math.round(size.width * scale)),
+        height: Math.max(1, Math.round(size.height * scale)),
+        quality: "good"
+      })
+      : source;
+    const output = thumbnail.toPNG();
+    return output?.length ? { bytes: output, contentType: "image/png" } : null;
+  } catch {
+    return null;
+  }
 }
 
 function sendJson(res, status, data) {

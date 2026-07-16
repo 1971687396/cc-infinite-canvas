@@ -11,6 +11,7 @@ const assistantChatBackupDelayMs = 600;
 const assistantPendingFileLimit = 5;
 const themeStorageKey = "cc-canvas-theme";
 const photoshopBridgeHeaders = { "X-CC-Canvas-Bridge": "psimageai" };
+const photoshopPluginReleaseUrl = "https://github.com/1971687396/ps-image-ai/releases/latest";
 const photoshopBridgePollIntervalMs = 1600;
 const minZoom = 0.02;
 const maxZoom = 24;
@@ -32,169 +33,56 @@ const defaultPortraitNodeWidth = 560;
 const defaultPortraitNodeHeight = 334;
 const defaultCameraNodeWidth = 560;
 const defaultCameraNodeHeight = 410;
-const portraitStylePacks = [
-  ["any", "不限风格"],
-  ["realistic", "写实"],
-  ["fashion", "时尚"],
-  ["ancient", "古风"],
-  ["fantasy", "幻想"],
-  ["cyber", "赛博"],
-  ["classic", "复古"]
-];
-const portraitStylePools = {
-  realistic: {
-    style: ["cinematic", "documentary", "studio"],
-    lighting: ["window", "rembrandt", "high-key", "low-key"],
-    background: ["gray", "dark-studio", "interior", "outdoor"]
-  },
-  fashion: {
-    identity: ["model", "executive", "artist"],
-    outfit: ["couture", "suit", "minimal-black", "trench"],
-    style: ["editorial", "studio", "cinematic"]
-  },
-  ancient: {
-    identity: ["royal", "scholar", "swordsman"],
-    outfit: ["hanfu", "royal-robe", "armor"],
-    background: ["palace", "garden", "dark-studio"],
-    style: ["oriental", "cinematic", "painting"]
-  },
-  fantasy: {
-    identity: ["royal", "swordsman", "traveler", "artist"],
-    outfit: ["royal-robe", "armor", "couture"],
-    background: ["palace", "forest", "dark-studio"],
-    style: ["fantasy", "painting", "cinematic"]
-  },
-  cyber: {
-    identity: ["detective", "swordsman", "executive", "traveler"],
-    outfit: ["techwear", "minimal-black", "armor"],
-    lighting: ["neon", "low-key", "rim"],
-    background: ["city-night", "dark-studio", "interior"],
-    style: ["cyberpunk", "cinematic", "editorial"]
-  },
-  classic: {
-    outfit: ["suit", "trench", "royal-robe"],
-    lighting: ["rembrandt", "window", "golden"],
-    background: ["interior", "dark-studio", "garden"],
-    style: ["painting", "documentary", "cinematic"]
-  }
+const portraitWordbank = globalThis.ccPortraitWordbank || {
+  stylePacks: [{ id: "any", label: "不限风格", hints: [] }],
+  modifiers: [],
+  categories: []
 };
-const portraitTraitGroups = [
-  { id: "gender", label: "人物", options: [
-    ["woman", "成年女性", "adult woman", { gender: "woman" }],
-    ["man", "成年男性", "adult man", { gender: "man" }],
-    ["androgynous", "中性气质人物", "androgynous adult", { gender: "androgynous" }]
-  ] },
-  { id: "age", label: "年龄感", options: [
-    ["twenties", "二十多岁", "in their twenties"], ["thirties", "三十多岁", "in their thirties"],
-    ["forties", "四十多岁", "in their forties"], ["fifties", "五十多岁", "in their fifties"],
-    ["sixties", "六十多岁", "in their sixties"]
-  ] },
-  { id: "identity", label: "身份", options: [
-    ["model", "时装模特", "fashion model"], ["executive", "都市高管", "urban executive"],
-    ["artist", "艺术家", "artist"], ["detective", "侦探", "detective"],
-    ["royal", "王族成员", "royal noble"], ["scholar", "学者", "scholar"],
-    ["swordsman", "剑士", "swordsman"], ["traveler", "神秘旅人", "mysterious traveler"]
-  ] },
-  { id: "face", label: "脸型", options: [
-    ["oval", "窄鹅蛋脸", "narrow oval face", { face: "oval" }],
-    ["heart", "心形脸", "heart-shaped face", { face: "heart" }],
-    ["round", "圆润脸型", "soft round face", { face: "round" }],
-    ["square", "方正脸型", "defined square face", { face: "square" }],
-    ["angular", "骨相清晰", "defined angular bone structure", { face: "angular" }]
-  ] },
-  { id: "skin", label: "肤色", options: [
-    ["cool-fair", "冷白皮", "cool fair skin", { skin: "#f1c9b7" }],
-    ["ivory", "暖象牙肤色", "warm ivory skin", { skin: "#ddb093" }],
-    ["natural", "自然肤色", "natural skin tone", { skin: "#c98f6a" }],
-    ["wheat", "小麦肤色", "wheat-toned skin", { skin: "#ae704f" }],
-    ["bronze", "古铜肤色", "bronze skin", { skin: "#855139" }],
-    ["deep", "深色肌肤", "deep skin tone", { skin: "#593526" }]
-  ] },
-  { id: "eyes", label: "眼睛", options: [
-    ["almond", "杏眼", "almond-shaped eyes", { eyeShape: "almond" }],
-    ["phoenix", "丹凤眼", "phoenix eyes", { eyeShape: "slender" }],
-    ["round", "圆润大眼", "large round eyes", { eyeShape: "round" }],
-    ["cat", "上扬猫眼", "upturned cat eyes", { eyeShape: "cat" }],
-    ["deep-set", "深邃眼窝", "deep-set eyes", { eyeShape: "deep" }]
-  ] },
-  { id: "eyeColor", label: "瞳色", options: [
-    ["brown", "深棕眼眸", "deep brown eyes", { eyes: "#3b241d" }],
-    ["amber", "琥珀眼眸", "amber eyes", { eyes: "#9a5f20" }],
-    ["blue", "冰蓝眼眸", "icy blue eyes", { eyes: "#5797bd" }],
-    ["green", "翡翠绿眼眸", "emerald green eyes", { eyes: "#4f8266" }],
-    ["gray", "灰色眼眸", "gray eyes", { eyes: "#7c8791" }],
-    ["violet", "紫罗兰眼眸", "violet eyes", { eyes: "#76558d" }]
-  ] },
-  { id: "hairStyle", label: "发型", options: [
-    ["long", "长直发", "long straight hair", { hairStyle: "long" }],
-    ["waves", "大波浪卷发", "large wavy hair", { hairStyle: "waves" }],
-    ["bob", "利落短鲍勃", "sharp bob haircut", { hairStyle: "bob" }],
-    ["pixie", "精灵短发", "pixie haircut", { hairStyle: "short" }],
-    ["ponytail", "高马尾", "high ponytail", { hairStyle: "ponytail" }],
-    ["braid", "侧编发", "side braided hair", { hairStyle: "braid" }],
-    ["slick", "背头", "slicked-back hair", { hairStyle: "slick" }]
-  ] },
-  { id: "hairColor", label: "发色", options: [
-    ["black", "黑发", "black hair", { hair: "#17181b" }],
-    ["brown", "深棕发", "dark brown hair", { hair: "#3a241c" }],
-    ["chestnut", "栗色发", "chestnut hair", { hair: "#70412d" }],
-    ["auburn", "赤褐发", "auburn hair", { hair: "#873f2b" }],
-    ["blonde", "金发", "blonde hair", { hair: "#d3b36f" }],
-    ["silver", "银白发", "silver white hair", { hair: "#c9cbd0" }],
-    ["blue-black", "蓝黑发", "blue-black hair", { hair: "#17233b" }]
-  ] },
-  { id: "expression", label: "神态", options: [
-    ["calm", "平静克制", "calm restrained expression", { expression: "neutral" }],
-    ["gentle", "温柔浅笑", "gentle subtle smile", { expression: "smile" }],
-    ["determined", "坚定锐利", "determined sharp gaze", { expression: "firm" }],
-    ["distant", "清冷疏离", "cool distant expression", { expression: "neutral" }],
-    ["melancholy", "含蓄忧郁", "subtle melancholic expression", { expression: "sad" }],
-    ["playful", "自信俏皮", "confident playful smirk", { expression: "smirk" }]
-  ] },
-  { id: "outfit", label: "服装", options: [
-    ["minimal-black", "极简黑色服装", "minimal black outfit", { outfit: "#22252a" }],
-    ["white-shirt", "干净白衬衫", "clean white shirt", { outfit: "#e9ecef" }],
-    ["suit", "剪裁西装", "tailored suit", { outfit: "#263142" }],
-    ["trench", "经典风衣", "classic trench coat", { outfit: "#8d775b" }],
-    ["couture", "高定礼服", "haute couture outfit", { outfit: "#4f294c" }],
-    ["hanfu", "素雅汉服", "elegant traditional hanfu", { outfit: "#9fb6ae" }],
-    ["royal-robe", "华贵长袍", "ornate royal robe", { outfit: "#5b315e" }],
-    ["armor", "精致轻甲", "refined light armor", { outfit: "#5b6670" }],
-    ["techwear", "未来机能服", "futuristic techwear", { outfit: "#182d35" }]
-  ] },
-  { id: "lighting", label: "光线", options: [
-    ["window", "柔和窗光", "soft window light"], ["rembrandt", "伦勃朗光", "Rembrandt lighting"],
-    ["high-key", "明亮高调光", "clean high-key studio lighting"], ["low-key", "低调侧光", "dramatic low-key side lighting"],
-    ["golden", "金色逆光", "golden backlight"], ["neon", "霓虹轮廓光", "neon rim lighting"],
-    ["rim", "冷色边缘光", "cool cinematic rim light"]
-  ] },
-  { id: "shot", label: "景别", options: [
-    ["close-up", "面部特写", "close-up portrait"], ["headshot", "标准头像", "head-and-shoulders portrait"],
-    ["bust", "胸像构图", "bust portrait"], ["half-body", "半身肖像", "half-body portrait"],
-    ["full-body", "全身肖像", "full-body portrait"]
-  ] },
-  { id: "lens", label: "镜头", options: [
-    ["35mm", "35mm 环境人像", "35mm environmental portrait lens"],
-    ["50mm", "50mm 自然透视", "50mm natural perspective"],
-    ["85mm", "85mm 经典人像", "85mm portrait lens"],
-    ["105mm", "105mm 压缩透视", "105mm compressed portrait lens"]
-  ] },
-  { id: "background", label: "背景", options: [
-    ["gray", "中性灰背景", "neutral gray backdrop"], ["dark-studio", "暗色影棚", "dark studio background"],
-    ["interior", "质感室内空间", "refined interior background"], ["city-night", "城市夜景", "cinematic city night background"],
-    ["outdoor", "自然户外", "soft natural outdoor background"], ["forest", "薄雾森林", "misty forest background"],
-    ["garden", "古典庭院", "classical garden background"], ["palace", "宫殿空间", "ornate palace interior"]
-  ] },
-  { id: "style", label: "画面风格", options: [
-    ["cinematic", "电影级写实", "cinematic photorealism"], ["editorial", "时尚编辑大片", "fashion editorial photography"],
-    ["documentary", "纪实人像", "documentary portrait photography"], ["studio", "商业棚拍", "polished studio portrait photography"],
-    ["oriental", "东方美学", "refined oriental visual aesthetics"], ["fantasy", "幻想概念艺术", "fantasy character concept art"],
-    ["cyberpunk", "赛博朋克", "cyberpunk portrait art"], ["painting", "古典绘画质感", "classical painterly portrait"]
-  ] }
-].map((group) => ({
-  ...group,
-  options: group.options.map(([id, zh, en, preview = {}]) => ({ id, zh, en, preview }))
+
+function expandPortraitTerms(categoryId, group) {
+  const baseTerms = (Array.isArray(group.terms) ? group.terms : []).map(([zh, en, prompt = en]) => ({
+    zh,
+    en,
+    promptEn: prompt
+  }));
+  const expanded = [...baseTerms];
+  let modifierIndex = 0;
+  while (expanded.length < 100 && baseTerms.length) {
+    const modifier = portraitWordbank.modifiers[modifierIndex % portraitWordbank.modifiers.length];
+    if (!modifier) break;
+    for (const term of baseTerms) {
+      if (expanded.length >= 100) break;
+      expanded.push({
+        zh: `${term.zh}${modifier.zhSuffix}`,
+        en: `${modifier.enPrefix} ${term.en}`,
+        promptEn: `${modifier.promptPrefix} ${term.promptEn}`
+      });
+    }
+    modifierIndex += 1;
+  }
+  return expanded.slice(0, 100).map((term, index) => ({
+    id: `${categoryId}.${group.id}.${String(index + 1).padStart(2, "0")}`,
+    ...term,
+    preview: {}
+  }));
+}
+
+const portraitStylePackDefinitions = portraitWordbank.stylePacks;
+const portraitStylePacks = portraitStylePackDefinitions.map(({ id, label }) => [id, label]);
+const portraitTraitCategories = portraitWordbank.categories.map((category) => ({
+  id: category.id,
+  label: category.label,
+  labelEn: category.labelEn,
+  description: category.description,
+  groups: category.groups.map((group) => ({
+    id: group.id,
+    categoryId: category.id,
+    label: group.label,
+    labelEn: group.labelEn,
+    options: expandPortraitTerms(category.id, group)
+  }))
 }));
+const portraitTraitGroups = portraitTraitCategories.flatMap((category) => category.groups);
 const minNoteWidth = 96;
 const minNoteHeight = 44;
 const maxNoteWidth = 4096;
@@ -258,25 +146,38 @@ const settingsDialog = document.querySelector("#settingsDialog");
 const settingsForm = document.querySelector("#settingsForm");
 const closeSettingsButton = document.querySelector("#closeSettingsButton");
 const settingsApiKey = document.querySelector("#settingsApiKey");
-const settingsGptImageKey = document.querySelector("#settingsGptImageKey");
-const settingsGrokImageKey = document.querySelector("#settingsGrokImageKey");
-const settingsBanana2Key = document.querySelector("#settingsBanana2Key");
-const settingsAssistantKey = document.querySelector("#settingsAssistantKey");
-const settingsAssistantKeyLabel = document.querySelector("#settingsAssistantKeyLabel");
-const settingsGrsaiApiKey = document.querySelector("#settingsGrsaiApiKey");
-const settingsBaseUrl = document.querySelector("#settingsBaseUrl");
-const settingsImageEndpoint = document.querySelector("#settingsImageEndpoint");
-const settingsEditEndpoint = document.querySelector("#settingsEditEndpoint");
-const settingsChatEndpoint = document.querySelector("#settingsChatEndpoint");
+const settingsClearApiKey = document.querySelector("#settingsClearApiKey");
+const settingsConnectionModel = document.querySelector("#settingsConnectionModel");
+const settingsCustomModelRow = document.querySelector("#settingsCustomModelRow");
+const settingsCustomConnectionModel = document.querySelector("#settingsCustomConnectionModel");
+const settingsAddCustomModel = document.querySelector("#settingsAddCustomModel");
+const settingsConnectionPreset = document.querySelector("#settingsConnectionPreset");
+const settingsConnectionProtocol = document.querySelector("#settingsConnectionProtocol");
+const settingsConnectionApiKey = document.querySelector("#settingsConnectionApiKey");
+const settingsConnectionAuthType = document.querySelector("#settingsConnectionAuthType");
+const settingsConnectionApiModel = document.querySelector("#settingsConnectionApiModel");
+const settingsConnectionCapability = document.querySelector("#settingsConnectionCapability");
+const settingsConnectionBaseUrl = document.querySelector("#settingsConnectionBaseUrl");
+const settingsConnectionImageEndpoint = document.querySelector("#settingsConnectionImageEndpoint");
+const settingsConnectionEditEndpoint = document.querySelector("#settingsConnectionEditEndpoint");
+const settingsConnectionChatEndpoint = document.querySelector("#settingsConnectionChatEndpoint");
+const settingsConnectionImageEndpointField = document.querySelector("#settingsConnectionImageEndpointField");
+const settingsConnectionEditEndpointField = document.querySelector("#settingsConnectionEditEndpointField");
+const settingsConnectionChatEndpointField = document.querySelector("#settingsConnectionChatEndpointField");
+const settingsConnectionKeyStatus = document.querySelector("#settingsConnectionKeyStatus");
+const settingsConnectionClearKey = document.querySelector("#settingsConnectionClearKey");
+const settingsConnectionResetPreset = document.querySelector("#settingsConnectionResetPreset");
 const settingsDefaultModel = document.querySelector("#settingsDefaultModel");
 const settingsAssistantModel = document.querySelector("#settingsAssistantModel");
 const settingsCacheDir = document.querySelector("#settingsCacheDir");
 const settingsPhotoshopBridgeEnabled = document.querySelector("#settingsPhotoshopBridgeEnabled");
+const photoshopPluginDownloadButton = document.querySelector("#photoshopPluginDownloadButton");
 const settingsStatus = document.querySelector("#settingsStatus");
 const dreaminaStatusText = document.querySelector("#dreaminaStatusText");
 const dreaminaAccountMeta = document.querySelector("#dreaminaAccountMeta");
 const dreaminaInstallButton = document.querySelector("#dreaminaInstallButton");
 const dreaminaLoginButton = document.querySelector("#dreaminaLoginButton");
+const dreaminaReloginButton = document.querySelector("#dreaminaReloginButton");
 const dreaminaRefreshButton = document.querySelector("#dreaminaRefreshButton");
 const dreaminaActionProgress = document.querySelector("#dreaminaActionProgress");
 const dreaminaActionBar = document.querySelector("#dreaminaActionBar");
@@ -469,10 +370,9 @@ const geminiNativeImageSizeOptions = [
   ["2K", "2K"],
   ["4K", "4K"]
 ];
-const dreaminaModelOptions = ["5.0", "4.7", "4.6", "4.5", "4.1", "4.0", "3.1", "3.0"].map((version) => [
-  `dreamina-${version}`,
-  `即梦 ${version}`
-]);
+const fallbackDreaminaModelVersions = ["5.0", "4.7", "4.6", "4.5", "4.1", "4.0", "3.1", "3.0"];
+let dreaminaTextModelVersions = [...fallbackDreaminaModelVersions];
+let dreaminaEditModelVersions = fallbackDreaminaModelVersions.filter((version) => Number(version) >= 4);
 const dreaminaRatios = ["21:9", "16:9", "3:2", "4:3", "1:1", "3:4", "2:3", "9:16"];
 const dreaminaVideoModelOptions = [
   ["dreamina-video-seedance2.0fast", "Seedance 2.0 Fast"],
@@ -486,13 +386,13 @@ const dreaminaVideoResolutionOptions = [
   ["720p", "720p"],
   ["1080p", "1080p（VIP）"]
 ];
-const taskModelOptions = [
+const baseTaskModelOptions = [
   ["gpt-image-2", "gpt-image-2"],
   [geminiBananaImageModel, geminiBananaImageAlias],
   [grsaiDefaultModel, grsaiDefaultModel],
-  ...grokModelOptions,
-  ...dreaminaModelOptions
+  ...grokModelOptions
 ];
+const taskModelOptions = [...baseTaskModelOptions, ...dreaminaModelOptionsForVersions(dreaminaTextModelVersions)];
 
 const fileStore = new Map();
 const selectedNodeIds = new Set();
@@ -541,6 +441,11 @@ let photoshopBridgePollTimer = 0;
 let photoshopBridgeImporting = false;
 let photoshopReferenceSelectionRequest = null;
 let photoshopReferenceSelectionBusy = false;
+let recoveryNoticeShown = false;
+let settingsConnectionDrafts = {};
+let settingsConnectionKeyDrafts = {};
+let settingsConnectionClearKeys = new Set();
+let activeSettingsConnectionModel = "";
 let canvasState = {
   nodes: [],
   viewport: { x: 120, y: 90, zoom: 1 },
@@ -548,6 +453,11 @@ let canvasState = {
 };
 
 init();
+
+window.addEventListener("pagehide", () => flushCurrentProjectCheckpoint({ keepalive: true }));
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") flushCurrentProjectCheckpoint({ keepalive: true });
+});
 
 async function init() {
   applyTheme(readThemePreference(), { persist: false });
@@ -626,9 +536,49 @@ assistantStopButton?.addEventListener("click", stopAssistantResponse);
 assistantMessagesEl?.addEventListener("click", handleAssistantMessageClick);
 assistantMessagesEl?.addEventListener("contextmenu", handleAssistantMessageContextMenu);
 assistantModelSelect?.addEventListener("change", () => updateAssistantModelSelection(assistantModelSelect.value));
-settingsAssistantModel?.addEventListener("change", () => {
-  settingsAssistantKey.value = "";
-  updateSettingsAssistantKeyState(settingsAssistantModel.value);
+settingsConnectionModel?.addEventListener("change", () => {
+  if (settingsConnectionModel.value === "__custom__") {
+    settingsCustomModelRow.hidden = false;
+    settingsCustomConnectionModel.focus();
+    return;
+  }
+  settingsCustomModelRow.hidden = true;
+  switchSettingsConnectionModel(settingsConnectionModel.value);
+});
+settingsAddCustomModel?.addEventListener("click", addCustomSettingsConnectionModel);
+settingsCustomConnectionModel?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  addCustomSettingsConnectionModel();
+});
+settingsConnectionPreset?.addEventListener("change", () => applySettingsConnectionPreset(settingsConnectionPreset.value));
+settingsConnectionCapability?.addEventListener("change", () => {
+  captureSettingsConnectionDraft();
+  updateSettingsConnectionVisibility();
+});
+for (const control of [
+  settingsConnectionProtocol,
+  settingsConnectionAuthType,
+  settingsConnectionApiModel,
+  settingsConnectionBaseUrl,
+  settingsConnectionImageEndpoint,
+  settingsConnectionEditEndpoint,
+  settingsConnectionChatEndpoint
+]) {
+  control?.addEventListener("input", captureSettingsConnectionDraft);
+  control?.addEventListener("change", captureSettingsConnectionDraft);
+}
+settingsConnectionApiKey?.addEventListener("input", captureSettingsConnectionKeyDraft);
+settingsConnectionClearKey?.addEventListener("change", () => {
+  const model = normalizeSettingsConnectionModel(activeSettingsConnectionModel);
+  if (!model) return;
+  if (settingsConnectionClearKey.checked) settingsConnectionClearKeys.add(model);
+  else settingsConnectionClearKeys.delete(model);
+  updateSettingsConnectionKeyStatus();
+});
+settingsConnectionResetPreset?.addEventListener("click", () => applySettingsConnectionPreset(settingsConnectionPreset.value, { force: true }));
+settingsApiKey?.addEventListener("input", () => {
+  if (settingsApiKey.value.trim()) settingsClearApiKey.checked = false;
 });
 clearCanvasButton.addEventListener("click", clearCanvas);
 resetViewButton.addEventListener("click", resetViewport);
@@ -645,14 +595,17 @@ projectNameInput.addEventListener("keydown", (event) => {
   }
 });
 settingsButton.addEventListener("click", openSettingsDialog);
+window.ccCanvasDesktop?.onOpenSettings?.((payload) => openSettingsDialog(payload));
 checkUpdateButton?.addEventListener("click", () => checkForUpdates());
 closeSettingsButton.addEventListener("click", () => closeSettingsDialog());
 settingsDialog.addEventListener("close", resumeChatGptHost);
 dreaminaInstallButton?.addEventListener("click", () => runDreaminaAction("install"));
 dreaminaLoginButton?.addEventListener("click", () => runDreaminaAction("login"));
+dreaminaReloginButton?.addEventListener("click", () => runDreaminaAction("relogin"));
 dreaminaRefreshButton?.addEventListener("click", () => refreshDreaminaStatus({ notify: true }));
 copyDreaminaInstallButton?.addEventListener("click", () => copyDreaminaCommand("curl -s https://jimeng.jianying.com/cli | bash"));
 copyDreaminaLoginButton?.addEventListener("click", () => copyDreaminaCommand("dreamina login"));
+photoshopPluginDownloadButton?.addEventListener("click", openPhotoshopPluginDownload);
 closeUpdateButton?.addEventListener("click", () => closeUpdateDialog());
 updateDialog?.addEventListener("close", resumeChatGptHost);
 openReleaseButton?.addEventListener("click", () => {
@@ -789,7 +742,7 @@ function applyTaskModelDefaults(node, options = {}) {
   node.provider = isGrok ? "grok" : isGrsai ? "grsai" : isDreamina ? "dreamina" : isGeminiNative ? "gemini" : "";
 
   if (isDreamina) {
-    if (node.mode === "edit" && Number(dreaminaModelVersion(node.model)) < 4) {
+    if (node.mode === "edit" && !dreaminaEditModelVersions.includes(dreaminaModelVersion(node.model))) {
       node.model = dreaminaDefaultModel;
     }
     if (!isSizeAllowedForModel(node.size, node.model, node.mode)) {
@@ -985,6 +938,7 @@ function createDefaultTaskNode(mode = "create") {
     format: "png",
     baseUrl: config.baseUrl || "https://yunwu.ai",
     endpointPath: defaultEndpointForMode(normalizedMode),
+    connectionOverride: false,
     mode: normalizedMode,
     background: "",
     moderation: "",
@@ -1077,7 +1031,7 @@ function addPortraitNode(point = null) {
     id: createId(),
     type: "portrait",
     language: "zh",
-    stylePack: "realistic",
+    stylePack: "any",
     seed: "",
     selection: {},
     locks: {},
@@ -1356,6 +1310,7 @@ function buildNodePayload(node) {
     moderation: node.moderation,
     baseUrl: node.baseUrl,
     endpointPath: node.endpointPath || defaultEndpointForMode(node.mode),
+    connectionOverride: Boolean(node.connectionOverride),
     extraParams: node.extraParams || {},
     cachedImages: node.cachedImages || [],
     cachedMask: node.cachedMask ? [node.cachedMask] : []
@@ -1375,6 +1330,7 @@ function appendNodeFields(formData, node, options = {}) {
   formData.append("moderation", node.moderation || "");
   formData.append("baseUrl", node.baseUrl);
   formData.append("endpointPath", node.endpointPath || defaultEndpointForMode(node.mode));
+  formData.append("connectionOverride", String(Boolean(node.connectionOverride)));
   formData.append("extraParams", JSON.stringify(node.extraParams || {}));
   if (options.includeCachedAssets && node.cachedImages?.length) {
     formData.append("cachedImages", JSON.stringify(node.cachedImages));
@@ -1750,6 +1706,12 @@ function fillAssistantModelSelect(select, value) {
   if (!select) return;
   const selected = String(value || assistantDefaultModel).trim() || assistantDefaultModel;
   const options = [...assistantModelOptions];
+  for (const definition of config.connectionModels || []) {
+    if (definition.capability !== "chat") continue;
+    if (!options.some(([model]) => model === definition.model)) {
+      options.push([definition.model, definition.label || definition.model]);
+    }
+  }
   if (!options.some(([model]) => model === selected)) {
     options.push([selected, `${selected}（当前）`]);
   }
@@ -1763,20 +1725,6 @@ function fillAssistantModelSelect(select, value) {
   }
   select.value = selected;
   if (select === assistantModelSelect) updateAssistantModelIcon(selected);
-  if (select === settingsAssistantModel) updateSettingsAssistantKeyState(selected);
-}
-
-function settingsAssistantKeyModel(model = settingsAssistantModel?.value || config.assistantModel || assistantDefaultModel) {
-  return String(model || assistantDefaultModel).trim() || assistantDefaultModel;
-}
-
-function updateSettingsAssistantKeyState(model = settingsAssistantKeyModel()) {
-  if (!settingsAssistantKey) return;
-  const keyModel = settingsAssistantKeyModel(model);
-  if (settingsAssistantKeyLabel) settingsAssistantKeyLabel.textContent = `${keyModel} 助手专用 Key`;
-  settingsAssistantKey.placeholder = config.modelKeys?.[keyModel.toLowerCase()]
-    ? "已配置，留空不修改"
-    : "留空则使用平台总 Key";
 }
 
 function updateAssistantModelIcon(model) {
@@ -1842,24 +1790,230 @@ async function updateAssistantModelSelection(model) {
   }
 }
 
-function openSettingsDialog() {
+function normalizeSettingsConnectionModel(model) {
+  const value = String(model || "").trim().toLowerCase();
+  if (value === geminiBananaImageAlias) return geminiBananaImageModel;
+  if (value === legacyGrokImagineModel) return grokImagineModel;
+  return value;
+}
+
+function settingsConnectionDefinition(model) {
+  const normalized = normalizeSettingsConnectionModel(model);
+  return (config.connectionModels || []).find((item) => normalizeSettingsConnectionModel(item.model) === normalized) || null;
+}
+
+function fallbackSettingsConnection(model) {
+  const normalized = normalizeSettingsConnectionModel(model);
+  return {
+    preset: "custom",
+    capability: "chat",
+    protocol: "openai-chat",
+    authType: "bearer",
+    apiModel: normalized,
+    baseUrl: config.baseUrl || "https://yunwu.ai",
+    imageEndpoint: config.imageEndpoint || "/v1/images/generations",
+    editEndpoint: config.editEndpoint || "/v1/images/edits",
+    chatEndpoint: config.chatEndpoint || "/v1/chat/completions"
+  };
+}
+
+function settingsConnectionDraft(model) {
+  const normalized = normalizeSettingsConnectionModel(model);
+  if (!normalized) return fallbackSettingsConnection("");
+  if (!settingsConnectionDrafts[normalized]) {
+    const definition = settingsConnectionDefinition(normalized);
+    const configured = config.modelConnections?.[normalized];
+    const preset = configured?.preset || definition?.presets?.[0] || "custom";
+    settingsConnectionDrafts[normalized] = {
+      ...(definition?.presetDefaults?.[preset] || fallbackSettingsConnection(normalized)),
+      ...(configured || {}),
+      apiModel: configured?.apiModel || normalized
+    };
+  }
+  return settingsConnectionDrafts[normalized];
+}
+
+function populateSettingsConnectionModels() {
+  if (!settingsConnectionModel) return;
+  settingsConnectionModel.replaceChildren();
+  const groups = [
+    ["image", "生图 / 图片编辑"],
+    ["chat", "助手对话"]
+  ];
+  for (const [capability, label] of groups) {
+    const definitions = (config.connectionModels || []).filter((item) => item.capability === capability);
+    if (!definitions.length) continue;
+    const group = document.createElement("optgroup");
+    group.label = label;
+    for (const definition of definitions) {
+      const option = document.createElement("option");
+      option.value = definition.model;
+      option.textContent = definition.label || definition.model;
+      group.append(option);
+    }
+    settingsConnectionModel.append(group);
+  }
+  const customOption = document.createElement("option");
+  customOption.value = "__custom__";
+  customOption.textContent = "添加自定义模型...";
+  settingsConnectionModel.append(customOption);
+}
+
+function addCustomSettingsConnectionModel() {
+  const model = normalizeSettingsConnectionModel(settingsCustomConnectionModel.value);
+  if (!model || model === "__custom__") {
+    showToast("请输入有效的模型名称");
+    settingsCustomConnectionModel.focus();
+    return;
+  }
+
+  captureSettingsConnectionDraft();
+  if (!settingsConnectionDefinition(model)) {
+    const profile = fallbackSettingsConnection(model);
+    settingsConnectionDrafts[model] = profile;
+    config.connectionModels = [
+      ...(config.connectionModels || []),
+      {
+        model,
+        label: model,
+        capability: "chat",
+        provider: "custom",
+        presets: ["custom"],
+        presetDefaults: { custom: profile }
+      }
+    ];
+  }
+  populateSettingsConnectionModels();
+  activeSettingsConnectionModel = model;
+  settingsConnectionModel.value = model;
+  settingsCustomConnectionModel.value = "";
+  settingsCustomModelRow.hidden = true;
+  renderSettingsConnectionEditor();
+}
+
+function captureSettingsConnectionDraft() {
+  const model = normalizeSettingsConnectionModel(activeSettingsConnectionModel);
+  if (!model) return;
+  settingsConnectionDrafts[model] = {
+    preset: settingsConnectionPreset.value || "custom",
+    capability: settingsConnectionCapability.value || "chat",
+    protocol: settingsConnectionProtocol.value || "openai-chat",
+    authType: settingsConnectionAuthType.value || "bearer",
+    apiModel: settingsConnectionApiModel.value.trim() || model,
+    baseUrl: settingsConnectionBaseUrl.value.trim(),
+    imageEndpoint: settingsConnectionImageEndpoint.value.trim(),
+    editEndpoint: settingsConnectionEditEndpoint.value.trim(),
+    chatEndpoint: settingsConnectionChatEndpoint.value.trim()
+  };
+}
+
+function captureSettingsConnectionKeyDraft() {
+  const model = normalizeSettingsConnectionModel(activeSettingsConnectionModel);
+  if (!model) return;
+  settingsConnectionKeyDrafts[model] = settingsConnectionApiKey.value.trim();
+  if (settingsConnectionKeyDrafts[model]) {
+    settingsConnectionClearKeys.delete(model);
+    settingsConnectionClearKey.checked = false;
+  }
+  updateSettingsConnectionKeyStatus();
+}
+
+function switchSettingsConnectionModel(model) {
+  captureSettingsConnectionDraft();
+  const normalized = normalizeSettingsConnectionModel(model);
+  if (!normalized) return;
+  activeSettingsConnectionModel = normalized;
+  settingsConnectionModel.value = normalized;
+  renderSettingsConnectionEditor();
+}
+
+function renderSettingsConnectionEditor() {
+  const model = normalizeSettingsConnectionModel(activeSettingsConnectionModel);
+  if (!model) return;
+  const draft = settingsConnectionDraft(model);
+  const definition = settingsConnectionDefinition(model);
+  const presets = definition?.presets?.length ? definition.presets : ["custom"];
+  if (!presets.includes(draft.preset)) presets.push(draft.preset);
+  settingsConnectionPreset.replaceChildren();
+  for (const preset of presets) {
+    const option = document.createElement("option");
+    option.value = preset;
+    option.textContent = config.connectionPresets?.[preset]?.label || preset;
+    settingsConnectionPreset.append(option);
+  }
+  settingsConnectionPreset.value = draft.preset;
+  settingsConnectionProtocol.value = draft.protocol;
+  settingsConnectionAuthType.value = draft.authType;
+  settingsConnectionApiModel.value = draft.apiModel || model;
+  settingsConnectionCapability.value = draft.capability || definition?.capability || "chat";
+  settingsConnectionBaseUrl.value = draft.baseUrl || "";
+  settingsConnectionImageEndpoint.value = draft.imageEndpoint || "";
+  settingsConnectionEditEndpoint.value = draft.editEndpoint || "";
+  settingsConnectionChatEndpoint.value = draft.chatEndpoint || "";
+  settingsConnectionApiKey.value = settingsConnectionKeyDrafts[model] || "";
+  settingsConnectionClearKey.checked = settingsConnectionClearKeys.has(model);
+  settingsConnectionApiKey.placeholder = config.modelKeys?.[model]
+    ? "专用 Key 已配置，留空则不修改"
+    : "留空则使用全局备用 Key";
+  updateSettingsConnectionVisibility();
+  updateSettingsConnectionKeyStatus();
+}
+
+function updateSettingsConnectionVisibility() {
+  const capability = settingsConnectionCapability.value;
+  const image = capability === "image";
+  settingsConnectionImageEndpointField.hidden = !image;
+  settingsConnectionEditEndpointField.hidden = !image;
+  settingsConnectionChatEndpointField.hidden = image;
+}
+
+function updateSettingsConnectionKeyStatus() {
+  const model = normalizeSettingsConnectionModel(activeSettingsConnectionModel);
+  if (!model || !settingsConnectionKeyStatus) return;
+  const willClear = settingsConnectionClearKeys.has(model);
+  const hasDraft = Boolean(settingsConnectionKeyDrafts[model]);
+  const hasDedicated = Boolean(config.modelKeys?.[model]);
+  settingsConnectionKeyStatus.textContent = willClear
+    ? "保存后清除专用 Key"
+    : hasDraft
+      ? "待保存新 Key"
+      : hasDedicated
+        ? "专用 Key 已配置"
+        : config.hasApiKey
+          ? "使用全局备用 Key"
+          : "尚未配置 Key";
+  settingsConnectionKeyStatus.dataset.state = willClear ? "warning" : hasDraft || hasDedicated ? "ready" : "fallback";
+}
+
+function applySettingsConnectionPreset(preset, options = {}) {
+  const model = normalizeSettingsConnectionModel(activeSettingsConnectionModel);
+  if (!model) return;
+  const definition = settingsConnectionDefinition(model);
+  const defaults = definition?.presetDefaults?.[preset];
+  const current = settingsConnectionDraft(model);
+  settingsConnectionDrafts[model] = defaults
+    ? { ...defaults }
+    : { ...current, preset: "custom" };
+  if (options.force && defaults) settingsConnectionDrafts[model] = { ...defaults };
+  renderSettingsConnectionEditor();
+}
+
+function openSettingsDialog(request = {}) {
   settingsApiKey.value = "";
-  settingsGptImageKey.value = "";
-  settingsGrokImageKey.value = "";
-  settingsBanana2Key.value = "";
-  settingsAssistantKey.value = "";
-  settingsGrsaiApiKey.value = "";
-  settingsGptImageKey.placeholder = config.modelKeys?.["gpt-image-2"] ? "已配置，留空不修改" : "留空则使用平台总 Key";
-  settingsGrokImageKey.placeholder = config.modelKeys?.[grokImagineModel] ? "已配置，留空不修改" : "留空则使用平台总 Key";
-  settingsBanana2Key.placeholder = config.modelKeys?.[geminiBananaImageModel] ? "已配置，留空不修改" : "留空则使用平台总 Key";
-  settingsGrsaiApiKey.placeholder = config.hasGrsaiApiKey ? "已配置，留空不修改" : "填写 Grsai API Key";
-  settingsBaseUrl.value = config.baseUrl || "https://yunwu.ai";
-  settingsImageEndpoint.value = config.imageEndpoint || "/v1/images/generations";
-  settingsEditEndpoint.value = config.editEndpoint || "/v1/images/edits";
-  settingsChatEndpoint.value = config.chatEndpoint || "/v1/chat/completions";
+  settingsClearApiKey.checked = false;
+  settingsConnectionDrafts = JSON.parse(JSON.stringify(config.modelConnections || {}));
+  settingsConnectionKeyDrafts = {};
+  settingsConnectionClearKeys = new Set();
+  populateSettingsConnectionModels();
+  const requestedModel = typeof request?.model === "string" ? request.model : "";
+  const initialModel = normalizeSettingsConnectionModel(
+    requestedModel || config.assistantModel || config.defaultModel || config.connectionModels?.[0]?.model
+  );
+  activeSettingsConnectionModel = initialModel;
+  settingsConnectionModel.value = initialModel;
+  renderSettingsConnectionEditor();
   settingsDefaultModel.value = taskModelSettingsValue(config.defaultModel || "gpt-image-2");
   renderAssistantModelSelectors();
-  updateSettingsAssistantKeyState();
   settingsCacheDir.value = config.cacheDir || "";
   if (settingsPhotoshopBridgeEnabled) {
     settingsPhotoshopBridgeEnabled.checked = Boolean(config.photoshopBridgeEnabled);
@@ -1869,13 +2023,22 @@ function openSettingsDialog() {
   const keyCount = Number(Boolean(config.hasApiKey)) + Number(Boolean(config.hasGrsaiApiKey)) + modelKeyCount;
   settingsStatus.textContent = keyCount ? `Key 已配置（${keyCount} 个）` : "Key 未配置";
   pauseChatGptHost();
-  settingsDialog.showModal();
+  if (!settingsDialog.open) settingsDialog.showModal();
+  window.setTimeout(() => settingsConnectionModel?.focus(), 0);
   refreshDreaminaStatus();
 }
 
 function closeSettingsDialog() {
   if (settingsDialog.open) settingsDialog.close();
   else resumeChatGptHost();
+}
+
+function openPhotoshopPluginDownload() {
+  if (typeof window.ccCanvasDesktop?.openExternal === "function") {
+    window.ccCanvasDesktop.openExternal(photoshopPluginReleaseUrl);
+    return;
+  }
+  window.open(photoshopPluginReleaseUrl, "_blank", "noreferrer");
 }
 
 async function refreshDreaminaStatus(options = {}) {
@@ -1912,19 +2075,53 @@ function renderDreaminaStatus(data = {}) {
   dreaminaAccountMeta.textContent = meta.join(" · ");
 
   config.dreaminaLoggedIn = loggedIn;
+  updateDreaminaModelOptions(data);
   setKeyStatus(Boolean(config.hasAnyKey ?? config.hasApiKey), loggedIn);
   updateDreaminaButtons();
+}
+
+function dreaminaModelOptionsForVersions(versions) {
+  return versions.map((version) => [`dreamina-${version}`, `即梦 ${version}`]);
+}
+
+function normalizeDreaminaModelVersions(values) {
+  return [...new Set((Array.isArray(values) ? values : []).map((value) => String(value || "").trim()).filter(Boolean))].sort(
+    (left, right) => right.localeCompare(left, undefined, { numeric: true, sensitivity: "base" })
+  );
+}
+
+function updateDreaminaModelOptions(data = {}) {
+  const nextTextModels = normalizeDreaminaModelVersions(data.textImageModels);
+  const nextEditModels = normalizeDreaminaModelVersions(data.imageEditModels);
+  const textModels = nextTextModels.length ? nextTextModels : dreaminaTextModelVersions;
+  const editModels = nextEditModels.length ? nextEditModels : dreaminaEditModelVersions;
+  const changed = textModels.join("|") !== dreaminaTextModelVersions.join("|") || editModels.join("|") !== dreaminaEditModelVersions.join("|");
+  if (!changed) return;
+
+  dreaminaTextModelVersions = textModels;
+  dreaminaEditModelVersions = editModels;
+  taskModelOptions.splice(
+    0,
+    taskModelOptions.length,
+    ...baseTaskModelOptions,
+    ...dreaminaModelOptionsForVersions(dreaminaTextModelVersions)
+  );
+  if (!isLoadingProject && canvasStage) renderCanvas();
 }
 
 function updateDreaminaButtons(isBusy = false, action = "") {
   if (dreaminaInstallButton) {
     dreaminaInstallButton.disabled = isBusy;
     dreaminaInstallButton.textContent =
-      isBusy && action === "install" ? "安装中..." : dreaminaStatus.installed ? "重新安装 CLI" : "安装即梦 CLI";
+      isBusy && action === "install" ? "更新中..." : dreaminaStatus.installed ? "更新即梦 CLI" : "安装即梦 CLI";
   }
   if (dreaminaLoginButton) {
     dreaminaLoginButton.disabled = isBusy || !dreaminaStatus.installed;
     dreaminaLoginButton.textContent = isBusy && action === "login" ? "打开中..." : "登录即梦";
+  }
+  if (dreaminaReloginButton) {
+    dreaminaReloginButton.disabled = isBusy || !dreaminaStatus.installed;
+    dreaminaReloginButton.textContent = isBusy && action === "relogin" ? "切换中..." : "切换账号";
   }
   if (dreaminaRefreshButton) dreaminaRefreshButton.disabled = isBusy;
 }
@@ -1934,10 +2131,10 @@ function setDreaminaBusy(isBusy, action = "") {
 }
 
 async function runDreaminaAction(action) {
-  const actionText = action === "install" ? "安装即梦 CLI" : "登录即梦";
+  const actionText = action === "install" ? "安装/更新即梦 CLI" : action === "relogin" ? "切换即梦账号" : "登录即梦";
   setDreaminaBusy(true, action);
   renderDreaminaActionStatus(action);
-  showToast(action === "install" ? "正在安装即梦 CLI..." : "正在打开即梦登录窗口...");
+  showToast(action === "install" ? "正在安装或更新即梦 CLI..." : action === "relogin" ? "正在打开切换账号窗口..." : "正在打开即梦登录窗口...");
   try {
     const response = await fetch(`/api/dreamina/${action}`, { method: "POST" });
     const data = await readJsonResponse(response);
@@ -1956,9 +2153,15 @@ async function runDreaminaAction(action) {
 function renderDreaminaActionStatus(action) {
   if (!dreaminaStatusText || !dreaminaAccountMeta) return;
   if (action === "install") {
-    dreaminaStatusText.textContent = "安装中";
-    dreaminaAccountMeta.textContent = "正在下载并安装官方 Dreamina CLI，请稍候...";
-    setDreaminaActionProgress("正在下载并安装官方 Dreamina CLI，请保持软件开启...", "active");
+    dreaminaStatusText.textContent = "更新中";
+    dreaminaAccountMeta.textContent = "正在下载并安装官方 Dreamina CLI 最新版本，请稍候...";
+    setDreaminaActionProgress("正在更新官方 Dreamina CLI 和模型信息，请保持软件开启...", "active");
+    return;
+  }
+  if (action === "relogin") {
+    dreaminaStatusText.textContent = "切换中";
+    dreaminaAccountMeta.textContent = "正在清除旧登录态并打开新的账号授权流程。";
+    setDreaminaActionProgress("正在打开切换账号窗口；授权完成后点击“测试连接”。", "active");
     return;
   }
   dreaminaStatusText.textContent = "登录中";
@@ -1969,16 +2172,20 @@ function renderDreaminaActionStatus(action) {
 function finishDreaminaAction(action, data = {}) {
   if (action === "install") {
     const pathText = data.executable || data.installDir || "";
-    setDreaminaActionProgress(pathText ? `安装完成：${pathText}` : "安装完成，可以点击“登录即梦”。", "done");
+    setDreaminaActionProgress(pathText ? `安装/更新完成：${pathText}` : "即梦 CLI 已更新。", "done");
     dreaminaStatusText.textContent = "已安装";
     dreaminaAccountMeta.textContent = "安装完成，正在刷新检测状态...";
+    return;
+  }
+  if (action === "relogin") {
+    setDreaminaActionProgress("切换账号窗口已打开，完成新账号授权后点击“测试连接”。", "done");
     return;
   }
   setDreaminaActionProgress("登录窗口已打开，完成登录后点击“测试连接”。", "done");
 }
 
 function failDreaminaAction(action, error) {
-  const actionText = action === "install" ? "安装失败" : "登录窗口打开失败";
+  const actionText = action === "install" ? "安装/更新失败" : action === "relogin" ? "切换账号窗口打开失败" : "登录窗口打开失败";
   setDreaminaActionProgress(`${actionText}：${error.message || error || "未知错误"}`, "error");
 }
 
@@ -2018,22 +2225,19 @@ async function saveSettings(event) {
   settingsStatus.textContent = "保存中";
 
   try {
-    const assistantKeyModel = settingsAssistantKeyModel();
+    captureSettingsConnectionDraft();
+    captureSettingsConnectionKeyDraft();
+    const modelApiKeys = Object.fromEntries(
+      Object.entries(settingsConnectionKeyDrafts).filter(([, value]) => Boolean(value))
+    );
     const payload = {
       apiKey: settingsApiKey.value.trim(),
-      grsaiApiKey: settingsGrsaiApiKey.value.trim(),
-      modelApiKeys: {
-        "gpt-image-2": settingsGptImageKey.value.trim(),
-        [grokImagineModel]: settingsGrokImageKey.value.trim(),
-        [geminiBananaImageModel]: settingsBanana2Key.value.trim(),
-        [assistantKeyModel]: settingsAssistantKey.value.trim()
-      },
-      baseUrl: settingsBaseUrl.value.trim(),
-      imageEndpoint: settingsImageEndpoint.value.trim(),
-      editEndpoint: settingsEditEndpoint.value.trim(),
-      chatEndpoint: settingsChatEndpoint.value.trim(),
+      clearApiKey: Boolean(settingsClearApiKey.checked),
+      modelApiKeys,
+      clearModelApiKeys: [...settingsConnectionClearKeys],
+      modelConnections: settingsConnectionDrafts,
       defaultModel: settingsDefaultModel.value.trim(),
-      assistantModel: assistantKeyModel,
+      assistantModel: settingsAssistantModel.value,
       cacheDir: settingsCacheDir.value.trim(),
       photoshopBridgeEnabled: Boolean(settingsPhotoshopBridgeEnabled?.checked)
     };
@@ -2058,6 +2262,9 @@ async function saveSettings(event) {
       defaultModel: data.defaultModel,
       assistantModel: data.assistantModel,
       modelKeys: data.modelKeys,
+      connectionModels: data.connectionModels,
+      connectionPresets: data.connectionPresets,
+      modelConnections: data.modelConnections,
       cacheDir: data.cacheDir,
       photoshopBridgeEnabled: Boolean(data.photoshopBridgeEnabled)
     };
@@ -2066,11 +2273,9 @@ async function saveSettings(event) {
     applyPhotoshopBridgeAvailability();
     await refreshProjectList();
     settingsApiKey.value = "";
-    settingsGptImageKey.value = "";
-    settingsGrokImageKey.value = "";
-    settingsBanana2Key.value = "";
-    settingsAssistantKey.value = "";
-    settingsGrsaiApiKey.value = "";
+    settingsConnectionApiKey.value = "";
+    settingsConnectionKeyDrafts = {};
+    settingsConnectionClearKeys = new Set();
     settingsStatus.textContent = "已保存";
     showToast("设置已保存");
   } catch (error) {
@@ -5022,7 +5227,7 @@ function summarizeNodeForAssistant(node, textLimit = 1200) {
       ...common,
       summary: portraitSummaryForNode(node, 16),
       language: node.language === "en" ? "en" : "zh",
-      stylePack: node.stylePack || "realistic",
+      stylePack: node.stylePack || "any",
       prompt: trimAssistantText(portraitPromptForNode(node), textLimit)
     };
   }
@@ -7727,6 +7932,7 @@ function createDebugPanel(node) {
   advancedSummary.textContent = "高级参数已收起";
   const advancedGrid = document.createElement("div");
   advancedGrid.className = "node-config-grid";
+  if (!isDreaminaModelName(node.model)) advancedGrid.append(createConnectionOverrideField(node));
 
   if (isDreaminaModelName(node.model)) {
     settings.append(modelField, createSelectField("尺寸", node, "size", sizeOptionsForModel(node.model, node.mode)));
@@ -7736,10 +7942,8 @@ function createDebugPanel(node) {
       createSelectField("比例", node, "size", geminiNativeRatioOptions),
       createSelectField("尺寸", node, "quality", geminiNativeImageSizeOptions)
     );
-    advancedGrid.append(
-      createSelectField("格式", node, "format", formatOptions),
-      createTextField("接口路径", node, "endpointPath")
-    );
+    advancedGrid.append(createSelectField("格式", node, "format", formatOptions));
+    if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
   } else {
     settings.append(
       modelField,
@@ -7747,10 +7951,8 @@ function createDebugPanel(node) {
       createNumberField("数量", node, "n", { min: 1, max: 10 }),
       createSelectField("质量", node, "quality", qualityOptions)
     );
-    advancedGrid.append(
-      createSelectField("格式", node, "format", formatOptions),
-      createTextField("接口路径", node, "endpointPath")
-    );
+    advancedGrid.append(createSelectField("格式", node, "format", formatOptions));
+    if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
   }
 
   if (node.mode === "edit" && !isDreaminaModelName(node.model) && !isGeminiNativeImageModelName(node.model)) {
@@ -7760,7 +7962,7 @@ function createDebugPanel(node) {
     );
   }
 
-  if (!isDreaminaModelName(node.model)) {
+  if (!isDreaminaModelName(node.model) && node.connectionOverride) {
     advancedGrid.append(createTextField("Base URL", node, "baseUrl", "node-field-full"));
   }
 
@@ -7899,34 +8101,19 @@ function createEditAssetFields(node) {
     if (files.length) cacheEditFiles(node.id);
   });
 
-  const maskInput = document.createElement("input");
-  maskInput.type = "file";
-  maskInput.accept = "image/png";
-  maskInput.addEventListener("pointerdown", (event) => event.stopPropagation());
-  maskInput.addEventListener("change", () => {
-    const stored = fileStore.get(node.id) || {};
-    const mask = maskInput.files?.[0] || null;
-    fileStore.set(node.id, { ...stored, mask });
-    node.sessionMask = mask?.name || "";
-    node.cachedMask = null;
-    if (stored.images?.length) node.cacheStatus = "caching";
-    updateNode(node);
-    saveCanvasState();
-    if (stored.images?.length) cacheEditFiles(node.id);
-  });
-
-  const head = document.createElement("div");
-  head.className = "edit-assets-head";
-  const title = document.createElement("strong");
-  title.textContent = "参考输入";
-  const hint = document.createElement("span");
-  hint.textContent = "支持参考图与蒙版";
-  head.append(title, hint);
-
   const thumbnails = createReferenceThumbnails(node);
 
   const referenceActions = document.createElement("div");
   referenceActions.className = "reference-actions";
+
+  imageInput.className = "reference-file-input";
+  imageInput.tabIndex = -1;
+
+  const uploadLocal = document.createElement("button");
+  uploadLocal.type = "button";
+  uploadLocal.className = "reference-upload-button";
+  uploadLocal.append(createNodeIcon("image"), document.createTextNode("本地上传"));
+  uploadLocal.addEventListener("click", () => imageInput.click());
 
   const useSelected = document.createElement("button");
   useSelected.type = "button";
@@ -7942,70 +8129,15 @@ function createEditAssetFields(node) {
     updateNode(node);
   });
 
-  referenceActions.append(useSelected, pickFromCanvas);
-
-  const cards = document.createElement("div");
-  cards.className = "reference-card-grid";
-  cards.append(
-    createReferenceInputCard({
-      title: "参考图",
-      hint: imageReferenceStateText(node),
-      icon: "image",
-      input: imageInput,
-      actionText: "选择"
-    })
-  );
-  if (!isDreaminaModelName(node.model)) {
-    cards.append(
-      createReferenceInputCard({
-        title: "蒙版",
-        hint: node.cachedMask || node.sessionMask ? "已选" : "可选",
-        icon: "mask",
-        input: maskInput,
-        actionText: "选择"
-      })
-    );
-  }
+  referenceActions.append(uploadLocal, useSelected, pickFromCanvas, imageInput);
 
   const summary = document.createElement("p");
   summary.className = "asset-summary";
   summary.textContent = assetSummaryText(node);
 
-  panel.append(head, cards, referenceActions, thumbnails, summary);
+  panel.append(referenceActions, thumbnails, summary);
 
   return panel;
-}
-
-function createReferenceInputCard({ title, hint, icon, input, actionText }) {
-  const card = document.createElement("label");
-  card.className = "reference-input-card";
-  card.addEventListener("pointerdown", (event) => event.stopPropagation());
-
-  input.classList.add("reference-file-input");
-  input.tabIndex = -1;
-
-  const iconEl = createNodeIcon(icon, "reference-input-icon");
-  const copy = document.createElement("span");
-  copy.className = "reference-input-copy";
-  const name = document.createElement("strong");
-  name.textContent = title;
-  const meta = document.createElement("span");
-  meta.textContent = hint;
-  copy.append(name, meta);
-
-  const action = document.createElement("span");
-  action.className = "reference-input-action";
-  action.textContent = actionText;
-
-  card.append(iconEl, copy, action, input);
-  return card;
-}
-
-function imageReferenceStateText(node) {
-  const cached = node.cachedImages?.length || 0;
-  const pending = pendingReferenceImageCount(node);
-  if (cached || pending) return `${cached + pending} 张`;
-  return isDreaminaModelName(node.model) ? "最多 10 张" : "选择 / 已选";
 }
 
 function pendingReferenceImageCount(node) {
@@ -8982,9 +9114,15 @@ function portraitRandomGenerator(seed) {
 }
 
 function portraitOptionsForGroup(group, stylePack) {
-  const ids = portraitStylePools[stylePack]?.[group.id];
-  if (!Array.isArray(ids) || !ids.length) return group.options;
-  const filtered = group.options.filter((option) => ids.includes(option.id));
+  const styleDefinition = portraitStylePackDefinitions.find(({ id }) => id === stylePack);
+  const hints = Array.isArray(styleDefinition?.hints)
+    ? styleDefinition.hints.map((hint) => String(hint).toLowerCase())
+    : [];
+  if (!hints.length) return group.options;
+  const filtered = group.options.filter((option) => {
+    const searchable = `${option.zh} ${option.en} ${option.promptEn}`.toLowerCase();
+    return hints.some((hint) => searchable.includes(hint));
+  });
   return filtered.length ? filtered : group.options;
 }
 
@@ -8997,6 +9135,10 @@ function randomizePortraitNode(node, options = {}) {
   const next = { ...node.selection };
   for (const group of portraitTraitGroups) {
     if (node.locks[group.id]) continue;
+    if (random() < 0.07) {
+      delete next[group.id];
+      continue;
+    }
     const pool = portraitOptionsForGroup(group, node.stylePack);
     const option = pool[Math.floor(random() * pool.length)] || pool[0];
     if (option) next[group.id] = option.id;
@@ -9007,7 +9149,7 @@ function randomizePortraitNode(node, options = {}) {
 
 function normalizePortraitNodeState(node) {
   node.language = node.language === "en" ? "en" : "zh";
-  node.stylePack = portraitStylePacks.some(([id]) => id === node.stylePack) ? node.stylePack : "realistic";
+  node.stylePack = portraitStylePacks.some(([id]) => id === node.stylePack) ? node.stylePack : "any";
   node.seed = String(node.seed || "");
   node.selection = normalizePortraitSelection(node.selection);
   node.locks = normalizePortraitLocks(node.locks);
@@ -9033,13 +9175,77 @@ function portraitSummaryForNode(node, limit = 8) {
 
 function portraitPromptForNode(node) {
   const language = node.language === "en" ? "en" : "zh";
-  const parts = portraitSelectedOptions(node).map(({ option }) => language === "en" ? option.en : option.zh);
+  const parts = portraitSelectedOptions(node).map(({ option }) => language === "en" ? option.promptEn : option.zh);
   const custom = String(node.customText || "").trim();
   if (custom) parts.push(custom);
   if (language === "en") {
     return ["high-quality character portrait", ...parts, "natural skin texture", "clearly defined facial features", "layered lighting", "high detail"].join(", ");
   }
   return ["高质量人物肖像", ...parts, "自然皮肤纹理", "五官清晰", "光影层次丰富", "高细节"].join("，");
+}
+
+function portraitPreviewTraits(groupId, option) {
+  const text = `${option.zh} ${option.en}`.toLowerCase();
+  if (groupId === "age") {
+    if (/\b(girl|woman|female)\b/.test(text) || /少女|女性|姐姐|美人/.test(text)) return { gender: "woman" };
+    if (/\b(boy|man|male)\b/.test(text) || /少年|男性/.test(text)) return { gender: "man" };
+  }
+  if (groupId === "skinTone") {
+    if (/深色|deep skin/.test(text)) return { skin: "#593526" };
+    if (/古铜|bronze/.test(text)) return { skin: "#855139" };
+    if (/小麦|晒痕|蜜糖|wheat|sun-kissed|honey/.test(text)) return { skin: "#ae704f" };
+    if (/瓷白|冷白|月光苍白|porcelain|cool fair|moonlit pale/.test(text)) return { skin: "#f1c9b7" };
+    if (/白皙|象牙|fair|ivory/.test(text)) return { skin: "#ddb093" };
+  }
+  if (groupId === "faceShape") {
+    if (/圆脸|round face/.test(text)) return { face: "round" };
+    if (/瓜子|heart-shaped/.test(text)) return { face: "heart" };
+    if (/骨相|英气|sharp|defined bone|androgynous/.test(text)) return { face: "angular" };
+  }
+  if (groupId === "eyes") {
+    const preview = {};
+    if (/圆润大眼|large round/.test(text)) preview.eyeShape = "round";
+    else if (/猫眼|狐狸眼|cat eyes|fox eyes/.test(text)) preview.eyeShape = "cat";
+    else if (/丹凤|细长|phoenix|slender/.test(text)) preview.eyeShape = "slender";
+    else if (/下垂|droopy/.test(text)) preview.eyeShape = "droopy";
+    if (/冰蓝|icy blue/.test(text)) preview.eyes = "#5797bd";
+    else if (/翡翠绿|emerald/.test(text)) preview.eyes = "#4f8266";
+    else if (/紫罗兰|violet/.test(text)) preview.eyes = "#76558d";
+    else if (/金色|golden/.test(text)) preview.eyes = "#ad7a28";
+    else if (/红宝石|ruby/.test(text)) preview.eyes = "#8f3039";
+    return preview;
+  }
+  if (groupId === "hairStyle") {
+    if (/马尾|ponytail|twin tails/.test(text)) return { hairStyle: "ponytail" };
+    if (/编发|辫|braid/.test(text)) return { hairStyle: "braid" };
+    if (/鲍勃|bob/.test(text)) return { hairStyle: "bob" };
+    if (/短发|short hair|pixie|wolf cut/.test(text)) return { hairStyle: "short" };
+    if (/波浪|卷发|wavy|curls/.test(text)) return { hairStyle: "waves" };
+    if (/盘发|丸子|updo|bun/.test(text)) return { hairStyle: "slick" };
+  }
+  if (groupId === "hairColor") {
+    if (/银白|白金|silver|platinum/.test(text)) return { hair: "#c9cbd0" };
+    if (/金发|blonde/.test(text)) return { hair: "#d3b36f" };
+    if (/粉发|玫瑰金|pink hair|rose gold/.test(text)) return { hair: "#d7819b" };
+    if (/红发|火焰橙|red hair|orange hair/.test(text)) return { hair: "#873f2b" };
+    if (/蓝发|夜空蓝|blue hair/.test(text)) return { hair: "#273f74" };
+    if (/紫发|purple hair/.test(text)) return { hair: "#624a7a" };
+    if (/棕发|栗色|brown hair|chestnut/.test(text)) return { hair: "#70412d" };
+    if (/黑发|black hair/.test(text)) return { hair: "#17181b" };
+  }
+  if (groupId === "expression") {
+    if (/微笑|浅笑|自信微笑|soft smile|faint smile|confident smile/.test(text)) return { expression: "smile" };
+    if (/忧郁|含泪|疲惫|melancholic|tearful|tired/.test(text)) return { expression: "sad" };
+    if (/俏皮|挑衅|wink|smirk/.test(text)) return { expression: "smirk" };
+    if (/认真|坚定|愤怒|serious|determined|anger/.test(text)) return { expression: "firm" };
+  }
+  if (groupId === "outfit" || groupId === "top") {
+    if (/白|white/.test(text)) return { outfit: "#e9ecef" };
+    if (/黑|black|gothic/.test(text)) return { outfit: "#22252a" };
+    if (/赛博|机能|cyber|techwear/.test(text)) return { outfit: "#182d35" };
+    if (/宫廷|晚礼服|royal|evening gown/.test(text)) return { outfit: "#5b315e" };
+  }
+  return {};
 }
 
 function portraitPreviewForNode(node) {
@@ -9054,7 +9260,9 @@ function portraitPreviewForNode(node) {
     hairStyle: "long",
     expression: "neutral"
   };
-  for (const { option } of portraitSelectedOptions(node)) Object.assign(preview, option.preview || {});
+  for (const { group, option } of portraitSelectedOptions(node)) {
+    Object.assign(preview, option.preview || {}, portraitPreviewTraits(group.id, option));
+  }
   return preview;
 }
 
@@ -9092,7 +9300,7 @@ function createPortraitAvatar(node, compact = false) {
   ].join("");
   const tags = document.createElement("div");
   tags.className = "portrait-avatar-tags";
-  ["skin", "hairColor", "eyes", "expression"]
+  ["skinTone", "hairColor", "eyes", "expression"]
     .map((groupId) => portraitOptionFor(groupId, node.selection[groupId]))
     .filter(Boolean)
     .forEach((option) => {
@@ -9202,7 +9410,7 @@ function openPortraitEditor(nodeId) {
   const heading = document.createElement("div");
   heading.append(createNodeIcon("portrait"));
   const headingText = document.createElement("span");
-  headingText.innerHTML = "<strong>随机肖像编辑器</strong><small>锁定的项目不会参与下次随机</small>";
+  headingText.innerHTML = `<strong>随机肖像编辑器</strong><small>${portraitTraitCategories.length} 大类 · ${portraitTraitGroups.length} 组词库，锁定项不参与随机</small>`;
   heading.append(headingText);
   const close = document.createElement("button");
   close.type = "button";
@@ -9254,35 +9462,45 @@ function openPortraitEditor(nodeId) {
   const traitGrid = document.createElement("div");
   traitGrid.className = "portrait-trait-grid";
   const fieldRefs = new Map();
-  portraitTraitGroups.forEach((group) => {
-    const field = document.createElement("div");
-    field.className = "portrait-trait-field";
-    const fieldHeader = document.createElement("span");
-    const label = document.createElement("strong");
-    label.textContent = group.label;
-    const lockLabel = document.createElement("label");
-    lockLabel.className = "portrait-lock-toggle";
-    const lock = document.createElement("input");
-    lock.type = "checkbox";
-    lock.checked = Boolean(node.locks[group.id]);
-    lockLabel.title = "锁定随机";
-    lockLabel.append(lock, document.createTextNode("锁"));
-    fieldHeader.append(label, lockLabel);
-    const select = document.createElement("select");
-    const empty = document.createElement("option");
-    empty.value = "";
-    empty.textContent = "不选";
-    select.append(empty);
-    group.options.forEach((item) => {
-      const option = document.createElement("option");
-      option.value = item.id;
-      option.textContent = `${item.zh} / ${item.en}`;
-      select.append(option);
+  portraitTraitCategories.forEach((category) => {
+    const categoryHeader = document.createElement("div");
+    categoryHeader.className = "portrait-trait-category";
+    const categoryTitle = document.createElement("strong");
+    categoryTitle.textContent = `${category.label} / ${category.labelEn}`;
+    const categoryDescription = document.createElement("span");
+    categoryDescription.textContent = category.description;
+    categoryHeader.append(categoryTitle, categoryDescription);
+    traitGrid.append(categoryHeader);
+    category.groups.forEach((group) => {
+      const field = document.createElement("div");
+      field.className = "portrait-trait-field";
+      const fieldHeader = document.createElement("span");
+      const label = document.createElement("strong");
+      label.textContent = group.label;
+      const lockLabel = document.createElement("label");
+      lockLabel.className = "portrait-lock-toggle";
+      const lock = document.createElement("input");
+      lock.type = "checkbox";
+      lock.checked = Boolean(node.locks[group.id]);
+      lockLabel.title = "锁定随机";
+      lockLabel.append(lock, document.createTextNode("锁"));
+      fieldHeader.append(label, lockLabel);
+      const select = document.createElement("select");
+      const empty = document.createElement("option");
+      empty.value = "";
+      empty.textContent = "不选";
+      select.append(empty);
+      group.options.forEach((item) => {
+        const option = document.createElement("option");
+        option.value = item.id;
+        option.textContent = `${item.zh} / ${item.en}`;
+        select.append(option);
+      });
+      select.value = node.selection[group.id] || "";
+      field.append(fieldHeader, select);
+      traitGrid.append(field);
+      fieldRefs.set(group.id, { select, lock });
     });
-    select.value = node.selection[group.id] || "";
-    field.append(fieldHeader, select);
-    traitGrid.append(field);
-    fieldRefs.set(group.id, { select, lock });
   });
   main.append(previewColumn, traitGrid);
 
@@ -10260,9 +10478,37 @@ function createField(label, control, className = "") {
   return field;
 }
 
+function createConnectionOverrideField(node) {
+  const label = document.createElement("label");
+  label.className = "node-connection-override node-field-full";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = Boolean(node.connectionOverride);
+  input.addEventListener("pointerdown", (event) => event.stopPropagation());
+  input.addEventListener("change", () => {
+    node.connectionOverride = input.checked;
+    saveCanvasState();
+    updateNode(node);
+  });
+  const copy = document.createElement("span");
+  copy.textContent = "此节点单独覆盖模型 API 地址";
+  label.append(input, copy);
+  return label;
+}
+
 function createTaskModelField(node) {
   node.model = normalizeImageModelName(node.model);
-  return createSelectField("模型", node, "model", taskModelOptions, {
+  const options = taskModelOptions.filter(
+    ([value]) => node.mode !== "edit" || !isDreaminaModelName(value) || dreaminaEditModelVersions.includes(dreaminaModelVersion(value))
+  );
+  for (const definition of config.connectionModels || []) {
+    if (definition.capability !== "image") continue;
+    if (!options.some(([value]) => value === definition.model)) {
+      options.push([definition.model, definition.label || definition.model]);
+    }
+  }
+  if (!options.some(([value]) => value === node.model)) options.push([node.model, taskModelLabel(node.model)]);
+  return createSelectField("模型", node, "model", options, {
     onChange: () => {
       applyTaskModelDefaults(node, { modelChanged: true });
       updateNode(node);
@@ -11074,6 +11320,7 @@ function migrateTaskNode(node) {
     format: node.format || "png",
     baseUrl: node.baseUrl || config.baseUrl || "https://yunwu.ai",
     endpointPath: node.endpointPath || defaultEndpointForMode(mode),
+    connectionOverride: Boolean(node.connectionOverride),
     mode,
     background: node.background || "",
     moderation: node.moderation || "",
@@ -11233,29 +11480,126 @@ function materializeTaskVideoNodes() {
   if (additions.length) canvasState.nodes.push(...additions);
 }
 
-function readLocalCanvasState() {
+function readLocalCanvasState(projectId = currentProjectId) {
+  const normalizedProjectId = normalizeProjectId(projectId);
   try {
     const raw =
-      localStorage.getItem(projectStorageKey(currentProjectId)) ||
-      (currentProjectId === "default" ? localStorage.getItem(storageKey) || localStorage.getItem(legacyStorageKey) : "") ||
+      localStorage.getItem(projectStorageKey(normalizedProjectId)) ||
+      (normalizedProjectId === "default" ? localStorage.getItem(storageKey) || localStorage.getItem(legacyStorageKey) : "") ||
       "{}";
     return JSON.parse(raw);
   } catch {
-    localStorage.removeItem(projectStorageKey(currentProjectId));
+    localStorage.removeItem(projectStorageKey(normalizedProjectId));
     return null;
   }
 }
 
 async function refreshProjectList() {
+  let serverRecoveryIds = [];
+  let unrecoverableIds = [];
   try {
     const response = await fetch("/api/projects");
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "画布列表读取失败");
     projectList = Array.isArray(data.projects) ? data.projects : [];
+    serverRecoveryIds = Array.isArray(data.recoveredProjects) ? data.recoveredProjects : [];
+    unrecoverableIds = Array.isArray(data.unrecoverableProjects) ? data.unrecoverableProjects : [];
   } catch {
     projectList = [];
   }
+
+  const localSnapshots = readLocalProjectSnapshots();
+  const diskProjects = new Map(projectList.map((project) => [project.id, project]));
+  const localRecoveryIds = [];
+  const recoveryWrites = [];
+
+  for (const snapshot of localSnapshots) {
+    const disk = diskProjects.get(snapshot.id);
+    const localIsNewer = projectStateTimestamp(snapshot.state) > projectStateTimestamp(disk);
+    if (!disk || localIsNewer) {
+      const summary = {
+        id: snapshot.id,
+        name: snapshot.state.name || disk?.name || snapshot.id,
+        savedAt: snapshot.state.savedAt || disk?.savedAt || "",
+        nodeCount: snapshot.state.nodes.length,
+        recovered: true
+      };
+      if (disk) Object.assign(disk, summary);
+      else {
+        projectList.push(summary);
+        diskProjects.set(snapshot.id, summary);
+      }
+      localRecoveryIds.push(snapshot.id);
+      recoveryWrites.push(persistDiskProject(snapshot.state, snapshot.id, { updateList: false }));
+    }
+  }
+
+  projectList.sort((left, right) => projectStateTimestamp(right) - projectStateTimestamp(left));
   renderProjectSelect();
+
+  if (recoveryWrites.length) await Promise.allSettled(recoveryWrites);
+  const recoveredCount = new Set([...serverRecoveryIds, ...localRecoveryIds]).size;
+  if (!recoveryNoticeShown && recoveredCount) {
+    recoveryNoticeShown = true;
+    showToast(`已自动恢复 ${recoveredCount} 个画布`);
+  } else if (!recoveryNoticeShown && unrecoverableIds.length) {
+    recoveryNoticeShown = true;
+    showToast(`发现 ${unrecoverableIds.length} 个损坏画布目录，请保留缓存以便进一步恢复`);
+  }
+}
+
+function readLocalProjectSnapshots() {
+  const snapshots = new Map();
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index) || "";
+      if (!key.startsWith(`${storageKeyPrefix}:`)) continue;
+      const id = normalizeProjectId(key.slice(storageKeyPrefix.length + 1));
+      const state = parseLocalProjectSnapshot(localStorage.getItem(key), id);
+      if (state) snapshots.set(id, { id, state });
+    }
+
+    if (!snapshots.has("default")) {
+      const legacy = parseLocalProjectSnapshot(localStorage.getItem(storageKey) || localStorage.getItem(legacyStorageKey), "default");
+      if (legacy) snapshots.set("default", { id: "default", state: legacy });
+    }
+  } catch {
+    return [];
+  }
+  return [...snapshots.values()].slice(0, 100);
+}
+
+function parseLocalProjectSnapshot(raw, projectId) {
+  if (!raw) return null;
+  try {
+    const state = JSON.parse(raw);
+    if (!state || typeof state !== "object" || !Array.isArray(state.nodes)) return null;
+    return {
+      ...state,
+      version: 2,
+      id: normalizeProjectId(projectId),
+      name: String(state.name || "未命名画布"),
+      savedAt: state.savedAt || "",
+      viewport: state.viewport && typeof state.viewport === "object" ? state.viewport : { x: 120, y: 90, zoom: 1 },
+      nextZ: Number(state.nextZ) || 1
+    };
+  } catch {
+    return null;
+  }
+}
+
+function projectStateTimestamp(project) {
+  const value = Date.parse(project?.savedAt || "");
+  return Number.isFinite(value) ? value : 0;
+}
+
+function chooseLatestProjectState(diskState, localState) {
+  if (!diskState) return { state: localState, source: localState ? "local" : "empty" };
+  if (!localState) return { state: diskState, source: "disk" };
+  if (projectStateTimestamp(localState) > projectStateTimestamp(diskState)) {
+    return { state: localState, source: "local" };
+  }
+  return { state: diskState, source: "disk" };
 }
 
 function renderProjectSelect() {
@@ -11276,8 +11620,9 @@ async function loadProjectById(projectId, options = {}) {
   fileStore.clear();
 
   const diskState = await loadDiskProjectState(currentProjectId);
-  const localState = readLocalCanvasState();
-  const state = diskState || localState || createEmptyProject(currentProjectId);
+  const localState = readLocalCanvasState(currentProjectId);
+  const selectedState = chooseLatestProjectState(diskState, localState);
+  const state = selectedState.state || createEmptyProject(currentProjectId);
   currentProjectName = state.name || projectList.find((project) => project.id === currentProjectId)?.name || "未命名画布";
   projectNameInput.value = currentProjectName;
   applySavedState({ ...state, id: currentProjectId, name: currentProjectName });
@@ -11288,10 +11633,10 @@ async function loadProjectById(projectId, options = {}) {
   primeUndoHistory();
   renderProjectSelect();
 
-  if (options.initial && diskState) {
-    localStorage.setItem(projectStorageKey(currentProjectId), JSON.stringify(serializeCanvasState()));
-  } else if (options.initial && localState && (Array.isArray(localState.nodes) || localState.viewport)) {
-    saveCanvasState({ history: false });
+  const serialized = serializeCanvasState();
+  writeLocalProjectSnapshot(serialized, currentProjectId);
+  if (selectedState.source === "local") {
+    await persistDiskProject(serialized, currentProjectId);
   }
 }
 
@@ -11493,9 +11838,30 @@ function saveCanvasState(options = {}) {
 
   const project = serializeCanvasState();
 
-  localStorage.setItem(projectStorageKey(currentProjectId), JSON.stringify(project));
-  localStorage.setItem(currentProjectStorageKey, currentProjectId);
+  writeLocalProjectSnapshot(project, currentProjectId);
   scheduleDiskSave(project, currentProjectId);
+}
+
+function writeLocalProjectSnapshot(project, projectId = currentProjectId) {
+  try {
+    const id = normalizeProjectId(projectId);
+    localStorage.setItem(projectStorageKey(id), JSON.stringify({ ...project, id }));
+    localStorage.setItem(currentProjectStorageKey, id);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function flushCurrentProjectCheckpoint(options = {}) {
+  if (isLoadingProject || !currentProjectId) return;
+  window.clearTimeout(saveTimer);
+  const project = serializeCanvasState();
+  writeLocalProjectSnapshot(project, currentProjectId);
+  void persistDiskProject(project, currentProjectId, {
+    updateList: false,
+    keepalive: options.keepalive === true
+  });
 }
 
 function serializeCanvasState() {
@@ -11522,23 +11888,26 @@ function scheduleDiskSave(project, projectId = currentProjectId) {
   window.clearTimeout(saveTimer);
   saveTimer = window.setTimeout(() => {
     persistDiskProject(project, projectId);
-  }, 350);
+  }, 180);
 }
 
-async function persistDiskProject(project, projectId = currentProjectId) {
+async function persistDiskProject(project, projectId = currentProjectId, options = {}) {
   try {
     const response = await fetch(`/api/project?projectId=${encodeURIComponent(projectId)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(project)
+      body: JSON.stringify(project),
+      keepalive: options.keepalive === true
     });
     const data = await response.json().catch(() => ({}));
-    if (response.ok && data.project) {
+    if (response.ok && data.project && options.updateList !== false) {
       upsertProjectSummary(data.project);
       renderProjectSelect();
     }
+    return response.ok;
   } catch {
     // Browser localStorage remains as a fallback if the server is temporarily unavailable.
+    return false;
   }
 }
 

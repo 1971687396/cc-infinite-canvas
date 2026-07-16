@@ -33,6 +33,7 @@ app.on("before-quit", () => {
   if (localServer?.listening) localServer.close();
   if (photoshopBridgeServer?.listening) photoshopBridgeServer.close();
   photoshopBridgeEvents?.removeAllListeners?.("reference-selection-requested");
+  photoshopBridgeEvents?.removeAllListeners?.("assistant-settings-requested");
 });
 app.on("quit", (_event, code) => log(`quit code ${code}`));
 app.on("web-contents-created", (_event, contents) => attachProxyAuth(contents));
@@ -79,6 +80,7 @@ async function ensureServer() {
   photoshopBridgeServer = serverModule.photoshopBridgeServer;
   photoshopBridgeEvents = serverModule.photoshopBridgeEvents;
   photoshopBridgeEvents?.on?.("reference-selection-requested", focusMainWindow);
+  photoshopBridgeEvents?.on?.("assistant-settings-requested", openAssistantSettings);
   if (!localServer) throw new Error("The embedded server module did not export a server instance.");
   if (!localServer.listening) await once(localServer, "listening");
 
@@ -101,6 +103,14 @@ function focusMainWindow() {
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
+}
+
+function openAssistantSettings(payload = {}) {
+  focusMainWindow();
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+  mainWindow.webContents.send("canvas:open-settings", {
+    model: String(payload.model || "").slice(0, 180)
+  });
 }
 
 function isServerReady() {

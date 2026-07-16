@@ -40,11 +40,26 @@
           </div>
 
           <div class="canvas-toolbar" aria-label="画布工具">
-            <button id="newProjectButton" type="button" class="secondary compact">新建画布</button>
-            <button id="saveProjectButton" type="button" class="secondary compact">保存画布</button>
-            <button id="generateAllButton" type="button" class="secondary compact">生成全部</button>
-            <button id="checkUpdateButton" type="button" class="secondary compact">检查更新</button>
-            <button id="settingsButton" type="button" class="secondary compact">设置</button>
+            <button id="newProjectButton" type="button" class="secondary compact topbar-action">
+              <span class="topbar-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 5h10l4 4v10H5z"/><path d="M15 5v4h4M12 11v5M9.5 13.5h5"/></svg></span>
+              <span>新建</span>
+            </button>
+            <button id="saveProjectButton" type="button" class="secondary compact topbar-action">
+              <span class="topbar-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4.5h12l2 2V19.5H5z"/><path d="M8 4.5v5h8v-5M8 19.5v-6h8v6"/></svg></span>
+              <span>保存</span>
+            </button>
+            <button id="generateAllButton" type="button" class="secondary compact topbar-action">
+              <span class="topbar-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 1.35 4.15L17.5 8.5l-4.15 1.35L12 14l-1.35-4.15L6.5 8.5l4.15-1.35L12 3Z"/><path d="m18.5 14 .75 2.25 2.25.75-2.25.75L18.5 20l-.75-2.25L15.5 17l2.25-.75.75-2.25Z"/></svg></span>
+              <span>生成全部</span>
+            </button>
+            <button id="checkUpdateButton" type="button" class="secondary compact topbar-action">
+              <span class="topbar-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M19 8a7.5 7.5 0 1 0 .1 7.8"/><path d="M19 4v4h-4"/></svg></span>
+              <span>更新</span>
+            </button>
+            <button id="settingsButton" type="button" class="secondary compact topbar-action" title="设置" aria-label="设置">
+              <span class="topbar-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.5 1A8 8 0 0 0 14.3 5L14 2h-4l-.3 3a8 8 0 0 0-2.1 1.8l-2.5-1-2 3.4 2 1.6A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.6 2 3.4 2.5-1A8 8 0 0 0 9.7 19l.3 3h4l.3-3a8 8 0 0 0 2.1-1.8l2.5 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2Z"/></svg></span>
+              <span class="topbar-settings-label">设置</span>
+            </button>
           </div>
         </div>
 
@@ -240,49 +255,107 @@
         </div>
 
         <label class="settings-field settings-field-full">
-          <span>平台总 Key</span>
-          <input id="settingsApiKey" type="password" autocomplete="off" placeholder="粘贴新的 API Key，留空则不修改" />
+          <span>全局备用 Key</span>
+          <input id="settingsApiKey" type="password" autocomplete="off" placeholder="模型未配置专用 Key 时使用，留空则不修改" />
+        </label>
+        <label class="connection-clear-key settings-field-full">
+          <input id="settingsClearApiKey" type="checkbox" />
+          <span>清除已保存的全局备用 Key</span>
         </label>
 
-        <label class="settings-field">
-          <span>gpt-image-2 专用 Key</span>
-          <input id="settingsGptImageKey" type="password" autocomplete="off" placeholder="留空则使用平台总 Key" />
-        </label>
+        <section class="api-connection-settings settings-field-full" aria-label="模型 API 连接">
+          <div class="api-connection-head">
+            <div>
+              <strong>模型 API 连接</strong>
+              <small>每个模型可使用不同平台、Key 与接口</small>
+            </div>
+            <span id="settingsConnectionKeyStatus" class="connection-key-status">使用备用 Key</span>
+          </div>
 
-        <label class="settings-field">
-          <span>grok-imagine-image / grok-3-image 专用 Key</span>
-          <input id="settingsGrokImageKey" type="password" autocomplete="off" placeholder="留空则使用平台总 Key" />
-        </label>
+          <div class="api-connection-grid">
+            <label class="settings-field settings-field-full">
+              <span>配置模型</span>
+              <select id="settingsConnectionModel"></select>
+            </label>
 
-        <label class="settings-field">
-          <span>banana2 专用 Key</span>
-          <input id="settingsBanana2Key" type="password" autocomplete="off" placeholder="留空则使用平台总 Key" />
-        </label>
+            <div id="settingsCustomModelRow" class="settings-custom-model-row settings-field-full" hidden>
+              <input id="settingsCustomConnectionModel" type="text" autocomplete="off" placeholder="输入自定义模型名称，例如 vendor-image-v1" />
+              <button id="settingsAddCustomModel" type="button" class="secondary compact">添加模型</button>
+            </div>
 
-        <label class="settings-field">
-          <span>Grsai API Key</span>
-          <input id="settingsGrsaiApiKey" type="password" autocomplete="off" placeholder="留空则不修改" />
-        </label>
+            <label class="settings-field">
+              <span>平台预设</span>
+              <select id="settingsConnectionPreset"></select>
+            </label>
 
-        <label class="settings-field settings-field-full">
-          <span>Base URL</span>
-          <input id="settingsBaseUrl" type="text" autocomplete="off" />
-        </label>
+            <label class="settings-field">
+              <span>接口协议</span>
+              <select id="settingsConnectionProtocol">
+                <option value="openai-images">OpenAI Images</option>
+                <option value="openai-chat">OpenAI Chat Completions</option>
+                <option value="gemini-native">Gemini generateContent</option>
+                <option value="anthropic-messages">Anthropic Messages</option>
+                <option value="grsai">Grsai 异步生图</option>
+              </select>
+            </label>
 
-        <label class="settings-field">
-          <span>生图接口</span>
-          <input id="settingsImageEndpoint" type="text" autocomplete="off" />
-        </label>
+            <label class="settings-field">
+              <span>模型专用 Key</span>
+              <input id="settingsConnectionApiKey" type="password" autocomplete="off" placeholder="留空则使用全局备用 Key" />
+            </label>
 
-        <label class="settings-field">
-          <span>编辑接口</span>
-          <input id="settingsEditEndpoint" type="text" autocomplete="off" />
-        </label>
+            <label class="settings-field">
+              <span>鉴权方式</span>
+              <select id="settingsConnectionAuthType">
+                <option value="bearer">Bearer Token</option>
+                <option value="x-api-key">x-api-key</option>
+                <option value="x-goog-api-key">x-goog-api-key</option>
+                <option value="none">不鉴权</option>
+              </select>
+            </label>
 
-        <label class="settings-field">
-          <span>对话接口</span>
-          <input id="settingsChatEndpoint" type="text" autocomplete="off" />
-        </label>
+            <label class="settings-field">
+              <span>API 模型 ID</span>
+              <input id="settingsConnectionApiModel" type="text" autocomplete="off" placeholder="实际发送给接口的模型名" />
+            </label>
+
+            <label class="settings-field">
+              <span>模型用途</span>
+              <select id="settingsConnectionCapability">
+                <option value="image">生图 / 图片编辑</option>
+                <option value="chat">助手对话</option>
+              </select>
+            </label>
+
+            <label class="settings-field settings-field-full">
+              <span>Base URL</span>
+              <input id="settingsConnectionBaseUrl" type="url" autocomplete="off" placeholder="https://api.example.com" />
+            </label>
+
+            <label id="settingsConnectionImageEndpointField" class="settings-field">
+              <span>生图接口</span>
+              <input id="settingsConnectionImageEndpoint" type="text" autocomplete="off" />
+            </label>
+
+            <label id="settingsConnectionEditEndpointField" class="settings-field">
+              <span>图片编辑接口</span>
+              <input id="settingsConnectionEditEndpoint" type="text" autocomplete="off" />
+            </label>
+
+            <label id="settingsConnectionChatEndpointField" class="settings-field settings-field-full">
+              <span>对话接口</span>
+              <input id="settingsConnectionChatEndpoint" type="text" autocomplete="off" />
+            </label>
+          </div>
+
+          <div class="api-connection-actions">
+            <label class="connection-clear-key">
+              <input id="settingsConnectionClearKey" type="checkbox" />
+              <span>清除该模型已保存的 Key</span>
+            </label>
+            <button id="settingsConnectionResetPreset" type="button" class="secondary compact">恢复预设参数</button>
+          </div>
+        </section>
 
         <label class="settings-field settings-field-full">
           <span>默认模型</span>
@@ -292,11 +365,6 @@
         <label class="settings-field settings-field-full">
           <span>助手模型</span>
           <select id="settingsAssistantModel"></select>
-        </label>
-
-        <label class="settings-field settings-field-full">
-          <span id="settingsAssistantKeyLabel">助手当前模型专用 Key</span>
-          <input id="settingsAssistantKey" type="password" autocomplete="off" placeholder="留空则使用平台总 Key" />
         </label>
 
         <label class="settings-field settings-field-full">
@@ -312,6 +380,19 @@
           <input id="settingsPhotoshopBridgeEnabled" type="checkbox" role="switch" />
         </label>
 
+        <section class="ps-plugin-download settings-field-full" aria-label="下载 Photoshop 插件">
+          <div>
+            <strong>PS Image AI 插件</strong>
+            <small>前往 GitHub 下载最新版 CCX 或一键安装包</small>
+          </div>
+          <button id="photoshopPluginDownloadButton" type="button" class="secondary compact settings-download-button">
+            <span class="settings-download-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5M5 20h14"/></svg>
+            </span>
+            <span>下载 PS 插件</span>
+          </button>
+        </section>
+
         <section class="dreamina-settings settings-field-full" aria-label="即梦 CLI">
           <div class="dreamina-settings-head">
             <div>
@@ -319,8 +400,9 @@
               <span id="dreaminaStatusText">检测中</span>
             </div>
             <div class="dreamina-settings-actions">
-              <button id="dreaminaInstallButton" type="button" class="secondary compact">安装即梦 CLI</button>
+              <button id="dreaminaInstallButton" type="button" class="secondary compact">安装/更新 CLI</button>
               <button id="dreaminaLoginButton" type="button" class="secondary compact">登录即梦</button>
+              <button id="dreaminaReloginButton" type="button" class="secondary compact">切换账号</button>
               <button id="dreaminaRefreshButton" type="button" class="secondary compact">测试连接</button>
             </div>
           </div>
@@ -335,7 +417,7 @@
             <span class="dreamina-help-icon" aria-hidden="true">i</span>
             <div>
               <strong>如何安装即梦 CLI？</strong>
-              <p>Windows 会直接在应用内下载安装；登录会打开系统命令窗口。其他系统或兜底场景可以复制命令到终端执行。</p>
+              <p>Windows 会直接在应用内安装或更新；切换账号会清除旧登录态并打开新的授权流程。其他系统或兜底场景可以复制命令到终端执行。</p>
               <div class="dreamina-help-actions">
                 <button id="copyDreaminaInstallButton" type="button" class="secondary compact">复制安装命令</button>
                 <button id="copyDreaminaLoginButton" type="button" class="secondary compact">复制登录命令</button>
@@ -412,6 +494,7 @@
       <option value="dreamina-4.7"></option>
     </datalist>
 
+    <script src="/portrait-wordbank.js"></script>
     <script src="/app.js" type="module"></script>
   </body>
 </html>

@@ -12,5 +12,11 @@ contextBridge.exposeInMainWorld("ccCanvasDesktop", {
   },
   openExternal(url) {
     ipcRenderer.send("open-external", url);
+  },
+  onOpenSettings(handler) {
+    if (typeof handler !== "function") return () => {};
+    const listener = (_event, payload) => handler(payload || {});
+    ipcRenderer.on("canvas:open-settings", listener);
+    return () => ipcRenderer.removeListener("canvas:open-settings", listener);
   }
 });

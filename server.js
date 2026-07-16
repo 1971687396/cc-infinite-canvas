@@ -2,7 +2,7 @@ import http from "node:http";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createReadStream, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
@@ -54,7 +54,32 @@ const assistantKeyModels = [
   "grok-4.3",
   "deepseek-v4-pro"
 ];
-const modelKeyModels = ["gpt-image-2", geminiBananaImageModel, grokKeyModel, ...assistantKeyModels];
+const apiConnectionModelDefinitions = [
+  { model: "gpt-image-2", label: "GPT Image 2", capability: "image", provider: "openai", presets: ["yunwu", "openai", "custom"] },
+  { model: geminiBananaImageModel, label: "banana2", capability: "image", provider: "google", presets: ["yunwu", "google", "custom"] },
+  { model: "grok-3-image", label: "Grok 3 Image", capability: "image", provider: "xai", presets: ["yunwu", "xai", "custom"] },
+  { model: grokImageModel, label: "Grok Imagine Image", capability: "image", provider: "xai", presets: ["yunwu", "xai", "custom"] },
+  { model: grsaiDefaultModel, label: "nano-banana-2 (Grsai)", capability: "image", provider: "grsai", presets: ["grsai", "custom"] },
+  ...assistantKeyModels.map((model) => ({
+    model,
+    label: model,
+    capability: "chat",
+    provider: assistantProviderForModel(model),
+    presets: assistantPresetsForModel(model)
+  }))
+];
+const modelKeyModels = [...new Set(apiConnectionModelDefinitions.map(({ model }) => normalizeModelAlias(model)))];
+const connectionPresetCatalog = {
+  yunwu: { label: "云雾平台", description: "云雾 OpenAI 兼容接口" },
+  openai: { label: "OpenAI 官方", description: "OpenAI 官方 API" },
+  google: { label: "Google Gemini 官方", description: "Gemini 原生 generateContent" },
+  anthropic: { label: "Anthropic 官方", description: "Anthropic Messages API" },
+  xai: { label: "xAI 官方", description: "xAI OpenAI 兼容接口" },
+  deepseek: { label: "DeepSeek 官方", description: "DeepSeek OpenAI 兼容接口" },
+  doubao: { label: "火山方舟官方", description: "豆包 OpenAI 兼容接口" },
+  grsai: { label: "Grsai", description: "Grsai 异步生图接口" },
+  custom: { label: "自定义 / 中转站", description: "自行填写协议、地址和接口" }
+};
 const serverHost = "127.0.0.1";
 const photoshopBridgeHeader = "x-cc-canvas-bridge";
 const photoshopBridgeHeaderValue = "psimageai";
@@ -63,6 +88,7 @@ const photoshopBridgeQueueLimit = 40;
 const photoshopReferenceSelectionLimit = 15;
 const photoshopReferenceSelectionTtlMs = 15 * 60 * 1000;
 const photoshopBridgeEvents = new EventEmitter();
+const projectWriteQueues = new Map();
 
 let photoshopBridgeState = {
   inbox: [],
@@ -91,6 +117,7 @@ const config = {
   cacheDir: sanitizeCacheDir(process.env.CC_CANVAS_CACHE_DIR || process.env.YUNWU_CACHE_DIR || defaultCacheDir, defaultCacheDir),
   photoshopBridgeEnabled: parseEnvBoolean(process.env.CC_CANVAS_PHOTOSHOP_BRIDGE_ENABLED, false)
 };
+config.modelConnections = loadModelConnections();
 
 const mimeTypes = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -138,6 +165,10 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/dreamina/login") {
       return await handleDreaminaLogin(res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/dreamina/relogin") {
+      return await handleDreaminaRelogin(res);
     }
 
     if (req.method === "GET" && url.pathname === "/api/update/check") {
@@ -272,6 +303,9 @@ function publicSettings() {
     defaultModel: config.defaultModel,
     assistantModel: config.assistantModel,
     modelKeys: publicModelKeyStatus(),
+    connectionModels: publicConnectionModels(),
+    connectionPresets: connectionPresetCatalog,
+    modelConnections: publicModelConnections(),
     cacheDir: config.cacheDir,
     version: config.version,
     updateRepo: config.updateRepo,
@@ -285,14 +319,20 @@ function hasAnyApiKey() {
 }
 
 function loadModelApiKeys() {
-  return Object.fromEntries(
+  const stored = decodeSettingsMap(process.env.CC_CANVAS_MODEL_KEYS_B64);
+  const loaded = {
+    ...stored,
+    ...Object.fromEntries(
     modelKeyModels.map((model) => {
       const normalizedModel = normalizeModelName(model);
       const legacyValue =
         normalizedModel === grokKeyModel ? process.env[modelKeyEnvName(legacyGrokImageModel)] || "" : "";
-      return [normalizedModel, process.env[modelKeyEnvName(model)] || legacyValue];
+      return [normalizedModel, process.env[modelKeyEnvName(model)] || stored[normalizedModel] || legacyValue];
     })
-  );
+    )
+  };
+  if (!loaded["grok-3-image"] && loaded[grokKeyModel]) loaded["grok-3-image"] = loaded[grokKeyModel];
+  return loaded;
 }
 
 function normalizeModelName(model) {
@@ -311,27 +351,263 @@ function modelKeyEnvName(model) {
 }
 
 function publicModelKeyStatus() {
-  return Object.fromEntries(modelKeyModels.map((model) => {
+  const models = new Set([...modelKeyModels, ...Object.keys(config.modelApiKeys || {}), ...Object.keys(config.modelConnections || {})]);
+  return Object.fromEntries([...models].map((model) => {
     const normalizedModel = normalizeModelName(model);
-    return [normalizedModel, Boolean(config.modelApiKeys[normalizedModel])];
+    return [normalizedModel, hasDedicatedApiKeyForModel(normalizedModel)];
   }));
+}
+
+function hasDedicatedApiKeyForModel(model) {
+  const normalized = normalizeModelAlias(model);
+  if (config.modelApiKeys[normalized]) return true;
+  if (isGrsaiImageModel(normalized)) return Boolean(config.grsaiApiKey);
+  return false;
 }
 
 function mergeModelApiKeys(body) {
   const next = { ...config.modelApiKeys };
   const submitted = isPlainObject(body.modelApiKeys) ? body.modelApiKeys : {};
-  for (const model of modelKeyModels) {
-    const normalizedModel = normalizeModelName(model);
+  for (const [model, submittedValue] of Object.entries(submitted)) {
+    const normalizedModel = normalizeModelAlias(model);
+    if (!normalizedModel) continue;
     const legacyValue = normalizedModel === grokKeyModel ? submitted[legacyGrokImageModel] : "";
-    const value = sanitizeOptionalText(submitted[normalizedModel] || legacyValue);
+    const value = sanitizeOptionalText(submittedValue || legacyValue);
     if (value) next[normalizedModel] = value;
+  }
+  for (const model of Array.isArray(body.clearModelApiKeys) ? body.clearModelApiKeys : []) {
+    const normalizedModel = normalizeModelAlias(model);
+    if (normalizedModel) delete next[normalizedModel];
   }
   return next;
 }
 
 function apiKeyForModel(model) {
-  if (isGrsaiImageModel(model)) return config.grsaiApiKey;
-  return config.modelApiKeys[modelKeyBucket(model)] || config.apiKey;
+  const normalizedModel = normalizeModelAlias(model || config.defaultModel);
+  if (config.modelApiKeys[normalizedModel]) return config.modelApiKeys[normalizedModel];
+  if (isGrsaiImageModel(normalizedModel)) return config.grsaiApiKey || config.apiKey;
+  return config.apiKey;
+}
+
+function assistantProviderForModel(model) {
+  const normalized = normalizeModelName(model);
+  if (normalized.includes("claude")) return "anthropic";
+  if (normalized.includes("gemini")) return "google";
+  if (normalized.includes("doubao")) return "doubao";
+  if (normalized.includes("grok")) return "xai";
+  if (normalized.includes("deepseek")) return "deepseek";
+  return "openai";
+}
+
+function assistantPresetsForModel(model) {
+  const provider = assistantProviderForModel(model);
+  return [...new Set(["yunwu", provider, "custom"])];
+}
+
+function publicConnectionModels() {
+  const definitions = [...apiConnectionModelDefinitions];
+  const known = new Set(definitions.map(({ model }) => normalizeModelAlias(model)));
+  for (const model of new Set([...Object.keys(config.modelConnections || {}), ...Object.keys(config.modelApiKeys || {})])) {
+    const normalized = normalizeModelAlias(model);
+    if (!normalized || known.has(normalized)) continue;
+    definitions.push({
+      model: normalized,
+      label: normalized,
+      capability: config.modelConnections[normalized]?.capability || "chat",
+      provider: "custom",
+      presets: ["custom"]
+    });
+  }
+  return definitions.map((definition) => ({
+    ...definition,
+    presetDefaults: Object.fromEntries(
+      definition.presets.map((preset) => [preset, defaultConnectionForModel(definition.model, preset)])
+    )
+  }));
+}
+
+function publicModelConnections() {
+  return Object.fromEntries(
+    publicConnectionModels().map(({ model }) => {
+      const normalized = normalizeModelAlias(model);
+      const profile = connectionForModel(normalized);
+      return [normalized, { ...profile, hasKey: Boolean(apiKeyForModel(normalized)) }];
+    })
+  );
+}
+
+function loadModelConnections() {
+  const stored = decodeSettingsMap(process.env.CC_CANVAS_MODEL_CONNECTIONS_B64);
+  const models = new Set([...modelKeyModels, ...Object.keys(stored)]);
+  return Object.fromEntries(
+    [...models].map((model) => {
+      const normalized = normalizeModelAlias(model);
+      return [normalized, normalizeModelConnection(normalized, stored[normalized])];
+    })
+  );
+}
+
+function decodeSettingsMap(value) {
+  const encoded = sanitizeOptionalText(value);
+  if (!encoded) return {};
+  try {
+    const parsed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+    return isPlainObject(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function encodeSettingsMap(value) {
+  return Buffer.from(JSON.stringify(value || {}), "utf8").toString("base64url");
+}
+
+function connectionDefinition(model) {
+  const normalized = normalizeModelAlias(model);
+  return apiConnectionModelDefinitions.find((item) => normalizeModelAlias(item.model) === normalized) || {
+    model: normalized,
+    label: normalized,
+    capability: "chat",
+    provider: "custom",
+    presets: ["custom"]
+  };
+}
+
+function defaultConnectionForModel(model, presetId = "yunwu") {
+  const normalized = normalizeModelAlias(model);
+  const definition = connectionDefinition(normalized);
+  const requestedPreset = sanitizeOptionalText(presetId).toLowerCase();
+  const preset = definition.presets.includes(requestedPreset) ? requestedPreset : definition.presets[0] || "custom";
+  const imageProtocol = normalized === geminiBananaImageModel ? "gemini-native" : normalized === grsaiDefaultModel ? "grsai" : "openai-images";
+  const chatProtocol = "openai-chat";
+  const defaults = {
+    preset,
+    capability: definition.capability,
+    protocol: definition.capability === "image" ? imageProtocol : chatProtocol,
+    authType: "bearer",
+    apiModel: normalized,
+    baseUrl: config?.baseUrl || "https://yunwu.ai",
+    imageEndpoint: config?.imageEndpoint || "/v1/images/generations",
+    editEndpoint: config?.editEndpoint || "/v1/images/edits",
+    chatEndpoint: config?.chatEndpoint || "/v1/chat/completions"
+  };
+  if (normalized === geminiBananaImageModel) {
+    defaults.imageEndpoint = "/v1beta/models/{model}:generateContent";
+    defaults.editEndpoint = "/v1beta/models/{model}:generateContent";
+  }
+
+  if (preset === "openai") {
+    return { ...defaults, baseUrl: "https://api.openai.com", protocol: definition.capability === "image" ? "openai-images" : "openai-chat" };
+  }
+  if (preset === "xai") {
+    return { ...defaults, baseUrl: "https://api.x.ai", protocol: definition.capability === "image" ? "openai-images" : "openai-chat" };
+  }
+  if (preset === "google") {
+    return {
+      ...defaults,
+      baseUrl: "https://generativelanguage.googleapis.com",
+      protocol: "gemini-native",
+      authType: "x-goog-api-key",
+      imageEndpoint: "/v1beta/models/{model}:generateContent",
+      editEndpoint: "/v1beta/models/{model}:generateContent",
+      chatEndpoint: "/v1beta/models/{model}:generateContent"
+    };
+  }
+  if (preset === "anthropic") {
+    return { ...defaults, baseUrl: "https://api.anthropic.com", protocol: "anthropic-messages", authType: "x-api-key", chatEndpoint: "/v1/messages" };
+  }
+  if (preset === "deepseek") {
+    return { ...defaults, baseUrl: "https://api.deepseek.com", protocol: "openai-chat", chatEndpoint: "/chat/completions" };
+  }
+  if (preset === "doubao") {
+    return { ...defaults, baseUrl: "https://ark.cn-beijing.volces.com/api/v3", protocol: "openai-chat", chatEndpoint: "/chat/completions" };
+  }
+  if (preset === "grsai") {
+    return {
+      ...defaults,
+      baseUrl: grsaiDefaultBaseUrl,
+      protocol: "grsai",
+      imageEndpoint: grsaiGenerateEndpoint,
+      editEndpoint: grsaiGenerateEndpoint
+    };
+  }
+  if (preset === "custom") return { ...defaults, preset: "custom" };
+  return defaults;
+}
+
+function normalizeModelConnection(model, value) {
+  const normalized = normalizeModelAlias(model);
+  const input = isPlainObject(value) ? value : {};
+  const fallback = defaultConnectionForModel(normalized, input.preset || connectionDefinition(normalized).presets[0]);
+  const protocols = new Set(["openai-images", "openai-chat", "gemini-native", "anthropic-messages", "grsai"]);
+  const authTypes = new Set(["bearer", "x-api-key", "x-goog-api-key", "none"]);
+  return {
+    preset: sanitizeOptionalText(input.preset) || fallback.preset,
+    capability: input.capability === "image" ? "image" : input.capability === "chat" ? "chat" : fallback.capability,
+    protocol: protocols.has(input.protocol) ? input.protocol : fallback.protocol,
+    authType: authTypes.has(input.authType) ? input.authType : fallback.authType,
+    apiModel: sanitizeOptionalText(input.apiModel) || fallback.apiModel,
+    baseUrl: sanitizeOptionalText(input.baseUrl) || fallback.baseUrl,
+    imageEndpoint: sanitizeOptionalText(input.imageEndpoint) || fallback.imageEndpoint,
+    editEndpoint: sanitizeOptionalText(input.editEndpoint) || fallback.editEndpoint,
+    chatEndpoint: sanitizeOptionalText(input.chatEndpoint) || fallback.chatEndpoint
+  };
+}
+
+function mergeModelConnections(body) {
+  const next = { ...config.modelConnections };
+  const submitted = isPlainObject(body.modelConnections) ? body.modelConnections : {};
+  for (const [model, value] of Object.entries(submitted)) {
+    const normalized = normalizeModelAlias(model);
+    if (normalized) next[normalized] = normalizeModelConnection(normalized, value);
+  }
+  return next;
+}
+
+function connectionForModel(model) {
+  const normalized = normalizeModelAlias(model || config.defaultModel);
+  return normalizeModelConnection(normalized, config.modelConnections?.[normalized]);
+}
+
+function resolvedConnection(model, body = {}, mode = "chat") {
+  const normalized = normalizeModelAlias(model || config.defaultModel);
+  let connection = connectionForModel(normalized);
+  if (body.connectionOverride === true || body.connectionOverride === "true") {
+    const endpoint = sanitizeOptionalText(body.endpointPath);
+    connection = normalizeModelConnection(normalized, {
+      ...connection,
+      preset: "custom",
+      protocol: sanitizeOptionalText(body.connectionProtocol) || connection.protocol,
+      authType: sanitizeOptionalText(body.authType) || connection.authType,
+      apiModel: sanitizeOptionalText(body.apiModel) || connection.apiModel,
+      baseUrl: sanitizeOptionalText(body.baseUrl) || connection.baseUrl,
+      imageEndpoint: mode === "create" && endpoint ? endpoint : connection.imageEndpoint,
+      editEndpoint: mode === "edit" && endpoint ? endpoint : connection.editEndpoint,
+      chatEndpoint: mode === "chat" && endpoint ? endpoint : connection.chatEndpoint
+    });
+  }
+  const endpoint = mode === "edit" ? connection.editEndpoint : mode === "create" ? connection.imageEndpoint : connection.chatEndpoint;
+  const endpointPath = String(endpoint || "").replaceAll("{model}", encodeURIComponent(connection.apiModel || normalized));
+  return {
+    ...connection,
+    model: normalized,
+    endpointPath,
+    apiUrl: buildApiUrl(connection.baseUrl, endpointPath),
+    apiKey: apiKeyForModel(normalized)
+  };
+}
+
+function connectionAuthHeaders(connection, contentType = "application/json") {
+  const headers = contentType ? { "Content-Type": contentType } : {};
+  if (connection.authType === "x-api-key") {
+    headers["x-api-key"] = connection.apiKey;
+    headers["anthropic-version"] = "2023-06-01";
+  } else if (connection.authType === "x-goog-api-key") {
+    headers["x-goog-api-key"] = connection.apiKey;
+  } else if (connection.authType !== "none") {
+    headers.Authorization = `Bearer ${connection.apiKey}`;
+  }
+  return headers;
 }
 
 function modelKeyBucket(model) {
@@ -644,9 +920,10 @@ function versionParts(value) {
 
 async function handleSaveSettings(req, res) {
   const body = await readJsonBody(req);
+  const clearedModels = new Set((Array.isArray(body.clearModelApiKeys) ? body.clearModelApiKeys : []).map(normalizeModelAlias));
   const nextSettings = {
-    apiKey: sanitizeOptionalText(body.apiKey) || config.apiKey,
-    grsaiApiKey: sanitizeOptionalText(body.grsaiApiKey) || config.grsaiApiKey,
+    apiKey: body.clearApiKey === true ? "" : sanitizeOptionalText(body.apiKey) || config.apiKey,
+    grsaiApiKey: clearedModels.has(grsaiDefaultModel) ? "" : sanitizeOptionalText(body.grsaiApiKey) || config.grsaiApiKey,
     baseUrl: sanitizeOptionalText(body.baseUrl) || config.baseUrl,
     imageEndpoint: sanitizeOptionalText(body.imageEndpoint) || config.imageEndpoint,
     editEndpoint: sanitizeOptionalText(body.editEndpoint) || config.editEndpoint,
@@ -654,6 +931,7 @@ async function handleSaveSettings(req, res) {
     defaultModel: normalizeModelAlias(sanitizeOptionalText(body.defaultModel) || config.defaultModel),
     assistantModel: sanitizeOptionalText(body.assistantModel) || config.assistantModel,
     modelApiKeys: mergeModelApiKeys(body),
+    modelConnections: mergeModelConnections(body),
     cacheDir: sanitizeCacheDir(body.cacheDir, config.cacheDir),
     photoshopBridgeEnabled:
       typeof body.photoshopBridgeEnabled === "boolean" ? body.photoshopBridgeEnabled : config.photoshopBridgeEnabled
@@ -668,6 +946,7 @@ async function handleSaveSettings(req, res) {
   config.defaultModel = nextSettings.defaultModel;
   config.assistantModel = nextSettings.assistantModel;
   config.modelApiKeys = nextSettings.modelApiKeys;
+  config.modelConnections = nextSettings.modelConnections;
   config.cacheDir = nextSettings.cacheDir;
   config.photoshopBridgeEnabled = nextSettings.photoshopBridgeEnabled;
 
@@ -687,7 +966,7 @@ async function handleDreaminaInstall(res) {
       return sendJson(res, 200, {
         ok: true,
         ...result,
-        message: `即梦 CLI 已安装到 ${result.executable}，现在可以点击“登录即梦”。`
+        message: `即梦 CLI 已安装或更新到 ${result.executable}。`
       });
     }
 
@@ -719,14 +998,37 @@ async function handleDreaminaLogin(res) {
   }
 }
 
+async function handleDreaminaRelogin(res) {
+  try {
+    const status = await readDreaminaStatus();
+    if (!status.installed) {
+      return sendJson(res, 404, { error: "未检测到 Dreamina CLI，请先点击“安装/更新 CLI”。" });
+    }
+
+    const executable = await dreaminaShellExecutable();
+    await launchDreaminaTerminal(dreaminaLoginCommand(executable, "relogin"), "cc infinite canvas - Switch Dreamina Account");
+    sendJson(res, 202, {
+      ok: true,
+      message: "已打开即梦切换账号窗口，请在新授权流程中登录目标账号。"
+    });
+  } catch (error) {
+    sendJson(res, 500, { error: dreaminaErrorMessage(error) });
+  }
+}
+
 async function readDreaminaStatus() {
   let version = "";
   let buildVersion = "";
+  let textImageModels = [];
+  let imageEditModels = [];
   try {
     const versionResult = await runDreamina(["version"], { timeoutMs: 20000 });
     const versionData = parseDreaminaJson(versionResult.stdout);
     buildVersion = String(versionData?.version || extractDreaminaVersion(versionResult.stdout) || "");
     version = (await readDreaminaInstalledVersion()) || buildVersion;
+    const modelSupport = await readDreaminaImageModelSupport();
+    textImageModels = modelSupport.textImageModels;
+    imageEditModels = modelSupport.imageEditModels;
   } catch (error) {
     if (error.code === "ENOENT") {
       return {
@@ -747,6 +1049,8 @@ async function readDreaminaStatus() {
       loggedIn: true,
       version,
       buildVersion,
+      textImageModels,
+      imageEditModels,
       totalCredit: Number.isFinite(Number(credit?.total_credit)) ? Number(credit.total_credit) : null,
       vipLevel: String(credit?.vip_level || "")
     };
@@ -756,9 +1060,39 @@ async function readDreaminaStatus() {
       loggedIn: false,
       version,
       buildVersion,
+      textImageModels,
+      imageEditModels,
       error: dreaminaErrorMessage(error)
     };
   }
+}
+
+async function readDreaminaImageModelSupport() {
+  try {
+    const [textResult, editResult] = await Promise.all([
+      runDreamina(["text2image", "--help"], { timeoutMs: 20000 }),
+      runDreamina(["image2image", "--help"], { timeoutMs: 20000 })
+    ]);
+    return {
+      textImageModels: extractDreaminaModelVersions(textResult.stdout),
+      imageEditModels: extractDreaminaModelVersions(editResult.stdout)
+    };
+  } catch {
+    return {
+      textImageModels: [...dreaminaModelVersions],
+      imageEditModels: [...dreaminaModelVersions].filter((version) => Number(version) >= 4)
+    };
+  }
+}
+
+function extractDreaminaModelVersions(text) {
+  const match = String(text || "").match(/model_version\s*:\s*([^\r\n]+)/iu);
+  if (!match) return [];
+  return [...new Set(match[1].match(/\b\d+(?:\.\d+)+\b/gu) || [])].sort(compareDreaminaVersions);
+}
+
+function compareDreaminaVersions(left, right) {
+  return right.localeCompare(left, undefined, { numeric: true, sensitivity: "base" });
 }
 
 async function readDreaminaInstalledVersion() {
@@ -797,6 +1131,8 @@ async function writeSettingsEnv(settings) {
     ["YUNWU_CHAT_ENDPOINT", settings.chatEndpoint],
     ["YUNWU_DEFAULT_MODEL", settings.defaultModel],
     ["YUNWU_ASSISTANT_MODEL", settings.assistantModel],
+    ["CC_CANVAS_MODEL_KEYS_B64", encodeSettingsMap(settings.modelApiKeys)],
+    ["CC_CANVAS_MODEL_CONNECTIONS_B64", encodeSettingsMap(settings.modelConnections)],
     ["CC_CANVAS_CACHE_DIR", settings.cacheDir],
     ["CC_CANVAS_PHOTOSHOP_BRIDGE_ENABLED", settings.photoshopBridgeEnabled ? "1" : "0"]
   ]);
@@ -894,6 +1230,14 @@ function projectFile(projectId) {
   return path.join(projectDir(projectId), "project.json");
 }
 
+function projectPendingFile(projectId) {
+  return path.join(projectDir(projectId), "project.pending.json");
+}
+
+function projectBackupFile(projectId) {
+  return path.join(projectDir(projectId), "project.backup.json");
+}
+
 function assistantChatFile(projectId) {
   return path.join(projectDir(projectId), "assistant-chat.json");
 }
@@ -932,28 +1276,44 @@ async function handleGenerate(req, res) {
   return await handleCreate(res, body, prompt);
 }
 
-async function handleAssistantChat(req, res) {
+async function handleAssistantChat(req, res, options = {}) {
   const body = await readJsonBody(req, { maxBytes: 16 * 1024 * 1024 });
   const model = sanitizeOptionalText(body.model) || config.assistantModel || assistantDefaultModel;
   const messages = normalizeAssistantMessages(body.messages);
-  const mode = sanitizeOptionalText(body.mode) === "action_plan" ? "action_plan" : "chat";
+  const requestedMode = sanitizeOptionalText(options.mode || body.mode);
+  const mode = requestedMode === "action_plan"
+    ? "action_plan"
+    : requestedMode === "photoshop_agent"
+      ? "photoshop_agent"
+      : "chat";
   if (!messages.length) {
     return sendJson(res, 400, { error: "At least one assistant message is required." });
   }
 
-  const apiKey = apiKeyForModel(model);
-  if (!apiKey) {
+  if (mode === "photoshop_agent") {
+    const normalizedModel = normalizeModelAlias(model);
+    const isConfiguredChatModel = publicConnectionModels().some(
+      (definition) => definition.capability === "chat" && normalizeModelAlias(definition.model) === normalizedModel
+    );
+    if (!isConfiguredChatModel) {
+      return sendJson(res, 400, { error: `模型 ${model} 没有可供 PS Agent 使用的文本连接。` });
+    }
+  }
+
+  const connectionBody = mode === "photoshop_agent" ? { ...body, connectionOverride: false } : body;
+  const connection = resolvedConnection(model, connectionBody, "chat");
+  if (!connection.apiKey) {
     return sendJson(res, 500, { error: missingKeyMessage(model) });
+  }
+  if (!["openai-chat", "gemini-native", "anthropic-messages"].includes(connection.protocol)) {
+    return sendJson(res, 400, { error: `模型 ${model} 当前连接协议 ${connection.protocol} 不支持助手对话。` });
   }
 
   const context = normalizeAssistantContext(body.context);
-  const payload = pruneEmpty({
-    model,
-    messages: buildAssistantMessages(messages, context, mode),
-    temperature: Number.isFinite(Number(body.temperature)) ? Number(body.temperature) : 0.7,
-    stream: false
-  });
-  const apiUrl = buildApiUrl(config.baseUrl, config.chatEndpoint);
+  const temperature = Number.isFinite(Number(body.temperature)) ? Number(body.temperature) : 0.7;
+  const assistantMessages = buildAssistantMessages(messages, context, mode);
+  const payload = buildAssistantRequestPayload(connection, assistantMessages, temperature);
+  const apiUrl = connection.apiUrl;
 
   let upstream;
   const assistantAbortController = new AbortController();
@@ -969,10 +1329,7 @@ async function handleAssistantChat(req, res) {
   try {
     upstream = await fetch(apiUrl, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json"
-      },
+      headers: connectionAuthHeaders(connection),
       body: JSON.stringify(payload),
       signal: assistantAbortController.signal
     });
@@ -982,7 +1339,7 @@ async function handleAssistantChat(req, res) {
     if (assistantAbortController.signal.aborted && (res.writableEnded || res.destroyed)) return;
     return sendJson(res, 502, {
       error: `Assistant request failed: ${error.message || error}`,
-      request: { apiUrl, model }
+      request: { apiUrl, model, protocol: connection.protocol }
     });
   }
 
@@ -995,7 +1352,7 @@ async function handleAssistantChat(req, res) {
     if (assistantAbortController.signal.aborted && (res.writableEnded || res.destroyed)) return;
     return sendJson(res, 502, {
       error: `Assistant response failed: ${error.message || error}`,
-      request: { apiUrl, model }
+      request: { apiUrl, model, protocol: connection.protocol }
     });
   }
   clearTimeout(assistantTimeout);
@@ -1015,6 +1372,16 @@ async function handleAssistantChat(req, res) {
     return sendJson(res, 502, {
       error: "Assistant response did not include text content.",
       upstream: upstreamData
+    });
+  }
+
+  if (mode === "photoshop_agent") {
+    const parsedPhotoshopPlan = parsePhotoshopAgentResult(content, toolPlanValues);
+    return sendJson(res, 200, {
+      message: { role: "assistant", content: parsedPhotoshopPlan.content },
+      photoshopPlan: parsedPhotoshopPlan.plan,
+      model,
+      usage: upstreamData.usage || null
     });
   }
 
@@ -1441,11 +1808,15 @@ function normalizeAssistantContext(context) {
     project: isPlainObject(context.project) ? context.project : {},
     selection: Array.isArray(context.selection) ? context.selection.slice(0, 80) : [],
     canvas: isPlainObject(context.canvas) ? context.canvas : {},
-    recentNodes: Array.isArray(context.recentNodes) ? context.recentNodes.slice(0, 80) : []
+    recentNodes: Array.isArray(context.recentNodes) ? context.recentNodes.slice(0, 80) : [],
+    photoshop: isPlainObject(context.photoshop) ? context.photoshop : {}
   };
 }
 
 function buildAssistantMessages(messages, context, mode = "chat") {
+  if (mode === "photoshop_agent") {
+    return buildPhotoshopAgentMessages(messages, context);
+  }
   const contextLimit = mode === "action_plan" ? 48000 : 16000;
   const contextText = JSON.stringify(context, null, 2).slice(0, contextLimit);
   const baseMessages = [
@@ -1491,6 +1862,124 @@ function buildAssistantMessages(messages, context, mode = "chat") {
   return [...baseMessages, ...messages];
 }
 
+function buildPhotoshopAgentMessages(messages, context) {
+  const contextText = JSON.stringify(context?.photoshop || {}, null, 2).slice(0, 36000);
+  return [
+    {
+      role: "system",
+      content:
+        "你是 PS Image AI 的 Photoshop Agent。你可以依据当前文档、选区和图层上下文，为用户拟定可由插件执行的安全操作计划。默认使用中文，先理解用户想修改的对象和程度；上下文没有像素预览时，不要声称看见了具体画面细节。不要输出 batchPlay、JavaScript、脚本、文件操作或未列入白名单的命令。"
+    },
+    {
+      role: "system",
+      content: `当前 Photoshop 上下文 JSON：\n${contextText}`
+    },
+    {
+      role: "system",
+      content:
+        "当用户要求实际调整 Photoshop 文档时，只返回一个 JSON 对象，不要使用 Markdown：{\"message\":\"给用户的简短说明\",\"summary\":\"计划标题\",\"actions\":[...]}。允许的 action.type 只有：select_layer、rename_layer、duplicate_layer、set_layer_visibility、set_layer_opacity、create_layer、brightness_contrast、hue_saturation、gaussian_blur、invert、desaturate、prepare_ai_edit、prepare_ai_create。最多 12 个动作。除 create_layer 和 prepare_ai_* 外，layerId 省略时表示当前活动图层；要操作指定图层时必须使用上下文中的真实 layerId。字段：select_layer={layerId}；rename_layer={layerId,name}；duplicate_layer={layerId,name?}；set_layer_visibility={layerId,visible}；set_layer_opacity={layerId,opacity(0-100)}；create_layer={name?,opacity?}；brightness_contrast={layerId,brightness(-150..150),contrast(-100..100)}；hue_saturation={layerId,hue(-180..180),saturation(-100..100),lightness(-100..100)}；gaussian_blur={layerId,radius(0.1..250)}；invert/desaturate={layerId}；prepare_ai_edit/prepare_ai_create={prompt}，这两项只会把提示词填入插件，不会直接付费生成。禁止删除、合并、栅格化、裁切、缩放文档或运行付费生成。"
+    },
+    {
+      role: "system",
+      content:
+        "如果用户只是咨询、让你解释方法或请求超出白名单的能力，直接正常回答，不要伪造动作。若请求有歧义，先提一个简短澄清问题，actions 返回空数组或不返回。"
+    },
+    ...messages
+  ];
+}
+
+function buildAssistantRequestPayload(connection, messages, temperature) {
+  if (connection.protocol === "anthropic-messages") {
+    const system = messages
+      .filter((message) => message.role === "system")
+      .map((message) => assistantContentText(message.content))
+      .filter(Boolean)
+      .join("\n\n");
+    return pruneEmpty({
+      model: connection.apiModel,
+      max_tokens: 8192,
+      system,
+      messages: messages
+        .filter((message) => message.role !== "system")
+        .map((message) => ({
+          role: message.role === "assistant" ? "assistant" : "user",
+          content: assistantContentParts(message.content).map(assistantPartToAnthropic).filter(Boolean)
+        })),
+      temperature
+    });
+  }
+
+  if (connection.protocol === "gemini-native") {
+    const systemText = messages
+      .filter((message) => message.role === "system")
+      .map((message) => assistantContentText(message.content))
+      .filter(Boolean)
+      .join("\n\n");
+    return pruneEmpty({
+      systemInstruction: systemText ? { parts: [{ text: systemText }] } : undefined,
+      contents: messages
+        .filter((message) => message.role !== "system")
+        .map((message) => ({
+          role: message.role === "assistant" ? "model" : "user",
+          parts: assistantContentParts(message.content).map(assistantPartToGemini).filter(Boolean)
+        })),
+      generationConfig: { temperature }
+    });
+  }
+
+  return pruneEmpty({
+    model: connection.apiModel,
+    messages,
+    temperature,
+    stream: false
+  });
+}
+
+function assistantContentParts(content) {
+  if (Array.isArray(content)) return content;
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  return [];
+}
+
+function assistantContentText(content) {
+  return assistantContentParts(content)
+    .map((part) => (typeof part === "string" ? part : part?.text || part?.content || ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function assistantImageUrl(part) {
+  if (!isPlainObject(part)) return "";
+  if (typeof part.image_url === "string") return part.image_url;
+  return sanitizeOptionalText(part.image_url?.url || part.url);
+}
+
+function assistantPartToAnthropic(part) {
+  if (typeof part === "string") return { type: "text", text: part };
+  const imageUrl = assistantImageUrl(part);
+  if (imageUrl) {
+    const dataMatch = imageUrl.match(/^data:([^;,]+);base64,(.+)$/su);
+    if (dataMatch) {
+      return { type: "image", source: { type: "base64", media_type: dataMatch[1], data: dataMatch[2] } };
+    }
+    if (/^https?:\/\//i.test(imageUrl)) return { type: "image", source: { type: "url", url: imageUrl } };
+  }
+  const text = part?.text || part?.content || "";
+  return text ? { type: "text", text: String(text) } : null;
+}
+
+function assistantPartToGemini(part) {
+  if (typeof part === "string") return { text: part };
+  const imageUrl = assistantImageUrl(part);
+  if (imageUrl) {
+    const dataMatch = imageUrl.match(/^data:([^;,]+);base64,(.+)$/su);
+    if (dataMatch) return { inlineData: { mimeType: dataMatch[1], data: dataMatch[2] } };
+    if (/^https?:\/\//i.test(imageUrl)) return { fileData: { fileUri: imageUrl, mimeType: "image/*" } };
+  }
+  const text = part?.text || part?.content || "";
+  return text ? { text: String(text) } : null;
+}
+
 function extractAssistantText(data) {
   const messageContent = data?.choices?.[0]?.message?.content;
   if (typeof messageContent === "string") return messageContent.trim();
@@ -1509,6 +1998,16 @@ function extractAssistantText(data) {
       .trim();
   }
   if (typeof data?.content === "string") return data.content.trim();
+  if (Array.isArray(data?.content)) {
+    return data.content
+      .map((part) => (typeof part === "string" ? part : part?.text || part?.content || ""))
+      .join("")
+      .trim();
+  }
+  const geminiParts = data?.candidates?.[0]?.content?.parts;
+  if (Array.isArray(geminiParts)) {
+    return geminiParts.map((part) => part?.text || "").join("").trim();
+  }
   return "";
 }
 
@@ -1618,6 +2117,166 @@ function parseAssistantPlanResult(content, extraValues = []) {
     plan,
     content: isAssistantPlanSummaryOnly(cleanedContent) ? plan.summary : cleanedContent || plan.summary
   };
+}
+
+const photoshopAgentActionTypes = new Set([
+  "select_layer",
+  "rename_layer",
+  "duplicate_layer",
+  "set_layer_visibility",
+  "set_layer_opacity",
+  "create_layer",
+  "brightness_contrast",
+  "hue_saturation",
+  "gaussian_blur",
+  "invert",
+  "desaturate",
+  "prepare_ai_edit",
+  "prepare_ai_create"
+]);
+
+function parsePhotoshopAgentResult(content, extraValues = []) {
+  const text = String(content || "").trim();
+  const actions = [];
+  const seen = new Set();
+  const ranges = [];
+  let summary = "";
+  let message = "";
+
+  const addValue = (value, range = null) => {
+    const normalized = normalizePhotoshopAgentPlan(value);
+    if (!normalized) return;
+    if (!summary && normalized.summary) summary = normalized.summary;
+    if (!message && normalized.message) message = normalized.message;
+    if (range) ranges.push(range);
+    for (const action of normalized.actions) {
+      const key = JSON.stringify(action);
+      if (seen.has(key) || actions.length >= 12) continue;
+      seen.add(key);
+      actions.push(action);
+    }
+  };
+
+  for (const candidate of assistantJsonCandidates(text)) {
+    addValue(tryParseStrictJson(candidate.json), [candidate.start, candidate.end]);
+  }
+  for (const value of Array.isArray(extraValues) ? extraValues : []) addValue(value);
+
+  const cleaned = removeAssistantPlanRanges(text, ranges);
+  const responseContent = message || cleaned || summary || (actions.length ? `已准备 ${actions.length} 个 Photoshop 操作。` : text);
+  return {
+    content: responseContent,
+    plan: actions.length
+      ? {
+          summary: summary || `准备执行 ${actions.length} 个 Photoshop 操作`,
+          actions
+        }
+      : null
+  };
+}
+
+function normalizePhotoshopAgentPlan(value) {
+  if (!value) return null;
+  let candidates = [];
+  let summary = "";
+  let message = "";
+
+  if (Array.isArray(value)) {
+    candidates = value;
+  } else if (isPlainObject(value)) {
+    summary = sanitizeOptionalText(value.summary).slice(0, 240);
+    message = sanitizeOptionalText(value.message || value.content).slice(0, 2000);
+    if (Array.isArray(value.actions)) {
+      candidates = value.actions;
+    } else {
+      const type = photoshopAgentActionType(value);
+      if (photoshopAgentActionTypes.has(type)) candidates = [value];
+      else {
+        const args = parseAssistantActionArguments(value);
+        if (args) return normalizePhotoshopAgentPlan({ ...args, message, summary });
+      }
+    }
+  }
+
+  const actions = candidates.map(normalizePhotoshopAgentAction).filter(Boolean).slice(0, 12);
+  if (!actions.length && !message && !summary) return null;
+  return { actions, summary, message };
+}
+
+function photoshopAgentActionType(action) {
+  const values = [action?.type, action?.name, action?.action, action?.tool]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  return values.find((value) => photoshopAgentActionTypes.has(value)) || values[0] || "";
+}
+
+function normalizePhotoshopAgentAction(action) {
+  if (!isPlainObject(action)) return null;
+  const type = photoshopAgentActionType(action);
+  const args = parseAssistantActionArguments(action);
+  const source = args ? { ...args, type } : { ...action, type };
+  if (!photoshopAgentActionTypes.has(type)) return null;
+
+  const layerId = positiveInteger(source.layerId ?? source.targetLayerId ?? source.id);
+  if (type === "select_layer") return layerId ? { type, layerId } : null;
+  if (type === "rename_layer") {
+    const name = sanitizeOptionalText(source.name).slice(0, 180);
+    return name ? pruneEmpty({ type, layerId, name }) : null;
+  }
+  if (type === "duplicate_layer") {
+    return pruneEmpty({ type, layerId, name: sanitizeOptionalText(source.name).slice(0, 180) });
+  }
+  if (type === "set_layer_visibility") {
+    if (typeof source.visible !== "boolean") return null;
+    return pruneEmpty({ type, layerId, visible: source.visible });
+  }
+  if (type === "set_layer_opacity") {
+    return pruneEmpty({ type, layerId, opacity: boundedNumber(source.opacity, 0, 100, 100) });
+  }
+  if (type === "create_layer") {
+    return pruneEmpty({
+      type,
+      name: sanitizeOptionalText(source.name).slice(0, 180) || "Agent 新图层",
+      opacity: boundedNumber(source.opacity, 0, 100, 100)
+    });
+  }
+  if (type === "brightness_contrast") {
+    return pruneEmpty({
+      type,
+      layerId,
+      brightness: boundedNumber(source.brightness, -150, 150, 0),
+      contrast: boundedNumber(source.contrast, -100, 100, 0)
+    });
+  }
+  if (type === "hue_saturation") {
+    return pruneEmpty({
+      type,
+      layerId,
+      hue: boundedNumber(source.hue, -180, 180, 0),
+      saturation: boundedNumber(source.saturation, -100, 100, 0),
+      lightness: boundedNumber(source.lightness, -100, 100, 0)
+    });
+  }
+  if (type === "gaussian_blur") {
+    return pruneEmpty({ type, layerId, radius: boundedNumber(source.radius, 0.1, 250, 1) });
+  }
+  if (type === "invert" || type === "desaturate") return pruneEmpty({ type, layerId });
+  if (type === "prepare_ai_edit" || type === "prepare_ai_create") {
+    const prompt = sanitizeOptionalText(source.prompt).slice(0, 12000);
+    return prompt ? { type, prompt } : null;
+  }
+  return null;
+}
+
+function positiveInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : undefined;
+}
+
+function boundedNumber(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, number));
 }
 
 function assistantPlanSummary(parsed) {
@@ -1840,6 +2499,8 @@ function removeAssistantPlanRanges(text, ranges) {
 
 async function handleListProjects(res) {
   const projects = [];
+  const recoveredProjects = [];
+  const unrecoverableProjects = [];
   const root = path.join(config.cacheDir, "canvases");
 
   try {
@@ -1848,16 +2509,22 @@ async function handleListProjects(res) {
       if (!entry.isDirectory()) continue;
       const id = normalizeProjectId(entry.name);
       try {
-        const raw = await readFile(projectFile(id), "utf8");
-        const project = JSON.parse(raw);
+        const result = await readRecoverableProject(id, { repair: true });
+        if (!result?.project) {
+          unrecoverableProjects.push(id);
+          continue;
+        }
+        const project = result.project;
         projects.push({
           id,
           name: sanitizeOptionalText(project.name) || id,
           savedAt: project.savedAt || "",
-          nodeCount: Array.isArray(project.nodes) ? project.nodes.length : 0
+          nodeCount: Array.isArray(project.nodes) ? project.nodes.length : 0,
+          recovered: result.recovered
         });
+        if (result.recovered) recoveredProjects.push(id);
       } catch {
-        // Skip incomplete project directories.
+        unrecoverableProjects.push(id);
       }
     }
   } catch (error) {
@@ -1880,14 +2547,16 @@ async function handleListProjects(res) {
   }
 
   projects.sort((a, b) => String(b.savedAt).localeCompare(String(a.savedAt)));
-  sendJson(res, 200, { projects, cacheDir: config.cacheDir });
+  sendJson(res, 200, { projects, recoveredProjects, unrecoverableProjects, cacheDir: config.cacheDir });
 }
 
 async function handleGetProject(res, url) {
   const projectId = projectIdFromUrl(url);
   try {
-    const raw = await readFile(projectFile(projectId), "utf8");
-    return sendJson(res, 200, { project: normalizeProjectRecord(JSON.parse(raw), projectId) });
+    const result = await readRecoverableProject(projectId, { repair: true });
+    if (result?.project) {
+      return sendJson(res, 200, { project: result.project, recovered: result.recovered, recoverySource: result.source });
+    }
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
@@ -1910,9 +2579,106 @@ async function handleSaveProject(req, res, url) {
   const safeProject = normalizeProjectRecord(project, projectId);
   safeProject.savedAt = new Date().toISOString();
 
-  await mkdir(projectDir(projectId), { recursive: true });
-  await writeFile(projectFile(projectId), JSON.stringify(safeProject, null, 2), "utf8");
+  await queueProjectWrite(projectId, () => writeProjectRecordAtomic(projectId, safeProject));
   sendJson(res, 200, { ok: true, project: projectSummary(safeProject), savedAt: safeProject.savedAt });
+}
+
+async function readRecoverableProject(projectId, options = {}) {
+  const id = normalizeProjectId(projectId);
+  const sources = [
+    { source: "primary", file: projectFile(id), priority: 2 },
+    { source: "pending", file: projectPendingFile(id), priority: 3 },
+    { source: "backup", file: projectBackupFile(id), priority: 1 }
+  ];
+  const candidates = [];
+
+  for (const source of sources) {
+    const candidate = await readProjectCandidate(source.file, id, source.source, source.priority);
+    if (candidate) candidates.push(candidate);
+  }
+  if (!candidates.length) return null;
+
+  candidates.sort((left, right) => right.savedTime - left.savedTime || right.priority - left.priority);
+  const selected = candidates[0];
+  const primary = candidates.find((candidate) => candidate.source === "primary");
+  const shouldRepair = selected.source !== "primary" || !primary || selected.savedTime > primary.savedTime;
+
+  if (options.repair !== false && shouldRepair) {
+    await queueProjectWrite(id, () => writeProjectRecordAtomic(id, selected.project, { backupCurrent: false }));
+  }
+  if (options.repair !== false && selected.source !== "pending") {
+    await rm(projectPendingFile(id), { force: true }).catch(() => {});
+  }
+
+  return {
+    project: selected.project,
+    source: selected.source,
+    recovered: shouldRepair
+  };
+}
+
+async function readProjectCandidate(filename, projectId, source, priority) {
+  try {
+    const [raw, info] = await Promise.all([readFile(filename, "utf8"), stat(filename)]);
+    const parsed = JSON.parse(raw);
+    if (!isPlainObject(parsed) || !Array.isArray(parsed.nodes)) return null;
+    const project = normalizeProjectRecord(parsed, projectId);
+    project.savedAt = sanitizeOptionalText(parsed.savedAt) || info.mtime.toISOString();
+    const parsedTime = Date.parse(project.savedAt);
+    return {
+      project,
+      source,
+      priority,
+      savedTime: Number.isFinite(parsedTime) ? parsedTime : info.mtimeMs
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function writeProjectRecordAtomic(projectId, project, options = {}) {
+  const id = normalizeProjectId(projectId);
+  const directory = projectDir(id);
+  const primary = projectFile(id);
+  const backup = projectBackupFile(id);
+  await mkdir(directory, { recursive: true });
+
+  if (options.backupCurrent !== false) {
+    try {
+      const currentRaw = await readFile(primary, "utf8");
+      const current = JSON.parse(currentRaw);
+      if (isPlainObject(current) && Array.isArray(current.nodes)) {
+        await writeTextAtomic(backup, `${backup}.pending`, currentRaw);
+      }
+    } catch {
+      // A missing or corrupt primary must not replace the last valid backup.
+    }
+  }
+
+  await writeTextAtomic(primary, projectPendingFile(id), JSON.stringify(project, null, 2));
+}
+
+async function writeTextAtomic(target, pending, content) {
+  const handle = await open(pending, "w");
+  try {
+    await handle.writeFile(content, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await rename(pending, target);
+}
+
+async function queueProjectWrite(projectId, operation) {
+  const id = normalizeProjectId(projectId);
+  const previous = projectWriteQueues.get(id) || Promise.resolve();
+  const current = previous.catch(() => {}).then(operation);
+  projectWriteQueues.set(id, current);
+  try {
+    return await current;
+  } finally {
+    if (projectWriteQueues.get(id) === current) projectWriteQueues.delete(id);
+  }
 }
 
 function normalizeProjectRecord(project, fallbackId) {
@@ -2004,6 +2770,16 @@ async function handlePhotoshopBridgeRequest(req, res, url) {
   await ensurePhotoshopBridgeState();
   noteActivePhotoshopProject(url);
 
+  if (req.method === "GET" && url.pathname === "/api/photoshop/assistant/config") {
+    return handlePhotoshopAssistantConfig(res);
+  }
+  if (req.method === "POST" && url.pathname === "/api/photoshop/assistant/settings/open") {
+    return await handlePhotoshopAssistantSettingsOpen(req, res);
+  }
+  if (req.method === "POST" && url.pathname === "/api/photoshop/assistant/chat") {
+    return await handleAssistantChat(req, res, { mode: "photoshop_agent" });
+  }
+
   if (req.method === "GET" && url.pathname === "/api/photoshop/canvas-images") {
     return await handlePhotoshopCanvasImageList(res, url);
   }
@@ -2049,6 +2825,47 @@ async function handlePhotoshopBridgeRequest(req, res, url) {
   }
 
   sendJson(res, 404, { error: "Photoshop bridge endpoint was not found." });
+}
+
+function handlePhotoshopAssistantConfig(res) {
+  const seenModels = new Set();
+  const models = publicConnectionModels()
+    .filter((definition) => definition.capability === "chat")
+    .filter((definition) => {
+      const model = normalizeModelAlias(definition.model);
+      if (!model || seenModels.has(model)) return false;
+      seenModels.add(model);
+      return true;
+    })
+    .map((definition) => {
+      const model = normalizeModelAlias(definition.model);
+      const connection = connectionForModel(model);
+      return {
+        model,
+        label: definition.label || model,
+        provider: definition.provider || assistantProviderForModel(model),
+        preset: connection.preset,
+        protocol: connection.protocol,
+        hasKey: Boolean(apiKeyForModel(model))
+      };
+    });
+  const configuredModel = normalizeModelAlias(config.assistantModel || assistantDefaultModel);
+  const assistantModel = models.some((item) => item.model === configuredModel)
+    ? configuredModel
+    : models.find((item) => item.hasKey)?.model || models[0]?.model || assistantDefaultModel;
+  sendJson(res, 200, { enabled: true, assistantModel, models });
+}
+
+async function handlePhotoshopAssistantSettingsOpen(req, res) {
+  const body = await readJsonBody(req, { maxBytes: 16 * 1024 });
+  const requestedModel = normalizeModelAlias(body.model || config.assistantModel || assistantDefaultModel);
+  const model = publicConnectionModels().some(
+    (definition) => definition.capability === "chat" && normalizeModelAlias(definition.model) === requestedModel
+  )
+    ? requestedModel
+    : normalizeModelAlias(config.assistantModel || assistantDefaultModel);
+  const opened = photoshopBridgeEvents.emit("assistant-settings-requested", { model });
+  sendJson(res, 200, { ok: true, opened, model });
 }
 
 function applyPhotoshopBridgeCors(req, res) {
@@ -2513,26 +3330,26 @@ function dedupeTextValues(values) {
 }
 
 async function handleCreate(res, body, prompt) {
-  if (isDreaminaVideoModel(body.model || config.defaultModel)) {
+  const requestedModel = body.model || config.defaultModel;
+  if (isDreaminaVideoModel(requestedModel)) {
     return await handleDreaminaVideoGenerate(res, body, prompt);
   }
 
-  if (isGeminiNativeImageModel(body.model || config.defaultModel)) {
-    return await handleGeminiNativeGenerate(res, body, prompt);
-  }
-
-  if (isDreaminaImageModel(body.model || config.defaultModel)) {
+  if (isDreaminaImageModel(requestedModel)) {
     return await handleDreaminaGenerate(res, body, prompt);
   }
 
-  if (isGrsaiImageModel(body.model || config.defaultModel)) {
-    return await handleGrsaiGenerate(res, body, prompt);
+  const connection = resolvedConnection(requestedModel, body, "create");
+  if (connection.protocol === "gemini-native") return await handleGeminiNativeGenerate(res, body, prompt, [], connection);
+  if (connection.protocol === "grsai") return await handleGrsaiGenerate(res, body, prompt, [], connection);
+  if (connection.protocol !== "openai-images") {
+    return sendJson(res, 400, { error: `模型 ${requestedModel} 当前连接协议 ${connection.protocol} 不支持生图。` });
   }
 
   const projectId = normalizeProjectId(body.projectId || "default");
   const extraParams = isPlainObject(body.extraParams) ? body.extraParams : {};
   const payload = pruneEmpty({
-    model: body.model || config.defaultModel,
+    model: connection.apiModel,
     prompt,
     n: Number(body.n || 1),
     size: body.size,
@@ -2542,19 +3359,15 @@ async function handleCreate(res, body, prompt) {
   });
   applyModelRequestDefaults(payload, "create");
 
-  const apiUrl = buildApiUrl(body.baseUrl || config.baseUrl, body.endpointPath || config.imageEndpoint);
-  const apiKey = apiKeyForModel(payload.model);
-  if (!apiKey) {
-    return sendJson(res, 500, { error: missingKeyMessage(payload.model) });
+  const apiUrl = connection.apiUrl;
+  if (!connection.apiKey) {
+    return sendJson(res, 500, { error: missingKeyMessage(requestedModel) });
   }
   const startedAt = Date.now();
 
   const upstream = await fetch(apiUrl, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
-    },
+    headers: connectionAuthHeaders(connection),
     body: JSON.stringify(payload)
   });
 
@@ -2579,13 +3392,13 @@ async function handleCreate(res, body, prompt) {
   });
 }
 
-async function handleGrsaiGenerate(res, body, prompt, imageFiles = []) {
+async function handleGrsaiGenerate(res, body, prompt, imageFiles = [], suppliedConnection = null) {
   const projectId = normalizeProjectId(body.projectId || "default");
   const extraParams = parseExtraParamsValue(body.extraParams);
   const { images: extraImages, ...extraPayload } = extraParams;
   const size = parseGrsaiSize(body.size);
   const payload = pruneEmpty({
-    model: body.model || grsaiDefaultModel,
+    model: suppliedConnection?.apiModel || body.model || grsaiDefaultModel,
     prompt,
     images: [...normalizeGrsaiImageRefs(extraImages), ...imageFiles.map(fileToDataUrl)],
     aspectRatio: size.aspectRatio,
@@ -2595,19 +3408,17 @@ async function handleGrsaiGenerate(res, body, prompt, imageFiles = []) {
   });
   applyModelRequestDefaults(payload, "create");
 
-  const apiUrl = grsaiGenerateUrl(body);
-  const apiKey = apiKeyForModel(payload.model);
+  const connection = suppliedConnection || resolvedConnection(body.model || grsaiDefaultModel, body, "create");
+  const apiUrl = connection.apiUrl || grsaiGenerateUrl(body);
+  const apiKey = connection.apiKey;
   if (!apiKey) {
-    return sendJson(res, 500, { error: missingKeyMessage(payload.model) });
+    return sendJson(res, 500, { error: missingKeyMessage(body.model || grsaiDefaultModel) });
   }
   const startedAt = Date.now();
 
   const upstream = await fetch(apiUrl, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
-    },
+    headers: connectionAuthHeaders(connection),
     body: JSON.stringify(payload)
   });
 
@@ -2648,23 +3459,20 @@ async function handleGrsaiGenerate(res, body, prompt, imageFiles = []) {
   });
 }
 
-async function handleGeminiNativeGenerate(res, body, prompt, imageFiles = []) {
+async function handleGeminiNativeGenerate(res, body, prompt, imageFiles = [], suppliedConnection = null) {
   const projectId = normalizeProjectId(body.projectId || "default");
   const extraParams = parseExtraParamsValue(body.extraParams);
   const payload = buildGeminiNativePayload(prompt, imageFiles, extraParams, body);
-  const apiUrl = buildApiUrl(body.baseUrl || config.baseUrl, geminiNativeEndpointPath(body));
-  const apiKey = apiKeyForModel(body.model);
-  if (!apiKey) {
+  const connection = suppliedConnection || resolvedConnection(body.model || geminiBananaImageModel, body, imageFiles.length ? "edit" : "create");
+  const apiUrl = connection.apiUrl;
+  if (!connection.apiKey) {
     return sendJson(res, 500, { error: missingKeyMessage(body.model) });
   }
   const startedAt = Date.now();
 
   const upstream = await fetch(apiUrl, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
-    },
+    headers: connectionAuthHeaders(connection),
     body: JSON.stringify(payload)
   });
 
@@ -2800,12 +3608,11 @@ async function handleEdit(res, body) {
     return await handleDreaminaGenerate(res, body, body.prompt, requestImages.slice(0, 10));
   }
 
-  if (isGeminiNativeImageModel(modelName)) {
-    return await handleGeminiNativeGenerate(res, body, body.prompt, requestImages);
-  }
-
-  if (isGrsaiImageModel(modelName)) {
-    return await handleGrsaiGenerate(res, body, body.prompt, requestImages);
+  const connection = resolvedConnection(modelName, body, "edit");
+  if (connection.protocol === "gemini-native") return await handleGeminiNativeGenerate(res, body, body.prompt, requestImages, connection);
+  if (connection.protocol === "grsai") return await handleGrsaiGenerate(res, body, body.prompt, requestImages, connection);
+  if (connection.protocol !== "openai-images") {
+    return sendJson(res, 400, { error: `模型 ${modelName} 当前连接协议 ${connection.protocol} 不支持图片编辑。` });
   }
 
   const form = new FormData();
@@ -2819,7 +3626,7 @@ async function handleEdit(res, body) {
 
   const extraParams = parseExtraParamsValue(body.extraParams);
   const fields = pruneEmpty({
-    model: modelName,
+    model: connection.apiModel,
     prompt: body.prompt,
     n: body.n || "1",
     size: body.size,
@@ -2834,18 +3641,14 @@ async function handleEdit(res, body) {
     form.append(key, String(value));
   }
 
-  const apiUrl = buildApiUrl(body.baseUrl || config.baseUrl, body.endpointPath || config.editEndpoint);
-  const apiKey = apiKeyForModel(fields.model);
-  if (!apiKey) {
-    return sendJson(res, 500, { error: missingKeyMessage(fields.model) });
+  const apiUrl = connection.apiUrl;
+  if (!connection.apiKey) {
+    return sendJson(res, 500, { error: missingKeyMessage(modelName) });
   }
   const startedAt = Date.now();
   const upstream = await fetch(apiUrl, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      Accept: "application/json"
-    },
+    headers: { ...connectionAuthHeaders(connection, ""), Accept: "application/json" },
     body: form
   });
 
@@ -3021,7 +3824,7 @@ async function handleDreaminaVideoGenerate(res, body, prompt) {
 
 function dreaminaModelVersion(model) {
   const version = normalizeModelName(model).replace(/^dreamina-/, "");
-  if (!dreaminaModelVersions.has(version)) {
+  if (!dreaminaModelVersions.has(version) && !/^\d+(?:\.\d+)+$/u.test(version)) {
     throw new Error(`Unsupported Dreamina model version: ${version || model}`);
   }
   return version;
@@ -3503,21 +4306,22 @@ function dreaminaInstallCommand() {
   ].join("; ");
 }
 
-function dreaminaLoginCommand(executable) {
+function dreaminaLoginCommand(executable, action = "login") {
+  const command = action === "relogin" ? "relogin" : "login";
   if (process.platform === "win32") {
     return [
       "@echo off",
       "chcp 65001 >nul",
       "set \"PATH=%USERPROFILE%\\bin;%PATH%\"",
-      "echo Starting Dreamina login...",
-      `${quoteCmdArgument(executable)} login`,
+      command === "relogin" ? "echo Switching Dreamina account..." : "echo Starting Dreamina login...",
+      `${quoteCmdArgument(executable)} ${command}`,
       "echo.",
       "echo After login, return to cc infinite canvas and click Test connection.",
       "pause"
     ].join("\r\n");
   }
 
-  return `${quotePosix(executable)} login; echo; echo 'After login, return to cc infinite canvas and click Test connection.'`;
+  return `${quotePosix(executable)} ${command}; echo; echo 'After login, return to cc infinite canvas and click Test connection.'`;
 }
 
 async function launchDreaminaTerminal(command, title) {
@@ -3631,25 +4435,73 @@ function spawnDreamina(executable, args, options = {}) {
 }
 
 function parseDreaminaJson(output) {
-  const text = String(output || "").trim();
+  const text = stripAnsi(String(output || "")).replace(/\u0000/gu, "").trim();
   if (!text) throw new Error("Dreamina CLI returned an empty response.");
   try {
     return JSON.parse(text);
   } catch {
-    // Some CLI builds print a short status line before the JSON payload.
+    // Some CLI builds mix colored diagnostic logs with the JSON payload.
   }
 
-  const starts = [text.indexOf("{"), text.indexOf("[")].filter((index) => index >= 0).sort((a, b) => a - b);
-  for (const start of starts) {
-    for (let end = text.length; end > start; end -= 1) {
-      try {
-        return JSON.parse(text.slice(start, end));
-      } catch {
-        // Keep narrowing until the complete JSON value is found.
-      }
+  let lastValue = null;
+  let cursor = 0;
+  while (cursor < text.length) {
+    const start = nextDreaminaJsonStart(text, cursor);
+    if (start < 0) break;
+    const end = dreaminaJsonValueEnd(text, start);
+    if (end < 0) {
+      cursor = start + 1;
+      continue;
+    }
+    try {
+      lastValue = JSON.parse(text.slice(start, end));
+      cursor = end;
+    } catch {
+      cursor = start + 1;
     }
   }
+  if (lastValue !== null) return lastValue;
   throw new Error(`Dreamina CLI returned an unreadable response: ${text.slice(0, 800)}`);
+}
+
+function stripAnsi(value) {
+  return String(value || "").replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "");
+}
+
+function nextDreaminaJsonStart(text, offset) {
+  for (let index = offset; index < text.length; index += 1) {
+    if ((text[index] === "{" || text[index] === "[") && text[index - 1] !== "\\") return index;
+  }
+  return -1;
+}
+
+function dreaminaJsonValueEnd(text, start) {
+  const stack = [text[start]];
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start + 1; index < text.length; index += 1) {
+    const character = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character === "{" || character === "[") {
+      stack.push(character);
+      continue;
+    }
+    if (character !== "}" && character !== "]") continue;
+    const opening = stack.pop();
+    if ((opening === "{" && character !== "}") || (opening === "[" && character !== "]")) return -1;
+    if (!stack.length) return index + 1;
+  }
+  return -1;
 }
 
 function dreaminaErrorStatus(error) {
@@ -4017,7 +4869,7 @@ function dedupeImageCandidates(candidates) {
   return candidates.filter((candidate) => {
     const cleanValue =
       candidate.type === "base64"
-        ? String(candidate.value).replace(/\s/g, "")
+        ? String(candidate.value).replace(/^data:[^;,]+;base64,/i, "").replace(/\s/g, "")
         : String(candidate.value).trim();
     const key = `${candidate.type}:${cleanValue}`;
     if (seen.has(key)) return false;

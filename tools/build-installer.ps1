@@ -27,7 +27,6 @@ function Assert-NoLocalDataInPayload {
     "cache",
     "data",
     "dist",
-    "node_modules",
     "outputs"
   )
 
@@ -460,6 +459,15 @@ Copy-Item -LiteralPath (Join-Path $root "electron-preload.cjs") -Destination (Jo
 Copy-Item -LiteralPath (Join-Path $root "tools\start-yunwu-canvas.ps1") -Destination (Join-Path $payloadRoot "tools\start-yunwu-canvas.ps1") -Force
 Copy-Item -LiteralPath (Join-Path $root "tools\start-yunwu-canvas-desktop.ps1") -Destination (Join-Path $payloadRoot "tools\start-yunwu-canvas-desktop.ps1") -Force
 Copy-Item -LiteralPath (Join-Path $root "tools\uninstall-yunwu-canvas.ps1") -Destination (Join-Path $payloadRoot "tools\uninstall-yunwu-canvas.ps1") -Force
+
+$npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
+if (-not $npmCommand) {
+  throw "npm.cmd was not found. Install Node.js before building the installer payload."
+}
+& $npmCommand.Source install --omit=dev --ignore-scripts --no-audit --no-fund --prefix $payloadRoot
+if ($LASTEXITCODE -ne 0) {
+  throw "Installing production dependencies for the installer payload failed."
+}
 
 $electronDist = Join-Path $root "node_modules\electron\dist"
 if (-not (Test-Path (Join-Path $electronDist "electron.exe"))) {

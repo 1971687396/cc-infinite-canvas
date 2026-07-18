@@ -1,6 +1,6 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createReadStream, createWriteStream, readFileSync } from "node:fs";
@@ -10,10 +10,12 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
+import TosSdk from "@volcengine/tos-sdk";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
+const TosClient = TosSdk.default || TosSdk.TosClient;
 const electronNativeImage = loadElectronNativeImage();
 const packageInfo = JSON.parse(readFileSync(path.join(__dirname, "package.json"), "utf8"));
 const publicDir = path.join(__dirname, "public");
@@ -36,6 +38,10 @@ const grsaiGenerateEndpoint = "/v1/api/generate";
 const grsaiResultEndpoint = "/v1/api/result";
 const grsaiDefaultModel = "nano-banana-2";
 const arkDefaultBaseUrl = "https://ark.cn-beijing.volces.com";
+const arkOpenApiBaseUrl = "https://ark.cn-beijing.volcengineapi.com";
+const arkOpenApiRegion = "cn-beijing";
+const arkOpenApiService = "ark";
+const arkOpenApiVersion = "2024-01-01";
 const arkImageEndpoint = "/api/v3/images/generations";
 const arkVideoEndpoint = "/api/v3/contents/generations/tasks";
 const arkImageModels = [
@@ -127,6 +133,13 @@ const config = {
   apiKey: process.env.YUNWU_API_KEY || "",
   arkApiKey: process.env.VOLCENGINE_ARK_API_KEY || process.env.ARK_API_KEY || "",
   arkBaseUrl: process.env.VOLCENGINE_ARK_BASE_URL || arkDefaultBaseUrl,
+  arkAccessKeyId: process.env.VOLCENGINE_ACCESS_KEY_ID || "",
+  arkSecretAccessKey: process.env.VOLCENGINE_SECRET_ACCESS_KEY || "",
+  arkAssetProject: process.env.VOLCENGINE_ARK_ASSET_PROJECT || "default",
+  arkAssetGroupId: process.env.VOLCENGINE_ARK_ASSET_GROUP_ID || "",
+  tosBucket: process.env.VOLCENGINE_TOS_BUCKET || "",
+  tosRegion: process.env.VOLCENGINE_TOS_REGION || arkOpenApiRegion,
+  tosEndpoint: process.env.VOLCENGINE_TOS_ENDPOINT || "",
   grsaiApiKey: process.env.GRSAI_API_KEY || "",
   baseUrl: process.env.YUNWU_BASE_URL || "https://yunwu.ai",
   imageEndpoint: process.env.YUNWU_IMAGE_ENDPOINT || "/v1/images/generations",
@@ -174,6 +187,14 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/settings") {
       return await handleSaveSettings(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/ark-assets/import") {
+      return await handleArkAssetImport(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/ark-assets/status") {
+      return await handleArkAssetStatus(req, res);
     }
 
     if (req.method === "GET" && url.pathname === "/api/dreamina/status") {
@@ -316,6 +337,9 @@ function publicSettings() {
   return {
     hasApiKey: Boolean(config.apiKey),
     hasArkApiKey: Boolean(config.arkApiKey),
+    hasArkAccessKeyId: Boolean(config.arkAccessKeyId),
+    hasArkSecretAccessKey: Boolean(config.arkSecretAccessKey),
+    hasArkAssetCredentials: Boolean(config.arkAccessKeyId && config.arkSecretAccessKey),
     hasGrsaiApiKey: Boolean(config.grsaiApiKey),
     hasAnyKey: hasAnyApiKey(),
     baseUrl: config.baseUrl,
@@ -329,6 +353,11 @@ function publicSettings() {
     connectionPresets: connectionPresetCatalog,
     modelConnections: publicModelConnections(),
     arkBaseUrl: config.arkBaseUrl,
+    arkAssetProject: config.arkAssetProject,
+    arkAssetGroupId: config.arkAssetGroupId,
+    tosBucket: config.tosBucket,
+    tosRegion: config.tosRegion,
+    tosEndpoint: config.tosEndpoint,
     arkModels: arkModelDefinitions.map(({ model, label, apiModel }) => ({
       model,
       label,
@@ -1005,6 +1034,22 @@ async function handleSaveSettings(req, res) {
     apiKey: body.clearApiKey === true ? "" : sanitizeOptionalText(body.apiKey) || config.apiKey,
     arkApiKey: body.clearArkApiKey === true ? "" : sanitizeOptionalText(body.arkApiKey) || config.arkApiKey,
     arkBaseUrl: sanitizeOptionalText(body.arkBaseUrl) || config.arkBaseUrl || arkDefaultBaseUrl,
+    arkAccessKeyId:
+      body.clearArkAssetCredentials === true
+        ? ""
+        : sanitizeOptionalText(body.arkAccessKeyId) || config.arkAccessKeyId,
+    arkSecretAccessKey:
+      body.clearArkAssetCredentials === true
+        ? ""
+        : sanitizeOptionalText(body.arkSecretAccessKey) || config.arkSecretAccessKey,
+    arkAssetProject: sanitizeOptionalText(body.arkAssetProject) || config.arkAssetProject || "default",
+    arkAssetGroupId:
+      body.clearArkAssetGroupId === true
+        ? ""
+        : sanitizeOptionalText(body.arkAssetGroupId) || config.arkAssetGroupId,
+    tosBucket: sanitizeOptionalText(body.tosBucket),
+    tosRegion: sanitizeOptionalText(body.tosRegion) || config.tosRegion || arkOpenApiRegion,
+    tosEndpoint: sanitizeOptionalText(body.tosEndpoint),
     grsaiApiKey: clearedModels.has(grsaiDefaultModel) ? "" : sanitizeOptionalText(body.grsaiApiKey) || config.grsaiApiKey,
     baseUrl: sanitizeOptionalText(body.baseUrl) || config.baseUrl,
     imageEndpoint: sanitizeOptionalText(body.imageEndpoint) || config.imageEndpoint,
@@ -1022,6 +1067,13 @@ async function handleSaveSettings(req, res) {
   config.apiKey = nextSettings.apiKey;
   config.arkApiKey = nextSettings.arkApiKey;
   config.arkBaseUrl = nextSettings.arkBaseUrl;
+  config.arkAccessKeyId = nextSettings.arkAccessKeyId;
+  config.arkSecretAccessKey = nextSettings.arkSecretAccessKey;
+  config.arkAssetProject = nextSettings.arkAssetProject;
+  config.arkAssetGroupId = nextSettings.arkAssetGroupId;
+  config.tosBucket = nextSettings.tosBucket;
+  config.tosRegion = nextSettings.tosRegion;
+  config.tosEndpoint = nextSettings.tosEndpoint;
   config.grsaiApiKey = nextSettings.grsaiApiKey;
   config.baseUrl = nextSettings.baseUrl;
   config.imageEndpoint = nextSettings.imageEndpoint;
@@ -1036,6 +1088,315 @@ async function handleSaveSettings(req, res) {
 
   await writeSettingsEnv(nextSettings);
   sendJson(res, 200, publicSettings());
+}
+
+async function handleArkAssetImport(req, res) {
+  try {
+    requireArkAssetCredentials();
+    const body = await readJsonBody(req);
+    const projectId = normalizeProjectId(body.projectId || "default");
+    const projectName = sanitizeOptionalText(body.projectName) || config.arkAssetProject || "default";
+    const inputItems = Array.isArray(body.items) ? body.items.slice(0, 12) : [];
+    if (!inputItems.length) {
+      return sendJson(res, 400, { error: "请先选择至少一张画布图片。" });
+    }
+
+    let groupId = sanitizeOptionalText(body.groupId) || config.arkAssetGroupId;
+    if (!groupId) {
+      const groupName = (sanitizeOptionalText(body.groupName) || "cc无限画布虚拟人像").slice(0, 64);
+      const group = await arkOpenApiRequest("CreateAssetGroup", {
+        Name: groupName,
+        Description: "cc无限画布导入的 AI 生成人像素材",
+        GroupType: "AIGC",
+        ProjectName: projectName
+      });
+      groupId = sanitizeOptionalText(group?.Id || group?.id);
+      if (!groupId) throw new Error("方舟已响应，但未返回 Asset Group ID。请到方舟控制台确认素材库授权书状态。");
+      config.arkAssetGroupId = groupId;
+      config.arkAssetProject = projectName;
+      await writeSettingsEnv(config);
+    }
+
+    const items = [];
+    for (let index = 0; index < inputItems.length; index += 1) {
+      const item = inputItems[index] || {};
+      const clientId = sanitizeOptionalText(item.clientId) || randomUUID();
+      try {
+        const prepared = await prepareArkAssetSource(item, projectId);
+        const filename = sanitizeDownloadFilename(item.filename || prepared.filename || `虚拟人像-${index + 1}.png`);
+        const result = await arkOpenApiRequest("CreateAsset", {
+          GroupId: groupId,
+          URL: prepared.url,
+          Name: filename.slice(0, 64),
+          AssetType: "Image",
+          ProjectName: projectName
+        });
+        const assetId = sanitizeOptionalText(result?.Id || result?.id);
+        if (!assetId) throw new Error("方舟已响应，但未返回 Asset ID。请检查素材库权限。 ");
+        items.push({
+          clientId,
+          assetId,
+          assetUri: `asset://${assetId}`,
+          status: "Processing",
+          sourceMode: prepared.sourceMode,
+          error: ""
+        });
+      } catch (error) {
+        items.push({
+          clientId,
+          assetId: "",
+          assetUri: "",
+          status: "Failed",
+          sourceMode: "",
+          error: arkAssetErrorMessage(error)
+        });
+      }
+    }
+
+    const successCount = items.filter((item) => item.assetId).length;
+    sendJson(res, successCount ? 200 : 422, {
+      ok: successCount > 0,
+      groupId,
+      projectName,
+      items
+    });
+  } catch (error) {
+    sendJson(res, 500, { error: arkAssetErrorMessage(error) });
+  }
+}
+
+async function handleArkAssetStatus(req, res) {
+  try {
+    requireArkAssetCredentials();
+    const body = await readJsonBody(req);
+    const projectName = sanitizeOptionalText(body.projectName) || config.arkAssetProject || "default";
+    const inputItems = Array.isArray(body.items) ? body.items.slice(0, 30) : [];
+    const items = [];
+    for (const item of inputItems) {
+      const assetId = sanitizeOptionalText(item?.assetId);
+      if (!assetId) continue;
+      try {
+        const result = await arkOpenApiRequest("GetAsset", { Id: assetId, ProjectName: projectName });
+        const status = sanitizeOptionalText(result?.Status || result?.status) || "Processing";
+        const resultError = result?.Error || result?.error;
+        items.push({
+          clientId: sanitizeOptionalText(item?.clientId),
+          assetId,
+          assetUri: status === "Active" ? `asset://${assetId}` : "",
+          status,
+          error: resultError ? arkAssetErrorMessage(resultError) : ""
+        });
+      } catch (error) {
+        items.push({
+          clientId: sanitizeOptionalText(item?.clientId),
+          assetId,
+          assetUri: "",
+          status: "Failed",
+          error: arkAssetErrorMessage(error)
+        });
+      }
+    }
+    sendJson(res, 200, { ok: true, projectName, items });
+  } catch (error) {
+    sendJson(res, 500, { error: arkAssetErrorMessage(error) });
+  }
+}
+
+function requireArkAssetCredentials() {
+  if (!config.arkAccessKeyId || !config.arkSecretAccessKey) {
+    throw new Error("请先在设置 > 火山方舟中填写 Access Key ID 和 Secret Access Key。");
+  }
+}
+
+async function prepareArkAssetSource(item, projectId) {
+  const sourceUrl = sanitizeOptionalText(item?.sourceUrl);
+  if (isPublicArkAssetUrl(sourceUrl)) {
+    return { url: sourceUrl, sourceMode: "source-url", filename: item.filename || filenameFromUrl(sourceUrl) };
+  }
+
+  if (!config.tosBucket) {
+    throw new Error("这张图片只存在于本地。请先在设置 > 火山方舟中配置 TOS 存储桶，才能上传并转为素材。");
+  }
+
+  const localSource = await readCanvasImageSource(projectId, item?.url);
+  const filename = sanitizeDownloadFilename(item?.filename || localSource.filename || "virtual-human.png");
+  const extension = path.extname(filename).toLowerCase() || extensionForMime(localSource.contentType);
+  const objectName = `${path.basename(filename, path.extname(filename))}${extension}`;
+  const month = new Date().toISOString().slice(0, 7);
+  const key = `cc-infinite-canvas/ark-assets/${month}/${randomUUID()}-${objectName}`;
+  const clientOptions = {
+    accessKeyId: config.arkAccessKeyId,
+    accessKeySecret: config.arkSecretAccessKey,
+    region: config.tosRegion || arkOpenApiRegion,
+    bucket: config.tosBucket
+  };
+  if (config.tosEndpoint) clientOptions.endpoint = config.tosEndpoint.replace(/^https?:\/\//iu, "").replace(/\/$/u, "");
+  const client = new TosClient(clientOptions);
+  if (localSource.filePath) {
+    await client.putObjectFromFile({ key, filePath: localSource.filePath, contentType: localSource.contentType });
+  } else {
+    await client.putObject({ key, body: localSource.bytes, contentType: localSource.contentType });
+  }
+  const url = client.getPreSignedUrl({ key, method: "GET", expires: 24 * 60 * 60 });
+  return { url, sourceMode: "tos", filename };
+}
+
+async function readCanvasImageSource(projectId, value) {
+  const raw = sanitizeOptionalText(value);
+  const data = parseImageDataUrl(raw);
+  if (data) return { bytes: data.bytes, contentType: data.contentType, filename: `image${extensionForMime(data.contentType)}` };
+
+  const filePath = resolveCanvasImageFile(projectId, raw);
+  if (!filePath) throw new Error("没有找到这张图片的本地缓存文件，请重新导入图片后再试。");
+  const fileInfo = await stat(filePath);
+  if (!fileInfo.isFile()) throw new Error("图片缓存路径不是文件。");
+  if (fileInfo.size > 30 * 1024 * 1024) throw new Error("方舟素材图片必须小于 30 MB。");
+  return {
+    filePath,
+    filename: path.basename(filePath),
+    contentType: mimeTypes.get(path.extname(filePath).toLowerCase()) || "application/octet-stream"
+  };
+}
+
+function resolveCanvasImageFile(projectId, value) {
+  if (!value) return "";
+  let pathname;
+  try {
+    pathname = new URL(value, "http://127.0.0.1").pathname;
+  } catch {
+    return "";
+  }
+  const parts = pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
+  let candidate = "";
+  if (parts[0] === "project-cache" && parts.length >= 4 && ["assets", "outputs"].includes(parts[2])) {
+    const embeddedProjectId = normalizeProjectId(parts[1]);
+    const root = parts[2] === "assets" ? projectAssetDir(embeddedProjectId) : projectOutputDir(embeddedProjectId);
+    candidate = path.join(root, path.basename(parts.slice(3).join("/")));
+  } else if (parts[0] === "outputs" && parts[1]) {
+    candidate = path.join(outputDir, path.basename(parts.slice(1).join("/")));
+  } else if (parts[0] === "cache" && parts[1] === "assets" && parts[2]) {
+    candidate = path.join(assetCacheDir, path.basename(parts.slice(2).join("/")));
+  } else if (parts[0] === "assets" && parts[1]) {
+    candidate = path.join(projectAssetDir(projectId), path.basename(parts.slice(1).join("/")));
+  }
+  const resolved = candidate ? path.resolve(candidate) : "";
+  if (!resolved) return "";
+  return [config.cacheDir, outputDir, assetCacheDir].some((root) => isPathInside(resolved, root)) ? resolved : "";
+}
+
+function parseImageDataUrl(value) {
+  const match = String(value || "").match(/^data:(image\/[a-z0-9.+-]+);base64,([a-z0-9+/=\r\n]+)$/iu);
+  if (!match) return null;
+  const bytes = Buffer.from(match[2], "base64");
+  if (!bytes.length || bytes.length > 30 * 1024 * 1024) throw new Error("图片数据无效或超过 30 MB。");
+  return { contentType: match[1].toLowerCase(), bytes };
+}
+
+function extensionForMime(contentType) {
+  const extensions = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+    "image/gif": ".gif",
+    "image/tiff": ".tiff",
+    "image/heic": ".heic",
+    "image/heif": ".heif"
+  };
+  return extensions[String(contentType || "").toLowerCase()] || ".png";
+}
+
+function filenameFromUrl(value) {
+  try {
+    return path.basename(decodeURIComponent(new URL(value).pathname)) || "virtual-human.png";
+  } catch {
+    return "virtual-human.png";
+  }
+}
+
+function isPublicArkAssetUrl(value) {
+  if (!/^https?:\/\//iu.test(value)) return false;
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    if (["localhost", "0.0.0.0", "::1"].includes(hostname) || hostname.startsWith("127.")) return false;
+    if (/^10\./u.test(hostname) || /^192\.168\./u.test(hostname)) return false;
+    const private172 = hostname.match(/^172\.(\d{1,3})\./u);
+    if (private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function arkOpenApiRequest(action, payload) {
+  const body = JSON.stringify(payload || {});
+  const target = new URL(arkOpenApiBaseUrl);
+  const query = canonicalQuery({ Action: action, Version: arkOpenApiVersion });
+  const xDate = new Date().toISOString().replace(/[:-]|\.\d{3}/gu, "");
+  const shortDate = xDate.slice(0, 8);
+  const contentHash = sha256Hex(body);
+  const signedHeaders = "host;x-content-sha256;x-date";
+  const canonicalHeaders = `host:${target.host}\nx-content-sha256:${contentHash}\nx-date:${xDate}\n`;
+  const canonicalRequest = `POST\n/\n${query}\n${canonicalHeaders}\n${signedHeaders}\n${contentHash}`;
+  const credentialScope = `${shortDate}/${arkOpenApiRegion}/${arkOpenApiService}/request`;
+  const stringToSign = `HMAC-SHA256\n${xDate}\n${credentialScope}\n${sha256Hex(canonicalRequest)}`;
+  const dateKey = hmacSha256(config.arkSecretAccessKey, shortDate);
+  const regionKey = hmacSha256(dateKey, arkOpenApiRegion);
+  const serviceKey = hmacSha256(regionKey, arkOpenApiService);
+  const signingKey = hmacSha256(serviceKey, "request");
+  const signature = hmacSha256(signingKey, stringToSign).toString("hex");
+  const authorization = `HMAC-SHA256 Credential=${config.arkAccessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+  const response = await fetch(`${arkOpenApiBaseUrl}/?${query}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Content-Sha256": contentHash,
+      "X-Date": xDate,
+      Authorization: authorization
+    },
+    body
+  });
+  const text = await response.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`方舟素材接口返回了无法解析的内容（HTTP ${response.status}）。`);
+  }
+  const metadataError = data?.ResponseMetadata?.Error;
+  if (!response.ok || metadataError) {
+    const code = metadataError?.Code || data?.Code || "ArkAssetRequestFailed";
+    const message = metadataError?.Message || data?.Message || `HTTP ${response.status}`;
+    throw new Error(`${code}: ${message}`);
+  }
+  return data?.Result || {};
+}
+
+function canonicalQuery(values) {
+  return Object.entries(values)
+    .map(([key, value]) => [rfc3986Encode(key), rfc3986Encode(value)])
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("&");
+}
+
+function rfc3986Encode(value) {
+  return encodeURIComponent(String(value)).replace(/[!'()*]/gu, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+function sha256Hex(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function hmacSha256(key, value) {
+  return createHmac("sha256", key).update(value).digest();
+}
+
+function arkAssetErrorMessage(error) {
+  const code = sanitizeOptionalText(error?.code || error?.Code);
+  const message = sanitizeOptionalText(error?.message || error?.Message || String(error || "素材入库失败"));
+  return code && !message.includes(code) ? `${code}: ${message}` : message;
 }
 
 async function handleDreaminaStatus(res) {
@@ -1210,6 +1571,13 @@ async function writeSettingsEnv(settings) {
     ["YUNWU_API_KEY", settings.apiKey],
     ["VOLCENGINE_ARK_API_KEY", settings.arkApiKey],
     ["VOLCENGINE_ARK_BASE_URL", settings.arkBaseUrl],
+    ["VOLCENGINE_ACCESS_KEY_ID", settings.arkAccessKeyId],
+    ["VOLCENGINE_SECRET_ACCESS_KEY", settings.arkSecretAccessKey],
+    ["VOLCENGINE_ARK_ASSET_PROJECT", settings.arkAssetProject],
+    ["VOLCENGINE_ARK_ASSET_GROUP_ID", settings.arkAssetGroupId],
+    ["VOLCENGINE_TOS_BUCKET", settings.tosBucket],
+    ["VOLCENGINE_TOS_REGION", settings.tosRegion],
+    ["VOLCENGINE_TOS_ENDPOINT", settings.tosEndpoint],
     ["GRSAI_API_KEY", settings.grsaiApiKey],
     ["YUNWU_BASE_URL", settings.baseUrl],
     ["YUNWU_IMAGE_ENDPOINT", settings.imageEndpoint],
@@ -3973,9 +4341,10 @@ async function handleArkVideoGenerate(res, body, prompt) {
   const files = Array.isArray(body.files) ? body.files : [];
   const uploadedImages = files.filter((file) => file.name === "image" && String(file.contentType || "").startsWith("image/"));
   const cachedImages = await loadCachedAssets(parseCachedAssetRefs(body.cachedImages), projectId);
+  const arkAssetUris = parseArkAssetUris(body.arkAssetUris).slice(0, 9);
   const imageFiles = [...cachedImages, ...uploadedImages]
     .filter((file) => String(file.contentType || "").startsWith("image/"))
-    .slice(0, 9);
+    .slice(0, Math.max(0, 9 - arkAssetUris.length));
   const connection = resolvedConnection(modelName, body, "video");
   if (connection.protocol !== "ark-video") {
     return sendJson(res, 400, { error: `模型 ${modelName} 当前连接协议 ${connection.protocol} 不支持火山方舟视频生成。` });
@@ -3986,6 +4355,13 @@ async function handleArkVideoGenerate(res, body, prompt) {
 
   const extraParams = parseExtraParamsValue(body.extraParams);
   const content = [{ type: "text", text: prompt }];
+  for (const assetUri of arkAssetUris) {
+    content.push({
+      type: "image_url",
+      image_url: { url: assetUri },
+      role: "reference_image"
+    });
+  }
   for (const image of imageFiles) {
     content.push({
       type: "image_url",
@@ -4032,6 +4408,7 @@ async function handleArkVideoGenerate(res, body, prompt) {
         provider: "volcengine-ark",
         apiUrl: connection.apiUrl,
         taskId,
+        virtualHumanAssetCount: arkAssetUris.length,
         payload: { ...payload, content: summarizeArkVideoContent(content) }
       },
       videos: [video],
@@ -5443,4 +5820,30 @@ function parseExtraParamsValue(value) {
   } catch {
     return {};
   }
+}
+
+function parseArkAssetUris(value) {
+  const values = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? (() => {
+          try {
+            const parsed = JSON.parse(value);
+            return Array.isArray(parsed) ? parsed : value.split(/[\r\n,]+/u);
+          } catch {
+            return value.split(/[\r\n,]+/u);
+          }
+        })()
+      : [];
+  const seen = new Set();
+  const uris = [];
+  for (const entry of values) {
+    const raw = String(entry || "").trim();
+    if (!raw) continue;
+    const uri = raw.startsWith("asset://") ? raw : `asset://${raw}`;
+    if (!/^asset:\/\/[A-Za-z0-9._-]+$/u.test(uri) || seen.has(uri)) continue;
+    seen.add(uri);
+    uris.push(uri);
+  }
+  return uris;
 }

@@ -57,6 +57,9 @@
 - Seedance 2.0、Fast、Mini 直接进入现有视频节点，调用 `POST /api/v3/contents/generations/tasks` 并自动轮询任务状态
 - Seedance 2.0 可选 480p、720p、1080p、4K；Fast 与 Mini 仅显示文档支持的 480p、720p
 - 视频节点支持 4-15 秒、原声音频、常用比例/自适应比例，以及最多 9 张画布或本地参考图片
+- “虚拟人像入库”节点先进入选图模式，再点击画布图片；也可将图片连接点直接拖到入库节点，创建 AIGC 私域素材并在成功后为原图添加“方舟素材”标记
+- 仍保留公网源地址的图片可直接提交；只有本地缓存的图片会先上传到配置的 TOS 存储桶，再进入方舟素材库
+- 带标记的图片连到方舟视频节点时会自动使用认证素材；普通参考图与虚拟人像素材合计最多 9 个，提示词输入 `@` 可从可视标签中精确引用已添加素材
 - 方舟返回的视频临时 URL 会立即下载到当前画布 `outputs/`，避免 24 小时后链接失效
 - 专属设置页可修改 Base URL，以及每个模型实际发送的 Model ID 或推理接入点 ID；控制台 ID 与内置版本不同时无需改代码
 
@@ -130,6 +133,13 @@ curl -s https://jimeng.jianying.com/cli | bash
 YUNWU_API_KEY=你的 Yunwu API Key
 VOLCENGINE_ARK_API_KEY=你的火山方舟 API Key
 VOLCENGINE_ARK_BASE_URL=https://ark.cn-beijing.volces.com
+VOLCENGINE_ACCESS_KEY_ID=你的 Access Key ID
+VOLCENGINE_SECRET_ACCESS_KEY=你的 Secret Access Key
+VOLCENGINE_ARK_ASSET_PROJECT=default
+VOLCENGINE_ARK_ASSET_GROUP_ID=
+VOLCENGINE_TOS_BUCKET=本地图入库使用的存储桶
+VOLCENGINE_TOS_REGION=cn-beijing
+VOLCENGINE_TOS_ENDPOINT=
 YUNWU_BASE_URL=https://yunwu.ai
 YUNWU_IMAGE_ENDPOINT=/v1/images/generations
 YUNWU_EDIT_ENDPOINT=/v1/images/edits

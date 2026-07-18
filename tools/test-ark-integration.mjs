@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const testCache = path.join(root, "cache", "ark-smoke-test");
 const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2n0sAAAAASUVORK5CYII=";
+let lastVideoPayload = null;
 
 const mock = http.createServer((req, res) => {
   if (req.method === "POST" && req.url === "/api/v3/images/generations") {
@@ -16,7 +17,10 @@ const mock = http.createServer((req, res) => {
     }));
   }
   if (req.method === "POST" && req.url === "/api/v3/contents/generations/tasks") {
-    return sendJson(res, { id: "task-smoke" });
+    return readJson(req).then((payload) => {
+      lastVideoPayload = payload;
+      sendJson(res, { id: "task-smoke" });
+    });
   }
   if (req.method === "GET" && req.url === "/api/v3/contents/generations/tasks/task-smoke") {
     const address = mock.address();
@@ -119,13 +123,18 @@ try {
     size: "16:9",
     quality: "720p",
     format: "mp4",
-    extraParams: JSON.stringify({ generate_audio: true })
+    extraParams: JSON.stringify({ generate_audio: true }),
+    arkAssetUris: JSON.stringify(["asset://asset-demo-1"])
   });
   videoForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "video-reference.png");
   const video = await postForm(`http://127.0.0.1:${appPort}/api/generate`, videoForm);
   assert.equal(video.request.provider, "volcengine-ark");
   assert.equal(video.videos.length, 1);
   assert.equal(video.request.payload.content[1].role, "reference_image");
+  assert.equal(video.request.payload.content[2].role, "reference_image");
+  assert.equal(video.request.virtualHumanAssetCount, 1);
+  assert.equal(lastVideoPayload.content[1].image_url.url, "asset://asset-demo-1");
+  assert.match(lastVideoPayload.content[2].image_url.url, /^data:image\/png;base64,/u);
   assert.match(video.videos[0].url, /^\/project-cache\/ark-smoke\/outputs\//u);
 
   console.log(JSON.stringify({

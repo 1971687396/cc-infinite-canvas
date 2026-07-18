@@ -17,6 +17,8 @@ const minZoom = 0.02;
 const maxZoom = 24;
 const defaultTaskWidth = 620;
 const defaultVideoTaskWidth = 440;
+const defaultArkAssetNodeWidth = 480;
+const defaultArkAssetNodeHeight = 320;
 const defaultImageScale = 0.5;
 const imageDisplayLongSideByTier = {
   "1k": 360,
@@ -105,6 +107,7 @@ const maxRegionHeight = 6000;
 
 const addTaskButton = document.querySelector("#addTaskButton");
 const addDreaminaVideoButton = document.querySelector("#addDreaminaVideoButton");
+const addArkAssetButton = document.querySelector("#addArkAssetButton");
 const addEditTaskButton = document.querySelector("#addEditTaskButton");
 const addGrokTaskButton = document.querySelector("#addGrokTaskButton");
 const addGrokEditTaskButton = document.querySelector("#addGrokEditTaskButton");
@@ -155,6 +158,16 @@ const settingsArkApiKey = document.querySelector("#settingsArkApiKey");
 const settingsArkClearApiKey = document.querySelector("#settingsArkClearApiKey");
 const settingsArkBaseUrl = document.querySelector("#settingsArkBaseUrl");
 const settingsArkKeyStatus = document.querySelector("#settingsArkKeyStatus");
+const settingsArkAssetKeyStatus = document.querySelector("#settingsArkAssetKeyStatus");
+const settingsArkAccessKeyId = document.querySelector("#settingsArkAccessKeyId");
+const settingsArkSecretAccessKey = document.querySelector("#settingsArkSecretAccessKey");
+const settingsArkAssetProject = document.querySelector("#settingsArkAssetProject");
+const settingsArkAssetGroupId = document.querySelector("#settingsArkAssetGroupId");
+const settingsTosBucket = document.querySelector("#settingsTosBucket");
+const settingsTosRegion = document.querySelector("#settingsTosRegion");
+const settingsTosEndpoint = document.querySelector("#settingsTosEndpoint");
+const settingsArkClearAssetCredentials = document.querySelector("#settingsArkClearAssetCredentials");
+const settingsArkClearAssetGroupId = document.querySelector("#settingsArkClearAssetGroupId");
 const settingsArkModelInputs = [...document.querySelectorAll("[data-ark-model]")];
 const settingsConnectionModel = document.querySelector("#settingsConnectionModel");
 const settingsCustomModelRow = document.querySelector("#settingsCustomModelRow");
@@ -442,6 +455,7 @@ const baseTaskModelOptions = [
 const taskModelOptions = [...baseTaskModelOptions, ...dreaminaModelOptionsForVersions(dreaminaTextModelVersions)];
 
 const fileStore = new Map();
+const arkAssetPollTimers = new Map();
 const selectedNodeIds = new Set();
 const undoLimit = 80;
 const undoStack = [];
@@ -533,6 +547,7 @@ async function init() {
 
 addTaskButton.addEventListener("click", () => addTaskNode("create"));
 addDreaminaVideoButton?.addEventListener("click", () => addDreaminaVideoNode());
+addArkAssetButton?.addEventListener("click", () => addArkAssetNode());
 addEditTaskButton?.addEventListener("click", () => addTaskNode("edit"));
 addGrokTaskButton?.addEventListener("click", () => addGrokTaskNode("create"));
 addGrokEditTaskButton?.addEventListener("click", () => addGrokTaskNode("edit"));
@@ -633,6 +648,13 @@ settingsArkApiKey?.addEventListener("input", () => {
   updateArkSettingsKeyStatus();
 });
 settingsArkClearApiKey?.addEventListener("change", updateArkSettingsKeyStatus);
+for (const control of [settingsArkAccessKeyId, settingsArkSecretAccessKey]) {
+  control?.addEventListener("input", () => {
+    if (control.value.trim()) settingsArkClearAssetCredentials.checked = false;
+    updateArkAssetSettingsKeyStatus();
+  });
+}
+settingsArkClearAssetCredentials?.addEventListener("change", updateArkAssetSettingsKeyStatus);
 clearCanvasButton.addEventListener("click", clearCanvas);
 resetViewButton.addEventListener("click", resetViewport);
 zoomInButton.addEventListener("click", () => zoomAtCenter(canvasState.viewport.zoom * 1.2));
@@ -776,6 +798,254 @@ function addDreaminaVideoNode(point = null) {
   saveCanvasState();
   updateCanvasMeta();
   return node;
+}
+
+function addArkAssetNode(point = null) {
+  const center = point || getViewportCenterWorld();
+  const offset = point ? 0 : canvasState.nodes.length % 8;
+  const node = {
+    id: createId(),
+    type: "ark-asset",
+    title: "虚拟人像入库",
+    projectName: config.arkAssetProject || "default",
+    groupId: config.arkAssetGroupId || "",
+    items: [],
+    status: "idle",
+    error: "",
+    width: defaultArkAssetNodeWidth,
+    x: Math.round(center.x - defaultArkAssetNodeWidth / 2 + offset * 28),
+    y: Math.round(center.y - 170 + offset * 28),
+    z: ++canvasState.nextZ,
+    createdAt: new Date().toISOString()
+  };
+  canvasState.nodes.push(node);
+  selectOnly(node.id);
+  saveCanvasState();
+  updateCanvasMeta();
+  showToast("已创建入库节点，请先点击“选择图片”，再点击画布中的图片");
+  return node;
+}
+
+function arkAssetItemFromImageNode(imageNode) {
+  const image = imageNode?.image || {};
+  return {
+    clientId: createId(),
+    sourceImageNodeId: imageNode.id,
+    previewUrl: image.url || "",
+    url: image.url || "",
+    sourceUrl: image.sourceUrl || "",
+    filename: image.filename || "virtual-human.png",
+    assetId: "",
+    assetUri: "",
+    status: "idle",
+    sourceMode: "",
+    error: ""
+  };
+}
+
+function appendCanvasImagesToArkAssetNode(nodeId, imageNodeIds) {
+  const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "ark-asset");
+  if (!node) return 0;
+  const existing = new Set((node.items || []).map((item) => item.sourceImageNodeId).filter(Boolean));
+  const imageNodes = dedupeStrings(imageNodeIds)
+    .map((id) => canvasState.nodes.find((item) => item.id === id))
+    .filter((item) => item?.type === "image" && item.image?.url && !existing.has(item.id));
+  if (!imageNodes.length) {
+    showToast("这张图片已经加入，或暂时无法读取");
+    return 0;
+  }
+  const available = Math.max(0, 12 - (node.items || []).length);
+  if (!available) {
+    showToast("单个入库节点最多处理 12 张图片");
+    referencePickTargetNodeId = null;
+    updateNode(node);
+    return 0;
+  }
+  if (imageNodes.length > available) showToast(`当前节点还能加入 ${available} 张图片`);
+  const added = imageNodes.slice(0, available);
+  node.items = [...(node.items || []), ...added.map(arkAssetItemFromImageNode)];
+  node.error = "";
+  if (node.items.length >= 12) referencePickTargetNodeId = null;
+  updateNode(node);
+  saveCanvasState();
+  showToast(`已加入 ${added.length} 张图片${referencePickTargetNodeId === node.id ? "，可继续点击选择" : ""}`);
+  return added.length;
+}
+
+async function importArkAssetNode(nodeId) {
+  const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "ark-asset");
+  if (!node || node.status === "running") return;
+  const pendingItems = (node.items || []).filter((item) => !item.assetId || item.status === "Failed");
+  if (!pendingItems.length) {
+    showToast("没有待入库的图片");
+    return;
+  }
+  node.status = "running";
+  node.error = "";
+  for (const item of pendingItems) {
+    item.status = "Uploading";
+    item.error = "";
+  }
+  updateNode(node);
+  saveCanvasState({ history: false });
+
+  try {
+    const response = await fetch("/api/ark-assets/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: currentProjectId,
+        projectName: node.projectName || config.arkAssetProject || "default",
+        groupId: node.groupId || config.arkAssetGroupId || "",
+        groupName: `${currentProjectName || "cc无限画布"}虚拟人像`,
+        items: pendingItems.map((item) => ({
+          clientId: item.clientId,
+          url: item.url,
+          sourceUrl: item.sourceUrl,
+          filename: item.filename
+        }))
+      })
+    });
+    const data = await readJsonResponse(response);
+    if (data.parseError) throw new Error("方舟素材接口返回了无法解析的内容");
+    node.groupId = data.groupId || node.groupId;
+    node.projectName = data.projectName || node.projectName;
+    if (node.groupId) config.arkAssetGroupId = node.groupId;
+    mergeArkAssetItemResults(node, data.items || []);
+    if (!response.ok && !(data.items || []).some((item) => item.assetId)) throw new Error(data.error || "虚拟人像入库失败");
+    node.status = arkAssetNodeStatus(node);
+    node.error = node.status === "error" ? data.error || "部分图片入库失败" : "";
+    if ((node.items || []).some((item) => item.status === "Processing")) scheduleArkAssetStatusPoll(node.id);
+  } catch (error) {
+    node.status = "error";
+    node.error = error.message || "虚拟人像入库失败";
+    for (const item of pendingItems.filter((entry) => entry.status === "Uploading")) {
+      item.status = "Failed";
+      item.error = node.error;
+    }
+    showToast(node.error);
+  } finally {
+    updateNode(node);
+    saveCanvasState();
+    updateCanvasMeta();
+  }
+}
+
+async function refreshArkAssetNodeStatus(nodeId, options = {}) {
+  const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "ark-asset");
+  if (!node) return;
+  const processing = (node.items || []).filter((item) => item.assetId && !["Active", "Failed"].includes(item.status));
+  if (!processing.length) {
+    node.status = arkAssetNodeStatus(node);
+    updateNode(node);
+    return;
+  }
+  try {
+    const response = await fetch("/api/ark-assets/status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectName: node.projectName || config.arkAssetProject || "default",
+        items: processing.map((item) => ({ clientId: item.clientId, assetId: item.assetId }))
+      })
+    });
+    const data = await readJsonResponse(response);
+    if (!response.ok || data.parseError) throw new Error(data.error || "素材状态查询失败");
+    mergeArkAssetItemResults(node, data.items || []);
+    node.status = arkAssetNodeStatus(node);
+    node.error = "";
+    updateNode(node);
+    saveCanvasState({ history: false });
+    if ((node.items || []).some((item) => item.status === "Processing")) scheduleArkAssetStatusPoll(node.id);
+    else if (!options.silent) showToast(node.status === "done" ? "虚拟人像素材已可用" : "素材处理已结束");
+  } catch (error) {
+    node.error = error.message || "素材状态查询失败";
+    if (!options.silent) showToast(node.error);
+    updateNode(node);
+  }
+}
+
+function mergeArkAssetItemResults(node, results) {
+  const byClientId = new Map(results.map((item) => [item.clientId, item]));
+  node.items = (node.items || []).map((item) => {
+    const result = byClientId.get(item.clientId);
+    return result ? { ...item, ...result } : item;
+  });
+  syncArkAssetMarksToSourceImages(node);
+}
+
+function normalizeImageArkAsset(value) {
+  if (!value || typeof value !== "object") return null;
+  const assetId = String(value.assetId || "").trim();
+  const assetUri = normalizeArkAssetUri(value.assetUri || assetId);
+  const status = ["Active", "Processing", "Failed"].includes(value.status) ? value.status : assetUri ? "Active" : "";
+  if (!assetId && !assetUri && !status) return null;
+  return {
+    assetId: assetId || assetUri.replace(/^asset:\/\//u, ""),
+    assetUri,
+    status,
+    groupId: String(value.groupId || ""),
+    projectName: String(value.projectName || "default"),
+    error: String(value.error || ""),
+    updatedAt: value.updatedAt || new Date().toISOString()
+  };
+}
+
+function activeArkAssetForImageNode(node) {
+  const asset = normalizeImageArkAsset(node?.arkAsset);
+  return asset?.status === "Active" && asset.assetUri ? asset : null;
+}
+
+function syncArkAssetMarksToSourceImages(assetNode, options = {}) {
+  if (assetNode?.type !== "ark-asset") return [];
+  const changed = [];
+  for (const item of assetNode.items || []) {
+    if (!item.sourceImageNodeId || !item.assetId) continue;
+    const imageNode = canvasState.nodes.find((candidate) => candidate.id === item.sourceImageNodeId && candidate.type === "image");
+    if (!imageNode) continue;
+    const previous = normalizeImageArkAsset(imageNode.arkAsset);
+    const nextUri = normalizeArkAssetUri(item.assetUri || item.assetId);
+    const canReuseTimestamp = previous?.assetUri === nextUri && previous?.status === item.status;
+    const nextAsset = normalizeImageArkAsset({
+      assetId: item.assetId,
+      assetUri: item.assetUri,
+      status: item.status,
+      groupId: assetNode.groupId,
+      projectName: assetNode.projectName,
+      error: item.error,
+      updatedAt: canReuseTimestamp ? previous.updatedAt : new Date().toISOString()
+    });
+    if (!nextAsset) continue;
+    if (JSON.stringify(previous) === JSON.stringify(nextAsset)) continue;
+    imageNode.arkAsset = nextAsset;
+    changed.push(imageNode);
+  }
+  if (options.render !== false) changed.forEach((imageNode) => updateNode(imageNode));
+  return changed;
+}
+
+function syncAllArkAssetMarks() {
+  for (const node of canvasState.nodes) {
+    if (node.type === "ark-asset") syncArkAssetMarksToSourceImages(node, { render: false });
+  }
+}
+
+function scheduleArkAssetStatusPoll(nodeId) {
+  window.clearTimeout(arkAssetPollTimers.get(nodeId));
+  const timer = window.setTimeout(() => {
+    arkAssetPollTimers.delete(nodeId);
+    refreshArkAssetNodeStatus(nodeId, { silent: true });
+  }, 5000);
+  arkAssetPollTimers.set(nodeId, timer);
+}
+
+function arkAssetNodeStatus(node) {
+  const items = node.items || [];
+  if (!items.length) return "idle";
+  if (items.some((item) => ["Uploading", "Processing"].includes(item.status))) return "running";
+  if (items.every((item) => item.status === "Active")) return "done";
+  if (items.some((item) => item.status === "Active")) return "partial";
+  return items.some((item) => item.status === "Failed") ? "error" : "idle";
 }
 
 function applyTaskNodePreset(node, preset) {
@@ -1154,6 +1424,9 @@ function createDefaultVideoTaskNode() {
     mode: "video",
     extraParams: {},
     extraParamsText: "{}",
+    arkAssetUris: [],
+    arkAssetUrisText: "",
+    referenceMentionAliases: {},
     cachedImages: [],
     referenceImageNodeIds: [],
     promptNoteNodeIds: [],
@@ -1372,6 +1645,7 @@ async function generateVideoNode(nodeId) {
   }
 
   if (!syncNodeExtraParams(node)) return;
+  if (isArkVideoModelName(node.model) && !syncArkAssetUris(node)) return;
   if (fileStore.get(node.id)?.images?.length) {
     await cacheEditFiles(node.id);
   }
@@ -1473,7 +1747,7 @@ function buildNodePayload(node) {
   return {
     projectId: currentProjectId,
     mode: node.mode,
-    prompt: effectivePromptForNode(node),
+    prompt: requestPromptForNode(node),
     model: node.model,
     n: node.n,
     size: node.size,
@@ -1485,6 +1759,7 @@ function buildNodePayload(node) {
     endpointPath: node.endpointPath || defaultEndpointForMode(node.mode),
     connectionOverride: Boolean(node.connectionOverride),
     extraParams: node.extraParams || {},
+    arkAssetUris: node.arkAssetUris || [],
     cachedImages: node.cachedImages || [],
     cachedMask: node.cachedMask ? [node.cachedMask] : []
   };
@@ -1493,7 +1768,7 @@ function buildNodePayload(node) {
 function appendNodeFields(formData, node, options = {}) {
   formData.append("projectId", currentProjectId);
   formData.append("mode", node.mode);
-  formData.append("prompt", effectivePromptForNode(node));
+  formData.append("prompt", requestPromptForNode(node));
   formData.append("model", node.model);
   formData.append("n", node.n);
   formData.append("size", node.size);
@@ -1505,6 +1780,9 @@ function appendNodeFields(formData, node, options = {}) {
   formData.append("endpointPath", node.endpointPath || defaultEndpointForMode(node.mode));
   formData.append("connectionOverride", String(Boolean(node.connectionOverride)));
   formData.append("extraParams", JSON.stringify(node.extraParams || {}));
+  if (node.arkAssetUris?.length) {
+    formData.append("arkAssetUris", JSON.stringify(node.arkAssetUris));
+  }
   if (options.includeCachedAssets && node.cachedImages?.length) {
     formData.append("cachedImages", JSON.stringify(node.cachedImages));
   }
@@ -1547,6 +1825,8 @@ function buildGenerationSnapshot(node) {
     baseUrl: node.baseUrl || config.baseUrl || "https://yunwu.ai",
     endpointPath: node.endpointPath || defaultEndpointForMode(node.mode),
     extraParams: clonePlainValue(node.extraParams || {}),
+    arkAssetUris: clonePlainValue(node.arkAssetUris || []),
+    referenceMentionAliases: clonePlainValue(node.referenceMentionAliases || {}),
     cachedImages: clonePlainValue(node.cachedImages || []),
     referenceImageNodeIds: dedupeStrings(node.referenceImageNodeIds || []),
     promptNoteNodeIds: dedupeStrings(node.promptNoteNodeIds || []),
@@ -1860,6 +2140,49 @@ function syncNodeExtraParams(node) {
     showToast(error.message || "额外 JSON 参数格式错误");
     return false;
   }
+}
+
+function normalizeArkAssetUri(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const uri = raw.startsWith("asset://") ? raw : `asset://${raw}`;
+  return /^asset:\/\/[A-Za-z0-9._-]+$/u.test(uri) ? uri : "";
+}
+
+function parseArkAssetUriText(value) {
+  const seen = new Set();
+  const uris = [];
+  for (const entry of String(value || "").split(/[\r\n,]+/u)) {
+    const uri = normalizeArkAssetUri(entry);
+    if (!uri || seen.has(uri)) continue;
+    seen.add(uri);
+    uris.push(uri);
+  }
+  return uris;
+}
+
+function syncArkAssetUris(node) {
+  const rawEntries = String(node.arkAssetUrisText || "").split(/[\r\n,]+/u).map((value) => value.trim()).filter(Boolean);
+  const uris = parseArkAssetUriText(node.arkAssetUrisText);
+  if (rawEntries.some((entry) => !normalizeArkAssetUri(entry))) {
+    showToast("方舟素材 URI 格式不正确，请填写 Asset ID 或 asset://AssetID，每行一个");
+    return false;
+  }
+  const sessionImageCount = fileStore.get(node.id)?.images?.length || 0;
+  if (uris.length + (node.cachedImages?.length || 0) + sessionImageCount > 9) {
+    showToast("方舟素材与普通参考图合计最多 9 个");
+    return false;
+  }
+  node.arkAssetUris = uris;
+  node.arkAssetUrisText = uris.join("\n");
+  const cachedSourceIds = new Set((node.cachedImages || []).map((image) => image.sourceImageNodeId).filter(Boolean));
+  node.referenceImageNodeIds = dedupeStrings(node.referenceImageNodeIds || []).filter((id) => {
+    if (cachedSourceIds.has(id)) return true;
+    const source = canvasState.nodes.find((candidate) => candidate.id === id && candidate.type === "image");
+    const asset = activeArkAssetForImageNode(source);
+    return !asset || uris.includes(asset.assetUri);
+  });
+  return true;
 }
 
 function setKeyStatus(hasApiKey, dreaminaReady = false) {
@@ -2187,12 +2510,22 @@ function populateArkSettings() {
   settingsArkApiKey.value = "";
   settingsArkClearApiKey.checked = false;
   settingsArkBaseUrl.value = config.arkBaseUrl || arkDefaultBaseUrl;
+  settingsArkAccessKeyId.value = "";
+  settingsArkSecretAccessKey.value = "";
+  settingsArkClearAssetCredentials.checked = false;
+  settingsArkClearAssetGroupId.checked = false;
+  settingsArkAssetProject.value = config.arkAssetProject || "default";
+  settingsArkAssetGroupId.value = config.arkAssetGroupId || "";
+  settingsTosBucket.value = config.tosBucket || "";
+  settingsTosRegion.value = config.tosRegion || "cn-beijing";
+  settingsTosEndpoint.value = config.tosEndpoint || "";
   const models = new Map((config.arkModels || []).map((item) => [item.model, item]));
   for (const input of settingsArkModelInputs) {
     const model = input.dataset.arkModel;
     input.value = models.get(model)?.apiModel || config.modelConnections?.[model]?.apiModel || arkDefaultApiModels[model] || "";
   }
   updateArkSettingsKeyStatus();
+  updateArkAssetSettingsKeyStatus();
 }
 
 function updateArkSettingsKeyStatus() {
@@ -2207,6 +2540,28 @@ function updateArkSettingsKeyStatus() {
         ? "方舟 Key 已配置"
         : "尚未配置 Key";
   settingsArkKeyStatus.dataset.state = clearing ? "warning" : hasDraft || config.hasArkApiKey ? "ready" : "fallback";
+}
+
+function updateArkAssetSettingsKeyStatus() {
+  if (!settingsArkAssetKeyStatus) return;
+  const clearing = Boolean(settingsArkClearAssetCredentials?.checked);
+  const hasAccessDraft = Boolean(settingsArkAccessKeyId?.value.trim());
+  const hasSecretDraft = Boolean(settingsArkSecretAccessKey?.value.trim());
+  const hasCompleteDraft = hasAccessDraft && hasSecretDraft;
+  settingsArkAssetKeyStatus.textContent = clearing
+    ? "保存后清除 AK/SK"
+    : hasCompleteDraft
+      ? "待保存新 AK/SK"
+      : hasAccessDraft || hasSecretDraft
+        ? "请同时填写 AK 与 SK"
+        : config.hasArkAssetCredentials
+          ? "AK/SK 已配置"
+          : "尚未配置 AK/SK";
+  settingsArkAssetKeyStatus.dataset.state = clearing
+    ? "warning"
+    : hasCompleteDraft || config.hasArkAssetCredentials
+      ? "ready"
+      : "fallback";
 }
 
 function captureArkSettingsDrafts() {
@@ -2484,6 +2839,15 @@ async function saveSettings(event) {
       arkApiKey: settingsArkApiKey?.value.trim() || "",
       clearArkApiKey: Boolean(settingsArkClearApiKey?.checked),
       arkBaseUrl: settingsArkBaseUrl?.value.trim() || arkDefaultBaseUrl,
+      arkAccessKeyId: settingsArkAccessKeyId?.value.trim() || "",
+      arkSecretAccessKey: settingsArkSecretAccessKey?.value.trim() || "",
+      clearArkAssetCredentials: Boolean(settingsArkClearAssetCredentials?.checked),
+      arkAssetProject: settingsArkAssetProject?.value.trim() || "default",
+      arkAssetGroupId: settingsArkAssetGroupId?.value.trim() || "",
+      clearArkAssetGroupId: Boolean(settingsArkClearAssetGroupId?.checked),
+      tosBucket: settingsTosBucket?.value.trim() || "",
+      tosRegion: settingsTosRegion?.value.trim() || "cn-beijing",
+      tosEndpoint: settingsTosEndpoint?.value.trim() || "",
       modelApiKeys,
       clearModelApiKeys: [...settingsConnectionClearKeys],
       modelConnections: settingsConnectionDrafts,
@@ -2505,6 +2869,9 @@ async function saveSettings(event) {
       ...config,
       hasApiKey: data.hasApiKey,
       hasArkApiKey: data.hasArkApiKey,
+      hasArkAccessKeyId: data.hasArkAccessKeyId,
+      hasArkSecretAccessKey: data.hasArkSecretAccessKey,
+      hasArkAssetCredentials: data.hasArkAssetCredentials,
       hasGrsaiApiKey: data.hasGrsaiApiKey,
       hasAnyKey: data.hasAnyKey,
       baseUrl: data.baseUrl,
@@ -2518,6 +2885,11 @@ async function saveSettings(event) {
       connectionPresets: data.connectionPresets,
       modelConnections: data.modelConnections,
       arkBaseUrl: data.arkBaseUrl,
+      arkAssetProject: data.arkAssetProject,
+      arkAssetGroupId: data.arkAssetGroupId,
+      tosBucket: data.tosBucket,
+      tosRegion: data.tosRegion,
+      tosEndpoint: data.tosEndpoint,
       arkModels: data.arkModels,
       cacheDir: data.cacheDir,
       photoshopBridgeEnabled: Boolean(data.photoshopBridgeEnabled)
@@ -2528,6 +2900,8 @@ async function saveSettings(event) {
     await refreshProjectList();
     settingsApiKey.value = "";
     settingsArkApiKey.value = "";
+    settingsArkAccessKeyId.value = "";
+    settingsArkSecretAccessKey.value = "";
     settingsConnectionApiKey.value = "";
     settingsConnectionKeyDrafts = {};
     settingsConnectionClearKeys = new Set();
@@ -5671,6 +6045,10 @@ function getVideoGeneration(node) {
     baseUrl: generation.baseUrl || "",
     endpointPath: generation.endpointPath || "",
     extraParams: isPlainObject(generation.extraParams) ? clonePlainValue(generation.extraParams) : {},
+    arkAssetUris: Array.isArray(generation.arkAssetUris) ? dedupeStrings(generation.arkAssetUris) : [],
+    referenceMentionAliases: isPlainObject(generation.referenceMentionAliases)
+      ? clonePlainValue(generation.referenceMentionAliases)
+      : {},
     cachedImages: Array.isArray(generation.cachedImages) ? clonePlainValue(generation.cachedImages) : [],
     referenceImageNodeIds: Array.isArray(generation.referenceImageNodeIds) ? dedupeStrings(generation.referenceImageNodeIds) : []
   };
@@ -5694,6 +6072,11 @@ function applyGenerationToVideoTask(task, generation) {
   task.endpointPath = generation.endpointPath || (task.provider === "ark" ? arkVideoEndpoint : "dreamina-video-cli");
   task.extraParams = isPlainObject(generation.extraParams) ? clonePlainValue(generation.extraParams) : {};
   task.extraParamsText = JSON.stringify(task.extraParams, null, 2);
+  task.arkAssetUris = Array.isArray(generation.arkAssetUris) ? dedupeStrings(generation.arkAssetUris).slice(0, 9) : [];
+  task.arkAssetUrisText = task.arkAssetUris.join("\n");
+  task.referenceMentionAliases = isPlainObject(generation.referenceMentionAliases)
+    ? clonePlainValue(generation.referenceMentionAliases)
+    : {};
   task.cachedImages = Array.isArray(generation.cachedImages) ? dedupeAssetRefs(clonePlainValue(generation.cachedImages)) : [];
   task.referenceImageNodeIds = dedupeStrings([
     ...(generation.referenceImageNodeIds || []),
@@ -5820,6 +6203,13 @@ function bindCanvasEvents() {
   document.addEventListener("paste", handleDocumentPaste);
 
   window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && referencePickTargetNodeId && !settingsDialog.open) {
+      const target = canvasState.nodes.find((node) => node.id === referencePickTargetNodeId);
+      referencePickTargetNodeId = null;
+      if (target) updateNode(target);
+      showToast("已结束选图");
+      return;
+    }
     if (handleCanvasShortcut(event)) return;
     if (event.code !== "Space" || isInteractiveElement(event.target) || settingsDialog.open) return;
     event.preventDefault();
@@ -6710,6 +7100,8 @@ function renderReferenceLinks() {
     path.classList.add("reference-link-path");
     if (link.kind === "prompt") {
       path.classList.add("prompt-link-path", `prompt-link-${normalizePromptNotePlacement(link.placement)}`);
+    } else if (link.kind === "asset") {
+      path.classList.add("asset-link-path");
     }
     path.setAttribute("d", `M ${start.x} ${start.y} C ${midX} ${start.y}, ${midX} ${end.y}, ${end.x} ${end.y}`);
 
@@ -6718,7 +7110,7 @@ function renderReferenceLinks() {
     title.textContent =
       link.kind === "prompt"
         ? `提示词连接 · ${promptPlacementLabels[normalizePromptNotePlacement(link.placement)]}`
-        : "参考图连接";
+        : link.kind === "asset" ? "虚拟人像入库连接" : "参考图连接";
     path.append(title);
     layer.append(path);
   }
@@ -6745,6 +7137,12 @@ function referenceLinksForCanvas() {
   const promptSourceIds = new Set(canvasState.nodes.filter(isPromptSourceNode).map((node) => node.id));
   const links = [];
   for (const target of canvasState.nodes) {
+    if (target.type === "ark-asset") {
+      for (const sourceId of dedupeStrings((target.items || []).map((item) => item.sourceImageNodeId))) {
+        if (imageIds.has(sourceId)) links.push({ sourceId, targetId: target.id, kind: "asset" });
+      }
+      continue;
+    }
     if (!["task", "video-task"].includes(target.type)) continue;
     if (target.type !== "task" || target.mode === "edit") {
       for (const sourceId of referenceSourceNodeIdsForTask(target)) {
@@ -6888,11 +7286,214 @@ function createCanvasNode(node) {
   if (node.type === "note") return createNoteNode(node);
   if (node.type === "portrait") return createPortraitNode(node);
   if (node.type === "camera") return createCameraNode(node);
+  if (node.type === "ark-asset") return createArkAssetNode(node);
   if (node.type === "image") return createImageNode(node);
   if (node.type === "video") return createVideoNode(node);
   if (node.type === "video-task") return createVideoTaskNode(node);
   if (node.type === "chatgpt") return createChatGptNode(node);
   return createTaskNode(node);
+}
+
+function createArkAssetNode(node) {
+  const selected = selectedNodeIds.has(node.id);
+  const tile = document.createElement("article");
+  tile.className = [
+    "canvas-node",
+    "ark-asset-node",
+    `status-${node.status || "idle"}`,
+    selected ? "is-selected" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
+  tile.dataset.nodeId = node.id;
+  tile.style.left = `${node.x}px`;
+  tile.style.top = `${node.y}px`;
+  tile.style.width = `${node.width || defaultArkAssetNodeWidth}px`;
+  tile.style.zIndex = node.z;
+
+  const header = document.createElement("div");
+  header.className = "ark-asset-header";
+  const mark = document.createElement("span");
+  mark.className = "ark-asset-mark";
+  mark.textContent = "AIGC";
+  const heading = document.createElement("div");
+  heading.className = "ark-asset-heading";
+  const title = document.createElement("strong");
+  title.textContent = node.title || "虚拟人像入库";
+  const summary = document.createElement("small");
+  const activeCount = (node.items || []).filter((item) => item.status === "Active").length;
+  summary.textContent = `${activeCount}/${(node.items || []).length} 个素材可用`;
+  heading.append(title, summary);
+  header.append(mark, heading);
+
+  tile.append(header);
+  if (selected) tile.append(createArkAssetActions(node));
+  tile.append(createArkAssetItems(node, selected));
+
+  if (selected) {
+    const meta = document.createElement("div");
+    meta.className = "ark-asset-meta";
+    meta.textContent = node.groupId
+      ? `素材组 ${node.groupId} · ${node.projectName || "default"}`
+      : "首次入库时自动创建 AIGC 素材组";
+    tile.append(meta);
+    if (node.error) {
+      const error = document.createElement("p");
+      error.className = "node-error ark-asset-error";
+      error.textContent = node.error;
+      tile.append(error);
+    }
+  }
+
+  if ((node.items || []).some((item) => item.status === "Processing")) scheduleArkAssetStatusPoll(node.id);
+  tile.addEventListener("pointerdown", (event) => startNodeDrag(event, node.id));
+  return tile;
+}
+
+function createArkAssetActions(node) {
+  const actions = document.createElement("div");
+  actions.className = "ark-asset-actions";
+  actions.addEventListener("pointerdown", (event) => event.stopPropagation());
+
+  const add = document.createElement("button");
+  add.type = "button";
+  const isPicking = referencePickTargetNodeId === node.id;
+  add.classList.toggle("is-active", isPicking);
+  add.textContent = isPicking ? "结束选图" : "选择图片";
+  add.title = isPicking ? "结束连续选图" : "进入选图模式后，直接点击画布图片";
+  add.addEventListener("click", () => {
+    referencePickTargetNodeId = isPicking ? null : node.id;
+    updateNode(node);
+    showToast(isPicking ? "已结束选图" : "请点击画布图片，可连续选择；按 Esc 结束");
+  });
+
+  const submit = document.createElement("button");
+  submit.type = "button";
+  submit.className = "node-action-primary";
+  submit.textContent = node.status === "running" ? "处理中" : "开始入库";
+  submit.disabled = node.status === "running" || !(node.items || []).length;
+  submit.addEventListener("click", () => importArkAssetNode(node.id));
+
+  const refresh = document.createElement("button");
+  refresh.type = "button";
+  refresh.textContent = "刷新";
+  refresh.disabled = !(node.items || []).some((item) => item.assetId);
+  refresh.addEventListener("click", () => refreshArkAssetNodeStatus(node.id));
+
+  const connect = document.createElement("button");
+  connect.type = "button";
+  connect.textContent = "送入视频";
+  connect.disabled = !(node.items || []).some((item) => item.status === "Active" && item.assetUri);
+  connect.addEventListener("click", () => sendArkAssetUrisToSelectedVideoTasks(node));
+
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.textContent = "复制 URI";
+  copy.disabled = !(node.items || []).some((item) => item.status === "Active" && item.assetUri);
+  copy.addEventListener("click", () => {
+    const uris = activeArkAssetUris(node);
+    if (uris.length) copyTextToClipboard(uris.join("\n"), "素材 URI 已复制");
+  });
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "node-action-danger";
+  remove.textContent = "删除";
+  remove.addEventListener("click", () => deleteNodes([node.id]));
+
+  actions.append(add, submit, refresh, connect, copy, remove);
+  return actions;
+}
+
+function createArkAssetItems(node, selected) {
+  const items = document.createElement("div");
+  items.className = "ark-asset-items";
+  if (!(node.items || []).length) {
+    const empty = document.createElement("div");
+    empty.className = "ark-asset-empty";
+    empty.append(createNodeIcon("image", "node-placeholder-icon"), document.createTextNode("请选择已生成的人像图片"));
+    items.append(empty);
+    return items;
+  }
+
+  for (const item of node.items || []) {
+    const card = document.createElement("div");
+    card.className = `ark-asset-item status-${String(item.status || "idle").toLowerCase()}`;
+    const preview = document.createElement("img");
+    preview.src = item.previewUrl || item.url;
+    preview.alt = item.filename || "虚拟人像";
+    preview.draggable = false;
+    const detail = document.createElement("div");
+    detail.className = "ark-asset-item-detail";
+    const name = document.createElement("strong");
+    name.textContent = item.filename || "虚拟人像";
+    name.title = name.textContent;
+    const status = document.createElement("span");
+    status.textContent = arkAssetItemStatusText(item);
+    status.title = item.error || status.textContent;
+    detail.append(name, status);
+    card.append(preview, detail);
+
+    if (selected) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "ark-asset-item-remove";
+      remove.textContent = "×";
+      remove.title = "从入库列表移除";
+      remove.addEventListener("click", () => {
+        node.items = (node.items || []).filter((entry) => entry.clientId !== item.clientId);
+        node.status = arkAssetNodeStatus(node);
+        updateNode(node);
+        saveCanvasState();
+      });
+      card.append(remove);
+    }
+    items.append(card);
+  }
+  return items;
+}
+
+function arkAssetItemStatusText(item) {
+  if (item.status === "Uploading") return "正在上传本地图";
+  if (item.status === "Processing") return item.sourceMode === "tos" ? "已上传，方舟处理中" : "方舟处理中";
+  if (item.status === "Active") return "已标记原图，可直接连接视频";
+  if (item.status === "Failed") return item.error || "入库失败";
+  return "等待入库";
+}
+
+function activeArkAssetUris(node) {
+  return dedupeStrings((node.items || []).filter((item) => item.status === "Active").map((item) => item.assetUri));
+}
+
+function sendArkAssetUrisToSelectedVideoTasks(assetNode) {
+  const uris = activeArkAssetUris(assetNode);
+  const targets = canvasState.nodes.filter(
+    (item) => item.type === "video-task" && isArkVideoModelName(item.model) && selectedNodeIds.has(item.id)
+  );
+  if (!uris.length) {
+    showToast("还没有处理完成的素材");
+    return;
+  }
+  if (!targets.length) {
+    showToast("请按住 Ctrl 同时选中本节点和一个火山方舟视频节点");
+    return;
+  }
+  let addedCount = 0;
+  for (const target of targets) {
+    const ordinaryCount = (target.cachedImages?.length || 0) + pendingReferenceImageCount(target);
+    const maxAssetCount = Math.max(0, 9 - ordinaryCount);
+    const previousUris = dedupeStrings(target.arkAssetUris || []);
+    target.arkAssetUris = dedupeStrings([...previousUris, ...uris]).slice(0, maxAssetCount);
+    target.arkAssetUrisText = target.arkAssetUris.join("\n");
+    const acceptedSourceIds = (assetNode.items || [])
+      .filter((item) => target.arkAssetUris.includes(item.assetUri))
+      .map((item) => item.sourceImageNodeId);
+    target.referenceImageNodeIds = dedupeStrings([...(target.referenceImageNodeIds || []), ...acceptedSourceIds]);
+    addedCount += Math.max(0, target.arkAssetUris.length - previousUris.length);
+    updateNode(target);
+  }
+  saveCanvasState();
+  showToast(addedCount ? `已加入 ${addedCount} 个方舟素材` : "视频节点的参考素材已满或已包含这些素材");
 }
 
 function createRegionNode(node) {
@@ -7656,6 +8257,8 @@ function createImageNode(node) {
   });
 
   tile.append(img, createReferenceConnectHandle(node));
+  const arkAssetBadge = createImageArkAssetBadge(node);
+  if (arkAssetBadge) tile.append(arkAssetBadge);
 
   if (selected) {
     tile.append(createImageToolbar(node));
@@ -7667,13 +8270,27 @@ function createImageNode(node) {
     if (referencePickTargetNodeId && event.button === 0 && !isInteractiveElement(event.target)) {
       event.preventDefault();
       event.stopPropagation();
-      useCanvasImagesAsReference(referencePickTargetNodeId, [node.id]);
-      referencePickTargetNodeId = null;
+      const targetId = referencePickTargetNodeId;
+      const target = canvasState.nodes.find((item) => item.id === targetId);
+      useCanvasImagesForTarget(targetId, [node.id]);
+      if (target?.type !== "ark-asset") referencePickTargetNodeId = null;
       return;
     }
     startNodeDrag(event, node.id);
   });
   return tile;
+}
+
+function createImageArkAssetBadge(node) {
+  const asset = normalizeImageArkAsset(node?.arkAsset);
+  if (!asset) return null;
+  const badge = document.createElement("span");
+  badge.className = `image-ark-asset-badge status-${String(asset.status || "processing").toLowerCase()}`;
+  badge.textContent = asset.status === "Active" ? "方舟素材" : asset.status === "Failed" ? "入库失败" : "方舟处理中";
+  badge.title = asset.status === "Active"
+    ? "已通过 AIGC 素材入库，可直接连到火山方舟视频节点"
+    : asset.error || badge.textContent;
+  return badge;
 }
 
 function createReferenceConnectHandle(node) {
@@ -7682,7 +8299,7 @@ function createReferenceConnectHandle(node) {
   handle.className = "reference-connect-handle";
   if (isPromptSourceNode(node)) handle.classList.add("prompt-connect-handle");
   const isPromptSource = isPromptSourceNode(node);
-  handle.title = isPromptSource ? "拖到生图或视频节点，连接为提示词" : "拖到生图或视频节点，添加为参考图";
+  handle.title = isPromptSource ? "拖到生图或视频节点，连接为提示词" : "拖到生图、视频或入库节点，添加图片";
   handle.setAttribute("aria-label", isPromptSource ? "拖动连线添加提示词" : "拖动连线添加参考图");
   handle.addEventListener("pointerdown", (event) => startReferenceConnection(event, node.id));
   return handle;
@@ -8019,7 +8636,10 @@ function createVideoReferenceFields(node) {
   imageInput.addEventListener("change", () => {
     let files = Array.from(imageInput.files || []);
     const stored = fileStore.get(node.id) || {};
-    const remaining = Math.max(0, 9 - (node.cachedImages?.length || 0) - (stored.images?.length || 0));
+    const remaining = Math.max(
+      0,
+      9 - (node.cachedImages?.length || 0) - (stored.images?.length || 0) - (node.arkAssetUris?.length || 0)
+    );
     if (files.length > remaining) showToast("视频节点最多使用 9 张参考图片");
     files = files.slice(0, remaining);
     const nextFiles = [...(stored.images || []), ...files];
@@ -8049,13 +8669,36 @@ function createVideoReferenceFields(node) {
   });
 
   referenceActions.append(useSelected, pickFromCanvas);
-  panel.append(
+  const contents = [
     createField("参考图片（最多 9 张，可选）", imageInput, "node-field-full"),
     referenceActions,
     createVideoReferenceThumbnails(node),
     createVideoReferenceSummary(node)
-  );
+  ];
+  if (isArkVideoModelName(node.model)) contents.push(createArkAssetUriField(node));
+  panel.append(...contents);
   return panel;
+}
+
+function createArkAssetUriField(node) {
+  const textarea = document.createElement("textarea");
+  textarea.className = "ark-asset-uri-input";
+  textarea.rows = 3;
+  textarea.spellcheck = false;
+  textarea.value = node.arkAssetUrisText || (node.arkAssetUris || []).join("\n");
+  textarea.placeholder = "asset://asset-...（每行一个）";
+  textarea.addEventListener("pointerdown", (event) => event.stopPropagation());
+  textarea.addEventListener("input", () => {
+    node.arkAssetUrisText = textarea.value;
+    saveCanvasState({ history: false });
+  });
+  textarea.addEventListener("blur", () => {
+    if (syncArkAssetUris(node)) {
+      textarea.value = node.arkAssetUrisText;
+      saveCanvasState();
+    }
+  });
+  return createField("虚拟人像素材 URI", textarea, "node-field-full");
 }
 
 function createVideoReferenceThumbnails(node) {
@@ -8106,7 +8749,10 @@ function createVideoReferenceSummary(node) {
   summary.className = "asset-summary";
   const cached = node.cachedImages?.length || 0;
   const pending = pendingReferenceImageCount(node);
-  summary.textContent = cached || pending ? `${cached} 张已缓存参考图，${pending} 张待缓存/本次选择` : "未选择参考图时将使用文生视频。";
+  const assets = node.arkAssetUris?.length || 0;
+  summary.textContent = cached || pending || assets
+    ? `${cached} 张已缓存参考图，${pending} 张待缓存，${assets} 个虚拟人像素材`
+    : "未选择参考图时将使用文生视频。";
   return summary;
 }
 
@@ -8215,7 +8861,7 @@ function createPromptField(node) {
   prompt.className = "node-prompt";
   prompt.rows = 4;
   prompt.value = node.prompt || "";
-  prompt.placeholder = "输入这个节点的提示词";
+  prompt.placeholder = node.type === "video-task" ? "输入视频提示词，输入 @ 精确引用已添加素材" : "输入这个节点的提示词";
   prompt.addEventListener("pointerdown", (event) => {
     event.stopPropagation();
     if (!selectedNodeIds.has(node.id)) {
@@ -8227,7 +8873,238 @@ function createPromptField(node) {
     node.prompt = prompt.value;
     saveCanvasState();
   });
-  return prompt;
+  if (node.type !== "video-task") return prompt;
+
+  const wrap = document.createElement("div");
+  wrap.className = "video-prompt-wrap";
+  const mentionMenu = document.createElement("div");
+  mentionMenu.className = "video-reference-mention-menu";
+  mentionMenu.hidden = true;
+  mentionMenu.setAttribute("role", "listbox");
+  let visibleOptions = [];
+  let activeIndex = 0;
+
+  const closeMentionMenu = () => {
+    mentionMenu.hidden = true;
+    mentionMenu.replaceChildren();
+    visibleOptions = [];
+    activeIndex = 0;
+  };
+
+  const insertMention = (option) => {
+    if (!option) return;
+    const selectionStart = prompt.selectionStart ?? prompt.value.length;
+    const before = prompt.value.slice(0, selectionStart);
+    const after = prompt.value.slice(prompt.selectionEnd ?? selectionStart);
+    const match = before.match(/@[^\s@，。！？,;；]*$/u);
+    const replaceStart = match ? selectionStart - match[0].length : selectionStart;
+    const leadingText = prompt.value.slice(0, replaceStart);
+    const prefix = leadingText && !/[\s，。！？,;；:：([{]$/u.test(leadingText) ? " " : "";
+    const suffix = !after || !/^[\s，。！？,;；:：)\]}]/u.test(after) ? " " : "";
+    prompt.value = `${leadingText}${prefix}${option.token}${suffix}${after}`;
+    const caret = replaceStart + prefix.length + option.token.length + suffix.length;
+    prompt.setSelectionRange(caret, caret);
+    node.prompt = prompt.value;
+    node.referenceMentionAliases = { ...(node.referenceMentionAliases || {}), [option.key]: option.alias };
+    closeMentionMenu();
+    renderMentionChips();
+    saveCanvasState();
+    prompt.focus();
+  };
+
+  const renderMentionMenu = () => {
+    const caret = prompt.selectionStart ?? prompt.value.length;
+    const match = prompt.value.slice(0, caret).match(/@([^\s@，。！？,;；]*)$/u);
+    if (!match) {
+      closeMentionMenu();
+      return;
+    }
+    const query = String(match[1] || "").toLowerCase();
+    visibleOptions = videoReferenceMentionOptions(node).filter((option) =>
+      !query || `${option.alias} ${option.label}`.toLowerCase().includes(query)
+    );
+    activeIndex = Math.min(activeIndex, Math.max(0, visibleOptions.length - 1));
+    mentionMenu.replaceChildren();
+    if (!visibleOptions.length) {
+      const empty = document.createElement("div");
+      empty.className = "video-reference-mention-empty";
+      empty.textContent = "请先在视频节点中添加参考图片或虚拟人像素材";
+      mentionMenu.append(empty);
+    } else {
+      visibleOptions.forEach((option, index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "video-reference-mention-option";
+        button.classList.toggle("is-active", index === activeIndex);
+        button.setAttribute("role", "option");
+        button.setAttribute("aria-selected", String(index === activeIndex));
+        if (option.previewUrl) {
+          const image = document.createElement("img");
+          image.src = option.previewUrl;
+          image.alt = "";
+          button.append(image);
+        } else {
+          button.append(createNodeIcon(option.kind === "asset" ? "portrait" : "image"));
+        }
+        const text = document.createElement("span");
+        const token = document.createElement("strong");
+        token.textContent = option.token;
+        const label = document.createElement("small");
+        label.textContent = `${option.positionLabel} · ${option.label}`;
+        text.append(token, label);
+        button.append(text);
+        button.addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          insertMention(option);
+        });
+        mentionMenu.append(button);
+      });
+    }
+    mentionMenu.hidden = false;
+  };
+
+  prompt.addEventListener("input", renderMentionMenu);
+  prompt.addEventListener("click", renderMentionMenu);
+  prompt.addEventListener("keydown", (event) => {
+    if (mentionMenu.hidden) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      activeIndex = (activeIndex + direction + Math.max(1, visibleOptions.length)) % Math.max(1, visibleOptions.length);
+      renderMentionMenu();
+      return;
+    }
+    if ((event.key === "Enter" || event.key === "Tab") && visibleOptions[activeIndex]) {
+      event.preventDefault();
+      insertMention(visibleOptions[activeIndex]);
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMentionMenu();
+    }
+  });
+  prompt.addEventListener("blur", () => window.setTimeout(closeMentionMenu, 120));
+  const mentionChips = document.createElement("div");
+  mentionChips.className = "video-reference-mention-chips";
+  const renderMentionChips = () => {
+    mentionChips.replaceChildren();
+    const options = videoReferenceMentionOptions(node).filter((option) => prompt.value.includes(option.token));
+    mentionChips.hidden = !options.length;
+    for (const option of options) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "video-reference-mention-chip";
+      chip.title = `${option.positionLabel}：${option.label}`;
+      chip.textContent = `${option.token} · ${option.label}`;
+      chip.addEventListener("pointerdown", (event) => event.stopPropagation());
+      chip.addEventListener("click", () => {
+        const start = prompt.value.indexOf(option.token);
+        if (start < 0) return;
+        prompt.focus();
+        prompt.setSelectionRange(start, start + option.token.length);
+      });
+      mentionChips.append(chip);
+    }
+  };
+  prompt.addEventListener("input", renderMentionChips);
+  renderMentionChips();
+  wrap.append(prompt, mentionMenu, mentionChips);
+  return wrap;
+}
+
+function videoReferenceMentionOptions(node) {
+  if (node?.type !== "video-task") return [];
+  const aliases = isPlainObject(node.referenceMentionAliases) ? { ...node.referenceMentionAliases } : {};
+  const usedNumbers = Object.values(aliases)
+    .map((value) => Number(String(value).match(/^素材(\d+)$/u)?.[1]))
+    .filter(Number.isFinite);
+  let nextNumber = Math.max(0, ...usedNumbers) + 1;
+  const options = [];
+  const usedKeys = new Set();
+
+  const addOption = ({ key, label, previewUrl = "", kind = "image" }) => {
+    if (!key || usedKeys.has(key)) return;
+    usedKeys.add(key);
+    const alias = aliases[key] || `素材${nextNumber++}`;
+    aliases[key] = alias;
+    options.push({
+      key,
+      alias,
+      token: `@${alias}`,
+      label: videoReferenceDisplayName(label, options.length + 1),
+      previewUrl,
+      kind,
+      position: options.length + 1,
+      positionLabel: `第 ${options.length + 1} 项`
+    });
+  };
+
+  const assetUris = dedupeStrings([
+    ...(Array.isArray(node.arkAssetUris) ? node.arkAssetUris : []),
+    ...parseArkAssetUriText(node.arkAssetUrisText || "")
+  ]);
+  for (const uri of assetUris) {
+    const item = canvasState.nodes
+      .filter((candidate) => candidate.type === "ark-asset")
+      .flatMap((candidate) => candidate.items || [])
+      .find((candidate) => candidate.assetUri === uri || candidate.assetId === uri.replace(/^asset:\/\//u, ""));
+    const markedImage = canvasState.nodes.find(
+      (candidate) => candidate.type === "image" && activeArkAssetForImageNode(candidate)?.assetUri === uri
+    );
+    addOption({
+      key: `asset:${uri}`,
+      label: item?.filename || markedImage?.image?.filename || uri.replace(/^asset:\/\//u, ""),
+      previewUrl: item?.previewUrl || item?.url || markedImage?.image?.url || "",
+      kind: "asset"
+    });
+  }
+
+  for (const [index, image] of (node.cachedImages || []).entries()) {
+    const source = image.sourceImageNodeId
+      ? canvasState.nodes.find((candidate) => candidate.id === image.sourceImageNodeId && candidate.type === "image")
+      : null;
+    const identity = image.sourceImageNodeId || image.path || image.url || image.originalName || image.filename || String(index);
+    addOption({
+      key: `image:${identity}`,
+      label: source?.image?.filename || image.originalName || image.filename || `参考图片 ${index + 1}`,
+      previewUrl: image.url || (image.path ? `/${image.path}` : ""),
+      kind: "image"
+    });
+  }
+
+  for (const [index, file] of (fileStore.get(node.id)?.images || []).entries()) {
+    const identity = file.sourceImageNodeId || `${file.name}:${file.size}:${file.lastModified}`;
+    addOption({
+      key: `image:${identity}`,
+      label: file.name || `本地参考图片 ${index + 1}`,
+      previewUrl: "",
+      kind: "image"
+    });
+  }
+
+  node.referenceMentionAliases = aliases;
+  return options;
+}
+
+function videoReferenceDisplayName(value, fallbackIndex) {
+  const text = String(value || "").trim().replace(/\.[A-Za-z0-9]{2,5}$/u, "");
+  return text || `参考素材 ${fallbackIndex}`;
+}
+
+function requestPromptForNode(node) {
+  const prompt = effectivePromptForNode(node);
+  if (node?.type !== "video-task") return prompt;
+  let expanded = prompt;
+  for (const option of videoReferenceMentionOptions(node)) {
+    const escaped = option.token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    expanded = expanded.replace(
+      new RegExp(`${escaped}(?![\\p{L}\\p{N}_])`, "gu"),
+      `【${option.token}｜输入参考素材第 ${option.position} 项｜${option.label}】`
+    );
+  }
+  return expanded;
 }
 
 function createLinkedPromptSources(node) {
@@ -9200,7 +10077,12 @@ function startReferenceConnection(event, sourceNodeId) {
   event.preventDefault();
   event.stopPropagation();
   hideCreateMenu();
+  const previousPickTarget = referencePickTargetNodeId;
   referencePickTargetNodeId = null;
+  if (previousPickTarget && previousPickTarget !== sourceNodeId) {
+    const previousPickNode = canvasState.nodes.find((node) => node.id === previousPickTarget);
+    if (previousPickNode) updateNode(previousPickNode);
+  }
 
   const handle = event.currentTarget;
   try {
@@ -9244,13 +10126,13 @@ function startReferenceConnection(event, sourceNodeId) {
     cleanupReferenceConnection();
 
     if (!targetNodeId) {
-      showToast("请把连线拖到生图节点或视频节点上");
+      showToast(isPromptSourceNode(sourceNode) ? "请把连线拖到生图或视频节点" : "请把连线拖到生图、视频或入库节点");
       return;
     }
     if (isPromptSourceNode(sourceNode)) {
       useCanvasPromptSource(targetNodeId, sourceNodeId);
     } else {
-      await useCanvasImagesAsReference(targetNodeId, [sourceNodeId]);
+      await useCanvasImagesForTarget(targetNodeId, [sourceNodeId]);
     }
   };
 
@@ -9316,7 +10198,9 @@ function referenceTargetFromPoint(clientX, clientY, sourceNodeId) {
   const nodeId = tile?.dataset?.nodeId || "";
   if (!nodeId || nodeId === sourceNodeId) return null;
   const node = canvasState.nodes.find((item) => item.id === nodeId);
-  return node && ["task", "video-task"].includes(node.type) ? node : null;
+  const source = canvasState.nodes.find((item) => item.id === sourceNodeId);
+  const allowedTypes = source?.type === "image" ? ["task", "video-task", "ark-asset"] : ["task", "video-task"];
+  return node && allowedTypes.includes(node.type) ? node : null;
 }
 
 function setReferenceConnectionTarget(targetNodeId) {
@@ -9356,6 +10240,15 @@ async function useSelectedCanvasImagesAsReference(targetNodeId) {
   await useCanvasImagesAsReference(targetNodeId, imageNodeIds);
 }
 
+async function useCanvasImagesForTarget(targetNodeId, imageNodeIds) {
+  const target = canvasState.nodes.find((node) => node.id === targetNodeId);
+  if (target?.type === "ark-asset") {
+    appendCanvasImagesToArkAssetNode(targetNodeId, imageNodeIds);
+    return;
+  }
+  await useCanvasImagesAsReference(targetNodeId, imageNodeIds);
+}
+
 function useCanvasPromptSource(targetNodeId, sourceNodeId) {
   const target = canvasState.nodes.find((node) => node.id === targetNodeId);
   const source = canvasState.nodes.find((node) => node.id === sourceNodeId && isPromptSourceNode(node));
@@ -9378,7 +10271,7 @@ function useCanvasPromptSource(targetNodeId, sourceNodeId) {
 
 async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
   const target = canvasState.nodes.find((node) => node.id === targetNodeId);
-  const imageNodes = imageNodeIds
+  const imageNodes = dedupeStrings(imageNodeIds)
     .map((id) => canvasState.nodes.find((node) => node.id === id))
     .filter((node) => node?.type === "image" && node.image?.url);
 
@@ -9389,29 +10282,76 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
   }
 
   try {
-    let usableImageNodes = imageNodes;
-    let files = await Promise.all(usableImageNodes.map(imageNodeToFile));
     const stored = fileStore.get(target.id) || {};
+    const existingReferenceIds = new Set(referenceSourceNodeIdsForTask(target));
+    const existingAssetUris = dedupeStrings([
+      ...(target.arkAssetUris || []),
+      ...parseArkAssetUriText(target.arkAssetUrisText || "")
+    ]);
+    const nextAssetUris = [...existingAssetUris];
+    const assetSourceIds = [];
+    let ordinaryImageNodes = imageNodes;
+    let availableSlots = Number.POSITIVE_INFINITY;
+
     if (target.type === "video-task") {
-      const remaining = Math.max(0, 9 - (target.cachedImages?.length || 0) - (stored.images?.length || 0));
-      if (!remaining) {
-        showToast("即梦视频最多使用 9 张参考图片");
-        return;
+      availableSlots = Math.max(
+        0,
+        9 - (target.cachedImages?.length || 0) - (stored.images?.length || 0) - existingAssetUris.length
+      );
+      if (isArkVideoModelName(target.model)) {
+        ordinaryImageNodes = [];
+        for (const imageNode of imageNodes) {
+          const asset = activeArkAssetForImageNode(imageNode);
+          if (!asset) {
+            ordinaryImageNodes.push(imageNode);
+            continue;
+          }
+          if (nextAssetUris.includes(asset.assetUri)) {
+            assetSourceIds.push(imageNode.id);
+            continue;
+          }
+          if (availableSlots) {
+            nextAssetUris.push(asset.assetUri);
+            assetSourceIds.push(imageNode.id);
+            availableSlots -= 1;
+          }
+        }
       }
-      if (files.length > remaining) showToast("即梦视频最多使用 9 张参考图片，已自动截取");
-      usableImageNodes = usableImageNodes.slice(0, remaining);
-      files = files.slice(0, remaining);
+
+      ordinaryImageNodes = ordinaryImageNodes.filter((imageNode) => !existingReferenceIds.has(imageNode.id));
+      if (ordinaryImageNodes.length > availableSlots) {
+        showToast("视频节点最多使用 9 个参考素材，已自动截取");
+        ordinaryImageNodes = ordinaryImageNodes.slice(0, availableSlots);
+      }
+    } else {
+      ordinaryImageNodes = ordinaryImageNodes.filter((imageNode) => !existingReferenceIds.has(imageNode.id));
     }
+
+    const newAssetCount = nextAssetUris.length - existingAssetUris.length;
+    const newlyLinkedAssetSourceIds = assetSourceIds.filter((id) => !existingReferenceIds.has(id));
+    if (!ordinaryImageNodes.length && !newAssetCount && !newlyLinkedAssetSourceIds.length) {
+      showToast(availableSlots ? "这些图片已经添加为参考素材" : "视频节点最多使用 9 个参考素材");
+      return;
+    }
+
+    let usableImageNodes = ordinaryImageNodes;
+    let files = await Promise.all(usableImageNodes.map(imageNodeToFile));
     files.forEach((file, index) => {
       tagReferenceFile(file, usableImageNodes[index]?.id);
     });
-    const nextFiles = [...(stored.images || []), ...files];
-    fileStore.set(target.id, {
-      ...stored,
-      images: nextFiles
-    });
+    if (files.length) {
+      fileStore.set(target.id, {
+        ...stored,
+        images: [...(stored.images || []), ...files]
+      });
+    }
+    if (target.type === "video-task") {
+      target.arkAssetUris = nextAssetUris;
+      target.arkAssetUrisText = nextAssetUris.join("\n");
+    }
     target.referenceImageNodeIds = dedupeStrings([
       ...(target.referenceImageNodeIds || []),
+      ...assetSourceIds,
       ...usableImageNodes.map((node) => node.id)
     ]);
 
@@ -9421,16 +10361,20 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
       applyTaskModelDefaults(target, { modeChanged: true });
     }
     target.sessionFiles = [...(target.sessionFiles || []), ...files.map((file) => file.name)];
-    target.cacheStatus = "caching";
+    if (files.length) target.cacheStatus = "caching";
     target.debugOpen = true;
     selectedNodeIds.clear();
     selectedNodeIds.add(target.id);
     updateNode(target);
     saveCanvasState();
 
-    await cacheEditFiles(target.id);
+    if (files.length) await cacheEditFiles(target.id);
     renderCanvas();
-    showToast(`${files.length} 张画布图片已设为${target.type === "video-task" ? "视频" : ""}参考图`);
+    const parts = [];
+    if (newAssetCount) parts.push(`${newAssetCount} 个方舟素材`);
+    if (files.length) parts.push(`${files.length} 张参考图`);
+    if (!parts.length && newlyLinkedAssetSourceIds.length) parts.push(`${newlyLinkedAssetSourceIds.length} 个素材连接`);
+    showToast(`已添加${parts.join("和")}`);
   } catch (error) {
     showToast(error.message || "设置参考图失败");
   }
@@ -11012,6 +11956,7 @@ function createContextMenu() {
   const options = [
     ["生图节点", () => addTaskNode("create", pendingCreatePoint)],
     ["即梦视频", () => addDreaminaVideoNode(pendingCreatePoint)],
+    ["虚拟人像入库", () => addArkAssetNode(pendingCreatePoint)],
     ["ChatGPT 节点", () => addChatGptNode(pendingCreatePoint)],
     ["文字节点", () => addNoteNode(pendingCreatePoint)],
     ["随机肖像", () => addPortraitNode(pendingCreatePoint)],
@@ -11256,6 +12201,26 @@ function preparePastedNode(source, idMap, offset, createdAt) {
     });
   }
 
+  if (isPlainObject(copy.referenceMentionAliases)) {
+    copy.referenceMentionAliases = Object.fromEntries(
+      Object.entries(copy.referenceMentionAliases).map(([key, alias]) => {
+        if (!key.startsWith("image:")) return [key, alias];
+        const sourceId = key.slice("image:".length);
+        return [`image:${idMap.get(sourceId) || sourceId}`, alias];
+      })
+    );
+  }
+
+  if (copy.type === "ark-asset" && Array.isArray(copy.items)) {
+    copy.items = copy.items.map((item) => ({
+      ...item,
+      clientId: createId(),
+      sourceImageNodeId: idMap.get(item.sourceImageNodeId) || item.sourceImageNodeId || "",
+      status: item.status === "Uploading" ? "idle" : item.status
+    }));
+    copy.status = arkAssetNodeStatus(copy);
+  }
+
   if (copy.type === "task" || copy.type === "video-task") {
     copy.images = [];
     copy.videos = [];
@@ -11444,6 +12409,8 @@ function getNodeBounds(node) {
           ? defaultPortraitNodeWidth
         : node.type === "camera"
           ? defaultCameraNodeWidth
+        : node.type === "ark-asset"
+          ? node.width || defaultArkAssetNodeWidth
         : node.type === "chatgpt"
           ? clamp(Number(node.width) || defaultChatGptWidth, minChatGptWidth, maxChatGptWidth)
           : node.type === "video-task"
@@ -11462,6 +12429,8 @@ function getNodeBounds(node) {
           ? defaultPortraitNodeHeight
         : node.type === "camera"
           ? defaultCameraNodeHeight
+        : node.type === "ark-asset"
+          ? defaultArkAssetNodeHeight
         : node.type === "chatgpt"
           ? clamp(Number(node.height) || defaultChatGptHeight, minChatGptHeight, maxChatGptHeight)
           : node.type === "video-task"
@@ -11514,6 +12483,7 @@ function updateCanvasMeta() {
   const noteNodes = canvasState.nodes.filter((node) => node.type === "note");
   const portraitNodes = canvasState.nodes.filter((node) => node.type === "portrait");
   const cameraNodes = canvasState.nodes.filter((node) => node.type === "camera");
+  const arkAssetNodes = canvasState.nodes.filter((node) => node.type === "ark-asset");
   const chatNodes = canvasState.nodes.filter((node) => node.type === "chatgpt");
   const regionNodes = canvasState.nodes.filter((node) => node.type === "region");
   const running = [...taskNodes, ...videoTaskNodes].filter((node) => node.status === "running").length;
@@ -11525,7 +12495,7 @@ function updateCanvasMeta() {
     requestMeta.textContent = "等待添加节点";
     return;
   }
-  requestMeta.textContent = `${taskNodes.length} 个生图 · ${videoTaskNodes.length} 个视频任务 · ${imageNodes.length} 张图 · ${videoNodes.length} 个视频 · ${noteNodes.length} 个文字 · ${portraitNodes.length} 个肖像 · ${cameraNodes.length} 个机位 · ${regionNodes.length} 个区域 · ${chatNodes.length} 个 ChatGPT`;
+  requestMeta.textContent = `${taskNodes.length} 个生图 · ${videoTaskNodes.length} 个视频任务 · ${imageNodes.length} 张图 · ${videoNodes.length} 个视频 · ${noteNodes.length} 个文字 · ${portraitNodes.length} 个肖像 · ${cameraNodes.length} 个机位 · ${arkAssetNodes.length} 个入库 · ${regionNodes.length} 个区域 · ${chatNodes.length} 个 ChatGPT`;
 }
 
 function isRunnableTask(node) {
@@ -11629,6 +12599,41 @@ function migrateNode(node) {
     });
   }
 
+  if (node.type === "ark-asset") {
+    const items = Array.isArray(node.items)
+      ? node.items.slice(0, 12).map((item) => ({
+          clientId: item.clientId || createId(),
+          sourceImageNodeId: item.sourceImageNodeId || "",
+          previewUrl: item.previewUrl || item.url || "",
+          url: item.url || item.previewUrl || "",
+          sourceUrl: item.sourceUrl || "",
+          filename: item.filename || "virtual-human.png",
+          assetId: item.assetId || "",
+          assetUri: item.status === "Active" ? item.assetUri || (item.assetId ? `asset://${item.assetId}` : "") : item.assetUri || "",
+          status: item.status === "Uploading" ? "idle" : item.status || "idle",
+          sourceMode: item.sourceMode || "",
+          error: item.error || ""
+        }))
+      : [];
+    const migrated = {
+      ...node,
+      id: node.id || createId(),
+      type: "ark-asset",
+      title: String(node.title || "虚拟人像入库"),
+      projectName: String(node.projectName || config.arkAssetProject || "default"),
+      groupId: String(node.groupId || config.arkAssetGroupId || ""),
+      items,
+      status: node.status === "running" ? arkAssetNodeStatus({ items }) : node.status || arkAssetNodeStatus({ items }),
+      error: node.error || "",
+      width: Math.max(Number(node.width) || defaultArkAssetNodeWidth, 420),
+      x: node.x || 0,
+      y: node.y || 0,
+      z: node.z || 1,
+      createdAt: node.createdAt || new Date().toISOString()
+    };
+    return migrated;
+  }
+
   if (node.type === "image") {
     const dimensions = parseImageDimensions(node.image, node.size);
     const originalWidth = Number(node.originalWidth) || dimensions.width || 512;
@@ -11638,6 +12643,7 @@ function migrateNode(node) {
       id: node.id || createId(),
       type: "image",
       image: node.image || {},
+      arkAsset: normalizeImageArkAsset(node.arkAsset),
       sourceTaskId: node.sourceTaskId || "",
       sourceImageKey: node.sourceImageKey || getImageKey(node.image),
       originalWidth,
@@ -11758,6 +12764,10 @@ function migrateVideoTaskNode(node) {
   const extraParams = isPlainObject(node.extraParams) ? node.extraParams : {};
   const promptNoteNodeIds = dedupeStrings(node.promptNoteNodeIds || []);
   const model = isDreaminaVideoModelName(node.model) || isArkVideoModelName(node.model) ? node.model : dreaminaVideoDefaultModel;
+  const arkAssetUris = dedupeStrings([
+    ...(Array.isArray(node.arkAssetUris) ? node.arkAssetUris : []),
+    ...parseArkAssetUriText(node.arkAssetUrisText || "")
+  ]);
   return {
     ...node,
     id: node.id || createId(),
@@ -11774,6 +12784,9 @@ function migrateVideoTaskNode(node) {
     mode: "video",
     extraParams,
     extraParamsText: node.extraParamsText || JSON.stringify(extraParams, null, 2),
+    arkAssetUris,
+    arkAssetUrisText: arkAssetUris.join("\n"),
+    referenceMentionAliases: isPlainObject(node.referenceMentionAliases) ? clonePlainValue(node.referenceMentionAliases) : {},
     cachedImages: node.cachedImages || [],
     referenceImageNodeIds: dedupeStrings(node.referenceImageNodeIds || []),
     promptNoteNodeIds,
@@ -12156,7 +13169,10 @@ function normalizeProjectId(value) {
 function applySavedState(saved, options = {}) {
   if (!saved || typeof saved !== "object") return;
 
-  if (Array.isArray(saved.nodes)) canvasState.nodes = saved.nodes.map(migrateNode);
+  if (Array.isArray(saved.nodes)) {
+    canvasState.nodes = saved.nodes.map(migrateNode);
+    syncAllArkAssetMarks();
+  }
   if (options.materializeImages !== false) {
     materializeTaskImageNodes();
     materializeTaskVideoNodes();

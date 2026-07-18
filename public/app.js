@@ -145,8 +145,17 @@ const sendSelectionToPhotoshopButton = document.querySelector("#sendSelectionToP
 const settingsDialog = document.querySelector("#settingsDialog");
 const settingsForm = document.querySelector("#settingsForm");
 const closeSettingsButton = document.querySelector("#closeSettingsButton");
+const settingsGeneralTab = document.querySelector("#settingsGeneralTab");
+const settingsArkTab = document.querySelector("#settingsArkTab");
+const settingsGeneralSections = [...document.querySelectorAll(".settings-general-section")];
+const settingsArkSection = document.querySelector(".ark-settings");
 const settingsApiKey = document.querySelector("#settingsApiKey");
 const settingsClearApiKey = document.querySelector("#settingsClearApiKey");
+const settingsArkApiKey = document.querySelector("#settingsArkApiKey");
+const settingsArkClearApiKey = document.querySelector("#settingsArkClearApiKey");
+const settingsArkBaseUrl = document.querySelector("#settingsArkBaseUrl");
+const settingsArkKeyStatus = document.querySelector("#settingsArkKeyStatus");
+const settingsArkModelInputs = [...document.querySelectorAll("[data-ark-model]")];
 const settingsConnectionModel = document.querySelector("#settingsConnectionModel");
 const settingsCustomModelRow = document.querySelector("#settingsCustomModelRow");
 const settingsCustomConnectionModel = document.querySelector("#settingsCustomConnectionModel");
@@ -161,9 +170,11 @@ const settingsConnectionBaseUrl = document.querySelector("#settingsConnectionBas
 const settingsConnectionImageEndpoint = document.querySelector("#settingsConnectionImageEndpoint");
 const settingsConnectionEditEndpoint = document.querySelector("#settingsConnectionEditEndpoint");
 const settingsConnectionChatEndpoint = document.querySelector("#settingsConnectionChatEndpoint");
+const settingsConnectionVideoEndpoint = document.querySelector("#settingsConnectionVideoEndpoint");
 const settingsConnectionImageEndpointField = document.querySelector("#settingsConnectionImageEndpointField");
 const settingsConnectionEditEndpointField = document.querySelector("#settingsConnectionEditEndpointField");
 const settingsConnectionChatEndpointField = document.querySelector("#settingsConnectionChatEndpointField");
+const settingsConnectionVideoEndpointField = document.querySelector("#settingsConnectionVideoEndpointField");
 const settingsConnectionKeyStatus = document.querySelector("#settingsConnectionKeyStatus");
 const settingsConnectionClearKey = document.querySelector("#settingsConnectionClearKey");
 const settingsConnectionResetPreset = document.querySelector("#settingsConnectionResetPreset");
@@ -298,6 +309,29 @@ const grsaiDefaultModel = "nano-banana-2";
 const grsaiDefaultBaseUrl = "https://grsaiapi.com";
 const grsaiGenerateEndpoint = "/v1/api/generate";
 const grsaiDefaultSize = "1:1|1K";
+const arkDefaultBaseUrl = "https://ark.cn-beijing.volces.com";
+const arkImageEndpoint = "/api/v3/images/generations";
+const arkVideoEndpoint = "/api/v3/contents/generations/tasks";
+const arkImageModelOptions = [
+  ["ark-seedream-5.0-pro", "Seedream 5.0 Pro"],
+  ["ark-seedream-5.0-lite", "Seedream 5.0 Lite"],
+  ["ark-seedream-4.5", "Seedream 4.5"],
+  ["ark-seedream-4.0", "Seedream 4.0"]
+];
+const arkDefaultApiModels = {
+  "ark-seedream-5.0-pro": "doubao-seedream-5-0-260128",
+  "ark-seedream-5.0-lite": "doubao-seedream-5-0-lite-260128",
+  "ark-seedream-4.5": "doubao-seedream-4-5-251128",
+  "ark-seedream-4.0": "doubao-seedream-4-0-250828",
+  "ark-seedance-2.0": "doubao-seedance-2-0-260128",
+  "ark-seedance-2.0-fast": "doubao-seedance-2-0-fast-260128",
+  "ark-seedance-2.0-mini": "doubao-seedance-2-0-mini"
+};
+const arkVideoModelOptions = [
+  ["ark-seedance-2.0", "Seedance 2.0（方舟）"],
+  ["ark-seedance-2.0-fast", "Seedance 2.0 Fast（方舟）"],
+  ["ark-seedance-2.0-mini", "Seedance 2.0 Mini（方舟）"]
+];
 const dreaminaDefaultModel = "dreamina-5.0";
 const dreaminaDefaultSize = "1:1|2k";
 const dreaminaVideoDefaultModel = "dreamina-video-seedance2.0fast";
@@ -375,6 +409,7 @@ let dreaminaTextModelVersions = [...fallbackDreaminaModelVersions];
 let dreaminaEditModelVersions = fallbackDreaminaModelVersions.filter((version) => Number(version) >= 4);
 const dreaminaRatios = ["21:9", "16:9", "3:2", "4:3", "1:1", "3:4", "2:3", "9:16"];
 const dreaminaVideoModelOptions = [
+  ...arkVideoModelOptions,
   ["dreamina-video-seedance2.0fast", "Seedance 2.0 Fast"],
   ["dreamina-video-seedance2.0", "Seedance 2.0"],
   ["dreamina-video-seedance2.0mini", "Seedance 2.0 Mini"],
@@ -382,14 +417,26 @@ const dreaminaVideoModelOptions = [
   ["dreamina-video-seedance2.0fast_vip", "Seedance 2.0 Fast VIP"]
 ];
 const dreaminaVideoRatioOptions = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"].map((ratio) => [ratio, ratio]);
+const arkVideoRatioOptions = [["adaptive", "自适应"], ...dreaminaVideoRatioOptions];
 const dreaminaVideoResolutionOptions = [
   ["720p", "720p"],
   ["1080p", "1080p（VIP）"]
 ];
+const arkVideoFullResolutionOptions = [["480p", "480p"], ["720p", "720p"], ["1080p", "1080p"], ["4k", "4K（10bit H.265）"]];
+const arkVideoCompactResolutionOptions = [["480p", "480p"], ["720p", "720p"]];
+const arkOptimizeOptions = [["standard", "标准"], ["fast", "快速"]];
+const arkStandardOptimizeOptions = [["standard", "标准"]];
+const arkSeedreamSizes = {
+  "ark-seedream-5.0-pro": buildArkImageSizeOptions(["1K", "2K"], ["2K"], "pro"),
+  "ark-seedream-5.0-lite": buildArkImageSizeOptions(["2K", "3K", "4K"], ["2K", "3K", "4K"]),
+  "ark-seedream-4.5": buildArkImageSizeOptions(["2K", "4K"], ["2K", "4K"]),
+  "ark-seedream-4.0": buildArkImageSizeOptions(["1K", "2K", "4K"], ["1K", "2K", "4K"], "seedream4")
+};
 const baseTaskModelOptions = [
   ["gpt-image-2", "gpt-image-2"],
   [geminiBananaImageModel, geminiBananaImageAlias],
   [grsaiDefaultModel, grsaiDefaultModel],
+  ...arkImageModelOptions,
   ...grokModelOptions
 ];
 const taskModelOptions = [...baseTaskModelOptions, ...dreaminaModelOptionsForVersions(dreaminaTextModelVersions)];
@@ -563,7 +610,8 @@ for (const control of [
   settingsConnectionBaseUrl,
   settingsConnectionImageEndpoint,
   settingsConnectionEditEndpoint,
-  settingsConnectionChatEndpoint
+  settingsConnectionChatEndpoint,
+  settingsConnectionVideoEndpoint
 ]) {
   control?.addEventListener("input", captureSettingsConnectionDraft);
   control?.addEventListener("change", captureSettingsConnectionDraft);
@@ -580,6 +628,11 @@ settingsConnectionResetPreset?.addEventListener("click", () => applySettingsConn
 settingsApiKey?.addEventListener("input", () => {
   if (settingsApiKey.value.trim()) settingsClearApiKey.checked = false;
 });
+settingsArkApiKey?.addEventListener("input", () => {
+  if (settingsArkApiKey.value.trim()) settingsArkClearApiKey.checked = false;
+  updateArkSettingsKeyStatus();
+});
+settingsArkClearApiKey?.addEventListener("change", updateArkSettingsKeyStatus);
 clearCanvasButton.addEventListener("click", clearCanvas);
 resetViewButton.addEventListener("click", resetViewport);
 zoomInButton.addEventListener("click", () => zoomAtCenter(canvasState.viewport.zoom * 1.2));
@@ -595,6 +648,8 @@ projectNameInput.addEventListener("keydown", (event) => {
   }
 });
 settingsButton.addEventListener("click", openSettingsDialog);
+settingsGeneralTab?.addEventListener("click", () => setSettingsPage("general"));
+settingsArkTab?.addEventListener("click", () => setSettingsPage("ark"));
 window.ccCanvasDesktop?.onOpenSettings?.((payload) => openSettingsDialog(payload));
 checkUpdateButton?.addEventListener("click", () => checkForUpdates());
 closeSettingsButton.addEventListener("click", () => closeSettingsDialog());
@@ -735,11 +790,13 @@ function applyTaskModelDefaults(node, options = {}) {
   const wasGrok = node.provider === "grok";
   const wasGrsai = node.provider === "grsai";
   const wasDreamina = node.provider === "dreamina";
+  const wasArk = node.provider === "ark";
   const isGrok = isGrokModelName(node.model);
   const isGrsai = isGrsaiModelName(node.model);
   const isDreamina = isDreaminaModelName(node.model);
   const isGeminiNative = isGeminiNativeImageModelName(node.model);
-  node.provider = isGrok ? "grok" : isGrsai ? "grsai" : isDreamina ? "dreamina" : isGeminiNative ? "gemini" : "";
+  const isArk = isArkImageModelName(node.model);
+  node.provider = isGrok ? "grok" : isGrsai ? "grsai" : isDreamina ? "dreamina" : isGeminiNative ? "gemini" : isArk ? "ark" : "";
 
   if (isDreamina) {
     if (node.mode === "edit" && !dreaminaEditModelVersions.includes(dreaminaModelVersion(node.model))) {
@@ -755,6 +812,20 @@ function applyTaskModelDefaults(node, options = {}) {
     node.moderation = "";
     node.baseUrl = "";
     node.endpointPath = "dreamina-cli";
+    node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
+    delete node.extraParams.response_format;
+    delete node.extraParams.replyType;
+  } else if (isArk) {
+    node.size = compatibleArkImageSize(node.size, node.model);
+    if (node.model === "ark-seedream-5.0-pro") node.n = "1";
+    node.quality = arkOptimizeOptionsForModel(node.model).some(([value]) => value === node.quality)
+      ? node.quality
+      : "standard";
+    node.format = node.model === "ark-seedream-5.0-pro" && ["png", "jpeg"].includes(node.format) ? node.format : "png";
+    node.background = "";
+    node.moderation = "";
+    node.baseUrl = config.arkBaseUrl || arkDefaultBaseUrl;
+    node.endpointPath = arkImageEndpoint;
     node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
     delete node.extraParams.response_format;
     delete node.extraParams.replyType;
@@ -808,12 +879,12 @@ function applyTaskModelDefaults(node, options = {}) {
     if (!isSizeAllowedForModel(node.size, node.model, node.mode)) {
       node.size = defaultSizeForModel(node.model, node.mode);
     }
-    if (wasGrok || wasGrsai || wasDreamina || options.modelChanged) {
+    if (wasGrok || wasGrsai || wasDreamina || wasArk || options.modelChanged) {
       node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
       delete node.extraParams.response_format;
       delete node.extraParams.replyType;
     }
-    if ((wasGrsai || wasDreamina) && options.modelChanged) {
+    if ((wasGrsai || wasDreamina || wasArk) && options.modelChanged) {
       node.baseUrl = config.baseUrl || "https://yunwu.ai";
       node.endpointPath = defaultEndpointForMode(node.mode);
     }
@@ -889,6 +960,16 @@ function isDreaminaVideoModelName(model) {
   return String(model || "").trim().toLowerCase().startsWith("dreamina-video-");
 }
 
+function isArkImageModelName(model) {
+  const normalized = normalizeImageModelName(model).toLowerCase();
+  return arkImageModelOptions.some(([value]) => value === normalized);
+}
+
+function isArkVideoModelName(model) {
+  const normalized = String(model || "").trim().toLowerCase();
+  return arkVideoModelOptions.some(([value]) => value === normalized);
+}
+
 function dreaminaModelVersion(model) {
   return String(model || "").trim().toLowerCase().replace(/^dreamina-/, "");
 }
@@ -899,6 +980,7 @@ function isGrsaiBaseUrl(value) {
 
 function sizeOptionsForModel(model, mode = "create") {
   if (isDreaminaModelName(model)) return dreaminaSizeOptionsForModel(model, mode);
+  if (isArkImageModelName(model)) return arkSeedreamSizes[normalizeImageModelName(model).toLowerCase()] || [["2K", "2K"]];
   if (isGeminiNativeImageModelName(model)) return geminiNativeRatioOptions;
   if (isGrsaiModelName(model)) return grsaiSizeOptions;
   return isGrokModelName(model) ? grokSizeOptions : gptSizeOptions;
@@ -913,6 +995,7 @@ function dreaminaSizeOptionsForModel(model, mode = "create") {
 
 function defaultSizeForModel(model, mode = "create") {
   if (isDreaminaModelName(model)) return dreaminaDefaultSize;
+  if (isArkImageModelName(model)) return normalizeImageModelName(model).toLowerCase() === "ark-seedream-4.0" ? "2K" : "2K";
   if (isGeminiNativeImageModelName(model)) return geminiNativeDefaultRatio;
   if (isGrsaiModelName(model)) return grsaiDefaultSize;
   if (isGrokModelName(model)) return mode === "create" ? grokDefaultSize : "";
@@ -922,6 +1005,96 @@ function defaultSizeForModel(model, mode = "create") {
 function isSizeAllowedForModel(size, model, mode = "create") {
   if (!size) return true;
   return sizeOptionsForModel(model, mode).some(([value]) => value === size);
+}
+
+function buildArkImageSizeOptions(tiers, dimensionTiers = tiers, catalog = "standard") {
+  const dimensionTierSet = new Set(dimensionTiers);
+  const options = tiers.map((tier) => [tier, `${tier} 默认比例`]);
+  const standardDimensions = {
+    "1K": [
+      ["1024x1024", "1024x1024 (1:1)"], ["1152x864", "1152x864 (4:3)"],
+      ["864x1152", "864x1152 (3:4)"], ["1280x720", "1280x720 (16:9)"],
+      ["720x1280", "720x1280 (9:16)"], ["1248x832", "1248x832 (3:2)"],
+      ["832x1248", "832x1248 (2:3)"], ["1512x648", "1512x648 (21:9)"]
+    ],
+    "2K": [
+      ["2048x2048", "2048x2048 (1:1)"], ["2304x1728", "2304x1728 (4:3)"],
+      ["1728x2304", "1728x2304 (3:4)"], ["2848x1600", "2848x1600 (16:9)"],
+      ["1600x2848", "1600x2848 (9:16)"], ["2496x1664", "2496x1664 (3:2)"],
+      ["1664x2496", "1664x2496 (2:3)"], ["3136x1344", "3136x1344 (21:9)"]
+    ],
+    "3K": [
+      ["3072x3072", "3072x3072 (1:1)"], ["3456x2592", "3456x2592 (4:3)"],
+      ["2592x3456", "2592x3456 (3:4)"], ["4096x2304", "4096x2304 (16:9)"],
+      ["2304x4096", "2304x4096 (9:16)"], ["3744x2496", "3744x2496 (3:2)"],
+      ["2496x3744", "2496x3744 (2:3)"], ["4704x2016", "4704x2016 (21:9)"]
+    ],
+    "4K": [
+      ["4096x4096", "4096x4096 (1:1)"], ["4704x3520", "4704x3520 (4:3)"],
+      ["3520x4704", "3520x4704 (3:4)"], ["5504x3040", "5504x3040 (16:9)"],
+      ["3040x5504", "3040x5504 (9:16)"], ["4992x3328", "4992x3328 (3:2)"],
+      ["3328x4992", "3328x4992 (2:3)"], ["6240x2656", "6240x2656 (21:9)"]
+    ]
+  };
+  const proDimensions = {
+    ...standardDimensions,
+    "2K": [
+      ["2048x2048", "2048x2048 (1:1)"], ["2368x1776", "2368x1776 (4:3)"],
+      ["1776x2368", "1776x2368 (3:4)"], ["2816x1584", "2816x1584 (16:9)"],
+      ["1584x2816", "1584x2816 (9:16)"], ["2496x1664", "2496x1664 (3:2)"],
+      ["1664x2496", "1664x2496 (2:3)"], ["3136x1344", "3136x1344 (21:9)"]
+    ]
+  };
+  const dimensions = catalog === "pro" ? proDimensions : standardDimensions;
+  for (const tier of ["1K", "2K", "3K", "4K"]) {
+    if (dimensionTierSet.has(tier)) options.push(...dimensions[tier]);
+  }
+  return options;
+}
+
+function compatibleArkImageSize(size, model) {
+  const requested = String(size || "").trim();
+  if (!requested) return defaultSizeForModel(model);
+  const options = sizeOptionsForModel(model);
+  if (options.some(([value]) => value === requested)) return requested;
+
+  const match = requested.match(/^(\d{3,5})x(\d{3,5})$/iu);
+  if (!match) return defaultSizeForModel(model);
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  const requestedRatio = width / height;
+  const requestedPixels = width * height;
+  const candidates = options.flatMap(([value, label]) => {
+    const dimensions = value.match(/^(\d{3,5})x(\d{3,5})$/iu);
+    if (!dimensions) return [];
+    const candidateWidth = Number(dimensions[1]);
+    const candidateHeight = Number(dimensions[2]);
+    return [{
+      value,
+      ratioDelta: Math.abs(Math.log((candidateWidth / candidateHeight) / requestedRatio)),
+      pixelDelta: Math.abs(Math.log((candidateWidth * candidateHeight) / requestedPixels))
+    }];
+  });
+  candidates.sort((left, right) => left.ratioDelta - right.ratioDelta || left.pixelDelta - right.pixelDelta);
+  return candidates[0]?.value || defaultSizeForModel(model);
+}
+
+function arkOptimizeOptionsForModel(model) {
+  const normalized = normalizeImageModelName(model).toLowerCase();
+  return ["ark-seedream-5.0-lite", "ark-seedream-4.5"].includes(normalized)
+    ? arkStandardOptimizeOptions
+    : arkOptimizeOptions;
+}
+
+function videoRatioOptionsForModel(model) {
+  return isArkVideoModelName(model) ? arkVideoRatioOptions : dreaminaVideoRatioOptions;
+}
+
+function videoResolutionOptionsForModel(model) {
+  if (!isArkVideoModelName(model)) return dreaminaVideoResolutionOptions;
+  return String(model).toLowerCase() === "ark-seedance-2.0"
+    ? arkVideoFullResolutionOptions
+    : arkVideoCompactResolutionOptions;
 }
 
 function createDefaultTaskNode(mode = "create") {
@@ -1225,7 +1398,7 @@ async function generateVideoNode(nodeId) {
 
     const incoming = (data.videos || []).map((video) => normalizeNodeVideo(video, node));
     if (!incoming.length) {
-      throw new Error("即梦已返回，但没有识别到视频文件");
+      throw new Error("视频接口已返回，但没有识别到视频文件");
     }
 
     node.videos = dedupeNodeVideos([...(node.videos || []), ...incoming]);
@@ -1813,7 +1986,8 @@ function fallbackSettingsConnection(model) {
     baseUrl: config.baseUrl || "https://yunwu.ai",
     imageEndpoint: config.imageEndpoint || "/v1/images/generations",
     editEndpoint: config.editEndpoint || "/v1/images/edits",
-    chatEndpoint: config.chatEndpoint || "/v1/chat/completions"
+    chatEndpoint: config.chatEndpoint || "/v1/chat/completions",
+    videoEndpoint: arkVideoEndpoint
   };
 }
 
@@ -1838,6 +2012,7 @@ function populateSettingsConnectionModels() {
   settingsConnectionModel.replaceChildren();
   const groups = [
     ["image", "生图 / 图片编辑"],
+    ["video", "视频生成"],
     ["chat", "助手对话"]
   ];
   for (const [capability, label] of groups) {
@@ -1903,7 +2078,8 @@ function captureSettingsConnectionDraft() {
     baseUrl: settingsConnectionBaseUrl.value.trim(),
     imageEndpoint: settingsConnectionImageEndpoint.value.trim(),
     editEndpoint: settingsConnectionEditEndpoint.value.trim(),
-    chatEndpoint: settingsConnectionChatEndpoint.value.trim()
+    chatEndpoint: settingsConnectionChatEndpoint.value.trim(),
+    videoEndpoint: settingsConnectionVideoEndpoint.value.trim()
   };
 }
 
@@ -1950,11 +2126,14 @@ function renderSettingsConnectionEditor() {
   settingsConnectionImageEndpoint.value = draft.imageEndpoint || "";
   settingsConnectionEditEndpoint.value = draft.editEndpoint || "";
   settingsConnectionChatEndpoint.value = draft.chatEndpoint || "";
+  settingsConnectionVideoEndpoint.value = draft.videoEndpoint || "";
   settingsConnectionApiKey.value = settingsConnectionKeyDrafts[model] || "";
   settingsConnectionClearKey.checked = settingsConnectionClearKeys.has(model);
   settingsConnectionApiKey.placeholder = config.modelKeys?.[model]
     ? "专用 Key 已配置，留空则不修改"
-    : "留空则使用全局备用 Key";
+    : config.modelConnections?.[model]?.hasKey
+      ? "平台 Key 已配置，留空则继续使用"
+      : "留空则使用全局备用 Key";
   updateSettingsConnectionVisibility();
   updateSettingsConnectionKeyStatus();
 }
@@ -1962,9 +2141,11 @@ function renderSettingsConnectionEditor() {
 function updateSettingsConnectionVisibility() {
   const capability = settingsConnectionCapability.value;
   const image = capability === "image";
+  const video = capability === "video";
   settingsConnectionImageEndpointField.hidden = !image;
   settingsConnectionEditEndpointField.hidden = !image;
-  settingsConnectionChatEndpointField.hidden = image;
+  settingsConnectionChatEndpointField.hidden = capability !== "chat";
+  settingsConnectionVideoEndpointField.hidden = !video;
 }
 
 function updateSettingsConnectionKeyStatus() {
@@ -1973,16 +2154,19 @@ function updateSettingsConnectionKeyStatus() {
   const willClear = settingsConnectionClearKeys.has(model);
   const hasDraft = Boolean(settingsConnectionKeyDrafts[model]);
   const hasDedicated = Boolean(config.modelKeys?.[model]);
+  const hasConnectionKey = Boolean(config.modelConnections?.[model]?.hasKey);
   settingsConnectionKeyStatus.textContent = willClear
     ? "保存后清除专用 Key"
     : hasDraft
       ? "待保存新 Key"
       : hasDedicated
         ? "专用 Key 已配置"
+        : hasConnectionKey
+          ? "平台 Key 已配置"
         : config.hasApiKey
           ? "使用全局备用 Key"
           : "尚未配置 Key";
-  settingsConnectionKeyStatus.dataset.state = willClear ? "warning" : hasDraft || hasDedicated ? "ready" : "fallback";
+  settingsConnectionKeyStatus.dataset.state = willClear ? "warning" : hasDraft || hasDedicated || hasConnectionKey ? "ready" : "fallback";
 }
 
 function applySettingsConnectionPreset(preset, options = {}) {
@@ -1998,12 +2182,75 @@ function applySettingsConnectionPreset(preset, options = {}) {
   renderSettingsConnectionEditor();
 }
 
+function populateArkSettings() {
+  if (!settingsArkApiKey) return;
+  settingsArkApiKey.value = "";
+  settingsArkClearApiKey.checked = false;
+  settingsArkBaseUrl.value = config.arkBaseUrl || arkDefaultBaseUrl;
+  const models = new Map((config.arkModels || []).map((item) => [item.model, item]));
+  for (const input of settingsArkModelInputs) {
+    const model = input.dataset.arkModel;
+    input.value = models.get(model)?.apiModel || config.modelConnections?.[model]?.apiModel || arkDefaultApiModels[model] || "";
+  }
+  updateArkSettingsKeyStatus();
+}
+
+function updateArkSettingsKeyStatus() {
+  if (!settingsArkKeyStatus) return;
+  const clearing = Boolean(settingsArkClearApiKey?.checked);
+  const hasDraft = Boolean(settingsArkApiKey?.value.trim());
+  settingsArkKeyStatus.textContent = clearing
+    ? "保存后清除 Key"
+    : hasDraft
+      ? "待保存新 Key"
+      : config.hasArkApiKey
+        ? "方舟 Key 已配置"
+        : "尚未配置 Key";
+  settingsArkKeyStatus.dataset.state = clearing ? "warning" : hasDraft || config.hasArkApiKey ? "ready" : "fallback";
+}
+
+function captureArkSettingsDrafts() {
+  const baseUrl = settingsArkBaseUrl?.value.trim() || arkDefaultBaseUrl;
+  for (const input of settingsArkModelInputs) {
+    const model = normalizeSettingsConnectionModel(input.dataset.arkModel);
+    if (!model) continue;
+    const definition = settingsConnectionDefinition(model);
+    const capability = definition?.capability === "video" ? "video" : "image";
+    settingsConnectionDrafts[model] = {
+      ...settingsConnectionDraft(model),
+      preset: "doubao",
+      capability,
+      protocol: capability === "video" ? "ark-video" : "ark-images",
+      authType: "bearer",
+      apiModel: input.value.trim() || model,
+      baseUrl,
+      imageEndpoint: capability === "image" ? arkImageEndpoint : settingsConnectionDraft(model).imageEndpoint,
+      editEndpoint: capability === "image" ? arkImageEndpoint : settingsConnectionDraft(model).editEndpoint,
+      videoEndpoint: capability === "video" ? arkVideoEndpoint : settingsConnectionDraft(model).videoEndpoint
+    };
+  }
+}
+
+function setSettingsPage(page) {
+  const ark = page === "ark";
+  for (const section of settingsGeneralSections) section.hidden = ark;
+  if (settingsArkSection) settingsArkSection.hidden = !ark;
+  settingsGeneralTab?.classList.toggle("is-active", !ark);
+  settingsArkTab?.classList.toggle("is-active", ark);
+  settingsGeneralTab?.setAttribute("aria-selected", String(!ark));
+  settingsArkTab?.setAttribute("aria-selected", String(ark));
+  const form = settingsDialog?.querySelector("form");
+  if (form) form.scrollTop = 0;
+  window.setTimeout(() => (ark ? settingsArkApiKey : settingsConnectionModel)?.focus(), 0);
+}
+
 function openSettingsDialog(request = {}) {
   settingsApiKey.value = "";
   settingsClearApiKey.checked = false;
   settingsConnectionDrafts = JSON.parse(JSON.stringify(config.modelConnections || {}));
   settingsConnectionKeyDrafts = {};
   settingsConnectionClearKeys = new Set();
+  populateArkSettings();
   populateSettingsConnectionModels();
   const requestedModel = typeof request?.model === "string" ? request.model : "";
   const initialModel = normalizeSettingsConnectionModel(
@@ -2020,11 +2267,11 @@ function openSettingsDialog(request = {}) {
   }
   settingsStatus.textContent = config.hasApiKey ? "Key 已配置" : "Key 未配置";
   const modelKeyCount = Object.values(config.modelKeys || {}).filter(Boolean).length;
-  const keyCount = Number(Boolean(config.hasApiKey)) + Number(Boolean(config.hasGrsaiApiKey)) + modelKeyCount;
+  const keyCount = Number(Boolean(config.hasApiKey)) + Number(Boolean(config.hasArkApiKey)) + Number(Boolean(config.hasGrsaiApiKey)) + modelKeyCount;
   settingsStatus.textContent = keyCount ? `Key 已配置（${keyCount} 个）` : "Key 未配置";
+  setSettingsPage(requestedModel.startsWith("ark-") ? "ark" : "general");
   pauseChatGptHost();
   if (!settingsDialog.open) settingsDialog.showModal();
-  window.setTimeout(() => settingsConnectionModel?.focus(), 0);
   refreshDreaminaStatus();
 }
 
@@ -2227,12 +2474,16 @@ async function saveSettings(event) {
   try {
     captureSettingsConnectionDraft();
     captureSettingsConnectionKeyDraft();
+    captureArkSettingsDrafts();
     const modelApiKeys = Object.fromEntries(
       Object.entries(settingsConnectionKeyDrafts).filter(([, value]) => Boolean(value))
     );
     const payload = {
       apiKey: settingsApiKey.value.trim(),
       clearApiKey: Boolean(settingsClearApiKey.checked),
+      arkApiKey: settingsArkApiKey?.value.trim() || "",
+      clearArkApiKey: Boolean(settingsArkClearApiKey?.checked),
+      arkBaseUrl: settingsArkBaseUrl?.value.trim() || arkDefaultBaseUrl,
       modelApiKeys,
       clearModelApiKeys: [...settingsConnectionClearKeys],
       modelConnections: settingsConnectionDrafts,
@@ -2253,6 +2504,7 @@ async function saveSettings(event) {
     config = {
       ...config,
       hasApiKey: data.hasApiKey,
+      hasArkApiKey: data.hasArkApiKey,
       hasGrsaiApiKey: data.hasGrsaiApiKey,
       hasAnyKey: data.hasAnyKey,
       baseUrl: data.baseUrl,
@@ -2265,6 +2517,8 @@ async function saveSettings(event) {
       connectionModels: data.connectionModels,
       connectionPresets: data.connectionPresets,
       modelConnections: data.modelConnections,
+      arkBaseUrl: data.arkBaseUrl,
+      arkModels: data.arkModels,
       cacheDir: data.cacheDir,
       photoshopBridgeEnabled: Boolean(data.photoshopBridgeEnabled)
     };
@@ -2273,6 +2527,7 @@ async function saveSettings(event) {
     applyPhotoshopBridgeAvailability();
     await refreshProjectList();
     settingsApiKey.value = "";
+    settingsArkApiKey.value = "";
     settingsConnectionApiKey.value = "";
     settingsConnectionKeyDrafts = {};
     settingsConnectionClearKeys = new Set();
@@ -4450,12 +4705,15 @@ function applyAssistantCreateVideoTask(action, touchedIds) {
   const node = createDefaultVideoTaskNode();
   node.id = assistantPlannedNodeId(action) || node.id;
   node.prompt = String(action.prompt || "").trim();
-  node.model = isDreaminaVideoModelName(action.model) ? action.model : node.model;
+  node.model = isDreaminaVideoModelName(action.model) || isArkVideoModelName(action.model) ? action.model : node.model;
+  node.provider = isArkVideoModelName(node.model) ? "ark" : "dreamina";
+  node.baseUrl = isArkVideoModelName(node.model) ? config.arkBaseUrl || arkDefaultBaseUrl : "";
+  node.endpointPath = isArkVideoModelName(node.model) ? arkVideoEndpoint : "dreamina-video-cli";
   node.x = Math.round(planNumber(action.x, center.x));
   node.y = Math.round(planNumber(action.y, center.y));
   node.z = ++canvasState.nextZ;
-  if (dreaminaVideoRatioOptions.some(([value]) => value === action.size)) node.size = action.size;
-  if (dreaminaVideoResolutionOptions.some(([value]) => value === action.quality)) node.quality = action.quality;
+  if (videoRatioOptionsForModel(node.model).some(([value]) => value === action.size)) node.size = action.size;
+  if (videoResolutionOptionsForModel(node.model).some(([value]) => value === action.quality)) node.quality = action.quality;
   if (action.n || action.count) node.n = String(action.n || action.count);
   canvasState.nodes.push(node);
   touchedIds.add(node.id);
@@ -4509,9 +4767,12 @@ function applyAssistantUpdateTask(action, touchedIds) {
 
   if (node.type === "video-task") {
     if (typeof action.prompt === "string") node.prompt = action.prompt.trim();
-    if (isDreaminaVideoModelName(action.model)) node.model = action.model;
-    if (dreaminaVideoRatioOptions.some(([value]) => value === action.size)) node.size = action.size;
-    if (dreaminaVideoResolutionOptions.some(([value]) => value === action.quality)) node.quality = action.quality;
+    if (isDreaminaVideoModelName(action.model) || isArkVideoModelName(action.model)) node.model = action.model;
+    node.provider = isArkVideoModelName(node.model) ? "ark" : "dreamina";
+    node.baseUrl = isArkVideoModelName(node.model) ? config.arkBaseUrl || arkDefaultBaseUrl : "";
+    node.endpointPath = isArkVideoModelName(node.model) ? arkVideoEndpoint : "dreamina-video-cli";
+    if (videoRatioOptionsForModel(node.model).some(([value]) => value === action.size)) node.size = action.size;
+    if (videoResolutionOptionsForModel(node.model).some(([value]) => value === action.quality)) node.quality = action.quality;
     if (action.n) node.n = String(action.n);
   } else {
     if (action.mode === "edit" || action.mode === "create") {
@@ -5313,12 +5574,10 @@ function commitSelectionScaleInput() {
 
 function reusePromptFromSelection() {
   const sourceImage = getSelectedImagesWithPrompt()[0];
-  if (!sourceImage) {
-    showToast("选中的图片没有可复用的提示词");
-    return;
-  }
-
-  reusePromptFromImage(sourceImage.id);
+  if (sourceImage) return reusePromptFromImage(sourceImage.id);
+  const sourceVideo = getSelectedVideosWithPrompt()[0];
+  if (sourceVideo) return reusePromptFromVideo(sourceVideo.id);
+  showToast("选中的图片或视频没有可复用的提示词");
 }
 
 function reusePromptFromImage(imageNodeId) {
@@ -5357,6 +5616,10 @@ function getSelectedImagesWithPrompt() {
   return canvasState.nodes.filter((node) => selectedNodeIds.has(node.id) && node.type === "image" && getImagePrompt(node));
 }
 
+function getSelectedVideosWithPrompt() {
+  return canvasState.nodes.filter((node) => selectedNodeIds.has(node.id) && node.type === "video" && getVideoPrompt(node));
+}
+
 function getImagePrompt(node) {
   return String(node?.image?.generation?.prompt || node?.image?.prompt || "").trim();
 }
@@ -5385,6 +5648,94 @@ function getImageGeneration(node) {
     referenceImageNodeIds: Array.isArray(generation.referenceImageNodeIds) ? dedupeStrings(generation.referenceImageNodeIds) : [],
     cachedMask: generation.cachedMask ? clonePlainValue(generation.cachedMask) : null
   };
+}
+
+function getVideoPrompt(node) {
+  return String(node?.video?.generation?.prompt || node?.video?.prompt || "").trim();
+}
+
+function getVideoGeneration(node) {
+  const video = node?.video || {};
+  const generation = isPlainObject(video.generation) ? video.generation : {};
+  const prompt = getVideoPrompt(node);
+  if (!prompt) return null;
+
+  const model = generation.model || video.model || dreaminaVideoDefaultModel;
+  return {
+    prompt,
+    model: isArkVideoModelName(model) || isDreaminaVideoModelName(model) ? model : dreaminaVideoDefaultModel,
+    n: String(generation.n || video.duration || dreaminaVideoDefaultDuration),
+    size: generation.size || video.size || dreaminaVideoDefaultRatio,
+    quality: generation.quality || dreaminaVideoDefaultResolution,
+    format: generation.format || video.format || "mp4",
+    baseUrl: generation.baseUrl || "",
+    endpointPath: generation.endpointPath || "",
+    extraParams: isPlainObject(generation.extraParams) ? clonePlainValue(generation.extraParams) : {},
+    cachedImages: Array.isArray(generation.cachedImages) ? clonePlainValue(generation.cachedImages) : [],
+    referenceImageNodeIds: Array.isArray(generation.referenceImageNodeIds) ? dedupeStrings(generation.referenceImageNodeIds) : []
+  };
+}
+
+function applyGenerationToVideoTask(task, generation) {
+  task.prompt = generation.prompt || "";
+  task.promptNoteNodeIds = [];
+  task.promptNotePlacements = {};
+  task.model = generation.model || dreaminaVideoDefaultModel;
+  task.provider = isArkVideoModelName(task.model) ? "ark" : "dreamina";
+  task.n = String(generation.n || dreaminaVideoDefaultDuration);
+  task.size = videoRatioOptionsForModel(task.model).some(([value]) => value === generation.size)
+    ? generation.size
+    : dreaminaVideoDefaultRatio;
+  task.quality = videoResolutionOptionsForModel(task.model).some(([value]) => value === generation.quality)
+    ? generation.quality
+    : dreaminaVideoDefaultResolution;
+  task.format = generation.format || "mp4";
+  task.baseUrl = generation.baseUrl || (task.provider === "ark" ? config.arkBaseUrl || arkDefaultBaseUrl : "");
+  task.endpointPath = generation.endpointPath || (task.provider === "ark" ? arkVideoEndpoint : "dreamina-video-cli");
+  task.extraParams = isPlainObject(generation.extraParams) ? clonePlainValue(generation.extraParams) : {};
+  task.extraParamsText = JSON.stringify(task.extraParams, null, 2);
+  task.cachedImages = Array.isArray(generation.cachedImages) ? dedupeAssetRefs(clonePlainValue(generation.cachedImages)) : [];
+  task.referenceImageNodeIds = dedupeStrings([
+    ...(generation.referenceImageNodeIds || []),
+    ...task.cachedImages.map((image) => image?.sourceImageNodeId || "")
+  ]);
+  task.sessionFiles = [];
+  fileStore.delete(task.id);
+  task.cacheStatus = task.cachedImages.length ? "ready" : "pending";
+  task.status = "idle";
+  task.error = "";
+  task.durationMs = null;
+  task.debugOpen = true;
+}
+
+function reusePromptFromVideo(videoNodeId) {
+  const sourceVideo = canvasState.nodes.find((node) => node.id === videoNodeId && node.type === "video");
+  const generation = getVideoGeneration(sourceVideo);
+  if (!sourceVideo || !generation?.prompt) {
+    showToast("这个视频没有可复用的提示词");
+    return;
+  }
+
+  const selectedTasks = canvasState.nodes.filter((node) => selectedNodeIds.has(node.id) && node.type === "video-task");
+  if (selectedTasks.length) {
+    for (const task of selectedTasks) applyGenerationToVideoTask(task, generation);
+    renderCanvas();
+    saveCanvasState();
+    showToast(`提示词和视频参数已复用到 ${selectedTasks.length} 个节点`);
+    return;
+  }
+
+  const scale = Number(sourceVideo.scale) || defaultVideoScale;
+  const videoWidth = Math.max(1, Number(sourceVideo.originalWidth) || defaultVideoWidth) * scale;
+  const point = {
+    x: sourceVideo.x + videoWidth + 56 + defaultVideoTaskWidth / 2,
+    y: sourceVideo.y + 190
+  };
+  const task = addDreaminaVideoNode(point);
+  applyGenerationToVideoTask(task, generation);
+  updateNode(task);
+  saveCanvasState();
+  showToast("已用视频提示词和参数创建新视频节点");
 }
 
 function applyGenerationToTask(task, generation) {
@@ -5438,7 +5789,7 @@ function updateSelectionToolbar() {
     : `已选中 ${selected.length} 项`;
 
   const canScaleImages = scalableNodes.length > 0;
-  const canReusePrompt = getSelectedImagesWithPrompt().length > 0;
+  const canReusePrompt = getSelectedImagesWithPrompt().length > 0 || getSelectedVideosWithPrompt().length > 0;
   selectionScaleInput.disabled = !canScaleImages;
   applySelectionScaleButton.disabled = !canScaleImages;
   reusePromptButton.disabled = !canReusePrompt;
@@ -7184,7 +7535,16 @@ function createVideoInfoPanel(node) {
     .filter(Boolean)
     .join(" · ");
 
-  panel.append(text, meta);
+  const actions = document.createElement("div");
+  actions.className = "image-prompt-actions";
+  const reuse = document.createElement("button");
+  reuse.type = "button";
+  reuse.textContent = "复用提示词";
+  reuse.disabled = !getVideoPrompt(node);
+  reuse.addEventListener("click", () => reusePromptFromVideo(node.id));
+  actions.append(reuse);
+
+  panel.append(text, meta, actions);
   return panel;
 }
 
@@ -7571,7 +7931,7 @@ function createVideoTaskHeader(node) {
 
   const title = document.createElement("strong");
   title.className = "video-task-title";
-  title.textContent = "即梦视频";
+  title.textContent = isArkVideoModelName(node.model) ? "火山方舟视频" : "即梦视频";
 
   const meta = document.createElement("span");
   meta.className = "node-meta";
@@ -7587,14 +7947,20 @@ function createVideoTaskSettings(node) {
   settings.append(
     createSelectField("模型", node, "model", dreaminaVideoModelOptions, {
       onChange: (value) => {
-        if (!String(value).includes("_vip") && node.quality === "1080p") node.quality = "720p";
+        node.provider = isArkVideoModelName(value) ? "ark" : "dreamina";
+        node.baseUrl = isArkVideoModelName(value) ? config.arkBaseUrl || arkDefaultBaseUrl : "";
+        node.endpointPath = isArkVideoModelName(value) ? arkVideoEndpoint : "dreamina-video-cli";
+        if (!videoResolutionOptionsForModel(value).some(([resolution]) => resolution === node.quality)) node.quality = "720p";
+        if (!videoRatioOptionsForModel(value).some(([ratio]) => ratio === node.size)) node.size = dreaminaVideoDefaultRatio;
         updateNode(node);
       }
     }),
-    createSelectField("比例", node, "size", dreaminaVideoRatioOptions),
+    createSelectField("比例", node, "size", videoRatioOptionsForModel(node.model)),
     createNumberField("时长（秒）", node, "n", { min: 4, max: 15, step: 1 }),
-    createSelectField("清晰度", node, "quality", dreaminaVideoResolutionOptions)
+    createSelectField("清晰度", node, "quality", videoResolutionOptionsForModel(node.model))
   );
+
+  if (isArkVideoModelName(node.model)) settings.append(createArkVideoAudioField(node));
 
   const advanced = document.createElement("details");
   advanced.className = "node-advanced node-field-full";
@@ -7620,6 +7986,27 @@ function createVideoTaskSettings(node) {
   return settings;
 }
 
+function createArkVideoAudioField(node) {
+  const control = document.createElement("label");
+  control.className = "node-switch-control";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = node.extraParams?.generate_audio !== false;
+  input.addEventListener("pointerdown", (event) => event.stopPropagation());
+  input.addEventListener("change", () => {
+    node.extraParams = { ...(node.extraParams || {}), generate_audio: input.checked };
+    node.extraParamsText = JSON.stringify(node.extraParams, null, 2);
+    saveCanvasState();
+  });
+  const text = document.createElement("span");
+  text.textContent = input.checked ? "生成音频" : "静音";
+  input.addEventListener("change", () => {
+    text.textContent = input.checked ? "生成音频" : "静音";
+  });
+  control.append(input, text);
+  return createField("原声音频", control);
+}
+
 function createVideoReferenceFields(node) {
   const panel = document.createElement("div");
   panel.className = "edit-assets video-reference-assets";
@@ -7633,7 +8020,7 @@ function createVideoReferenceFields(node) {
     let files = Array.from(imageInput.files || []);
     const stored = fileStore.get(node.id) || {};
     const remaining = Math.max(0, 9 - (node.cachedImages?.length || 0) - (stored.images?.length || 0));
-    if (files.length > remaining) showToast("即梦视频最多使用 9 张参考图片");
+    if (files.length > remaining) showToast("视频节点最多使用 9 张参考图片");
     files = files.slice(0, remaining);
     const nextFiles = [...(stored.images || []), ...files];
     fileStore.set(node.id, { ...stored, images: nextFiles });
@@ -7730,7 +8117,7 @@ function createVideoTaskStatusArea(node) {
     const loading = document.createElement("div");
     loading.className = "node-loading";
     const text = document.createElement("span");
-    text.textContent = "即梦视频生成中";
+    text.textContent = isArkVideoModelName(node.model) ? "火山方舟视频生成中" : "即梦视频生成中";
     const progress = document.createElement("div");
     progress.className = "node-progress";
     progress.append(document.createElement("span"));
@@ -7804,7 +8191,11 @@ function createTaskHeader(node) {
 
   const title = document.createElement("strong");
   title.className = "task-title";
-  title.textContent = providerForModel(node.model) === "dreamina" ? "即梦生图" : node.mode === "edit" ? "图片编辑" : "图片生成";
+  title.textContent = providerForModel(node.model) === "dreamina"
+    ? "即梦生图"
+    : providerForModel(node.model) === "ark"
+      ? node.mode === "edit" ? "Seedream 编辑" : "Seedream 生图"
+      : node.mode === "edit" ? "图片编辑" : "图片生成";
   titleWrap.append(title);
 
   const modeTabs = document.createElement("div");
@@ -7936,6 +8327,15 @@ function createDebugPanel(node) {
 
   if (isDreaminaModelName(node.model)) {
     settings.append(modelField, createSelectField("尺寸", node, "size", sizeOptionsForModel(node.model, node.mode)));
+  } else if (isArkImageModelName(node.model)) {
+    settings.append(
+      modelField,
+      createSelectField("尺寸", node, "size", sizeOptionsForModel(node.model, node.mode)),
+      createNumberField("数量", node, "n", { min: 1, max: node.model === "ark-seedream-5.0-pro" ? 1 : 15 }),
+      createSelectField("提示词优化", node, "quality", arkOptimizeOptionsForModel(node.model))
+    );
+    if (node.model === "ark-seedream-5.0-pro") advancedGrid.append(createSelectField("格式", node, "format", [["png", "png"], ["jpeg", "jpeg"]]));
+    if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
   } else if (isGeminiNativeImageModelName(node.model)) {
     settings.append(
       modelField,
@@ -7955,7 +8355,7 @@ function createDebugPanel(node) {
     if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
   }
 
-  if (node.mode === "edit" && !isDreaminaModelName(node.model) && !isGeminiNativeImageModelName(node.model)) {
+  if (node.mode === "edit" && !isDreaminaModelName(node.model) && !isGeminiNativeImageModelName(node.model) && !isArkImageModelName(node.model)) {
     advancedGrid.append(
       createSelectField("背景", node, "background", backgroundOptions),
       createSelectField("审核", node, "moderation", moderationOptions)
@@ -8090,6 +8490,11 @@ function createEditAssetFields(node) {
     if (isDreaminaModelName(node.model)) {
       const remaining = Math.max(0, 10 - (node.cachedImages?.length || 0) - (stored.images?.length || 0));
       if (files.length > remaining) showToast("即梦图生图最多使用 10 张参考图片");
+      files = files.slice(0, remaining);
+    } else if (isArkImageModelName(node.model)) {
+      const limit = node.model === "ark-seedream-5.0-pro" ? 10 : 14;
+      const remaining = Math.max(0, limit - (node.cachedImages?.length || 0) - (stored.images?.length || 0));
+      if (files.length > remaining) showToast(`当前 Seedream 模型最多使用 ${limit} 张参考图片`);
       files = files.slice(0, remaining);
     }
     const nextFiles = [...(stored.images || []), ...files];
@@ -11352,19 +11757,20 @@ function migrateTaskNode(node) {
 function migrateVideoTaskNode(node) {
   const extraParams = isPlainObject(node.extraParams) ? node.extraParams : {};
   const promptNoteNodeIds = dedupeStrings(node.promptNoteNodeIds || []);
+  const model = isDreaminaVideoModelName(node.model) || isArkVideoModelName(node.model) ? node.model : dreaminaVideoDefaultModel;
   return {
     ...node,
     id: node.id || createId(),
     type: "video-task",
-    provider: "dreamina",
+    provider: isArkVideoModelName(model) ? "ark" : "dreamina",
     prompt: node.prompt || "",
-    model: isDreaminaVideoModelName(node.model) ? node.model : dreaminaVideoDefaultModel,
+    model,
     n: String(node.n || dreaminaVideoDefaultDuration),
-    size: dreaminaVideoRatioOptions.some(([value]) => value === node.size) ? node.size : dreaminaVideoDefaultRatio,
-    quality: dreaminaVideoResolutionOptions.some(([value]) => value === node.quality) ? node.quality : dreaminaVideoDefaultResolution,
+    size: videoRatioOptionsForModel(model).some(([value]) => value === node.size) ? node.size : dreaminaVideoDefaultRatio,
+    quality: videoResolutionOptionsForModel(model).some(([value]) => value === node.quality) ? node.quality : dreaminaVideoDefaultResolution,
     format: "mp4",
-    baseUrl: "",
-    endpointPath: "dreamina-video-cli",
+    baseUrl: isArkVideoModelName(model) ? config.arkBaseUrl || arkDefaultBaseUrl : "",
+    endpointPath: isArkVideoModelName(model) ? arkVideoEndpoint : "dreamina-video-cli",
     mode: "video",
     extraParams,
     extraParamsText: node.extraParamsText || JSON.stringify(extraParams, null, 2),
@@ -11388,6 +11794,7 @@ function migrateVideoTaskNode(node) {
 }
 
 function providerForModel(model) {
+  if (isArkImageModelName(model) || isArkVideoModelName(model)) return "ark";
   if (isDreaminaVideoModelName(model)) return "dreamina";
   if (isGrokModelName(model)) return "grok";
   if (isGrsaiModelName(model)) return "grsai";

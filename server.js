@@ -3,10 +3,11 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { createReadStream, readFileSync } from "node:fs";
+import { createReadStream, createWriteStream, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
 
@@ -34,6 +35,22 @@ const grsaiDefaultBaseUrl = "https://grsaiapi.com";
 const grsaiGenerateEndpoint = "/v1/api/generate";
 const grsaiResultEndpoint = "/v1/api/result";
 const grsaiDefaultModel = "nano-banana-2";
+const arkDefaultBaseUrl = "https://ark.cn-beijing.volces.com";
+const arkImageEndpoint = "/api/v3/images/generations";
+const arkVideoEndpoint = "/api/v3/contents/generations/tasks";
+const arkImageModels = [
+  { model: "ark-seedream-5.0-pro", label: "Seedream 5.0 Pro", apiModel: "doubao-seedream-5-0-260128" },
+  { model: "ark-seedream-5.0-lite", label: "Seedream 5.0 Lite", apiModel: "doubao-seedream-5-0-lite-260128" },
+  { model: "ark-seedream-4.5", label: "Seedream 4.5", apiModel: "doubao-seedream-4-5-251128" },
+  { model: "ark-seedream-4.0", label: "Seedream 4.0", apiModel: "doubao-seedream-4-0-250828" }
+];
+const arkVideoModels = [
+  { model: "ark-seedance-2.0", label: "Seedance 2.0", apiModel: "doubao-seedance-2-0-260128" },
+  { model: "ark-seedance-2.0-fast", label: "Seedance 2.0 Fast", apiModel: "doubao-seedance-2-0-fast-260128" },
+  { model: "ark-seedance-2.0-mini", label: "Seedance 2.0 Mini", apiModel: "doubao-seedance-2-0-mini" }
+];
+const arkModelDefinitions = [...arkImageModels, ...arkVideoModels];
+const arkModelNames = new Set(arkModelDefinitions.map(({ model }) => model));
 const dreaminaDownloadBase = "https://lf3-static.bytednsdoc.com/obj/eden-cn/psj_hupthlyk/ljhwZthlaukjlkulzlp/dreamina_cli_beta";
 const dreaminaSkillUrl = `${dreaminaDownloadBase}/SKILL.md`;
 const dreaminaVersionUrl = "https://lf3-static.bytednsdoc.com/obj/eden-cn/psj_hupthlyk/ljhwZthlaukjlkulzlp/version.json";
@@ -60,6 +77,8 @@ const apiConnectionModelDefinitions = [
   { model: "grok-3-image", label: "Grok 3 Image", capability: "image", provider: "xai", presets: ["yunwu", "xai", "custom"] },
   { model: grokImageModel, label: "Grok Imagine Image", capability: "image", provider: "xai", presets: ["yunwu", "xai", "custom"] },
   { model: grsaiDefaultModel, label: "nano-banana-2 (Grsai)", capability: "image", provider: "grsai", presets: ["grsai", "custom"] },
+  ...arkImageModels.map(({ model, label }) => ({ model, label, capability: "image", provider: "doubao", presets: ["doubao", "custom"] })),
+  ...arkVideoModels.map(({ model, label }) => ({ model, label, capability: "video", provider: "doubao", presets: ["doubao", "custom"] })),
   ...assistantKeyModels.map((model) => ({
     model,
     label: model,
@@ -76,7 +95,7 @@ const connectionPresetCatalog = {
   anthropic: { label: "Anthropic 官方", description: "Anthropic Messages API" },
   xai: { label: "xAI 官方", description: "xAI OpenAI 兼容接口" },
   deepseek: { label: "DeepSeek 官方", description: "DeepSeek OpenAI 兼容接口" },
-  doubao: { label: "火山方舟官方", description: "豆包 OpenAI 兼容接口" },
+  doubao: { label: "火山方舟官方", description: "方舟对话、图片与视频原生接口" },
   grsai: { label: "Grsai", description: "Grsai 异步生图接口" },
   custom: { label: "自定义 / 中转站", description: "自行填写协议、地址和接口" }
 };
@@ -106,6 +125,8 @@ const config = {
   version: packageInfo.version || "0.0.0",
   updateRepo: process.env.CC_CANVAS_UPDATE_REPO || "1971687396/cc-infinite-canvas",
   apiKey: process.env.YUNWU_API_KEY || "",
+  arkApiKey: process.env.VOLCENGINE_ARK_API_KEY || process.env.ARK_API_KEY || "",
+  arkBaseUrl: process.env.VOLCENGINE_ARK_BASE_URL || arkDefaultBaseUrl,
   grsaiApiKey: process.env.GRSAI_API_KEY || "",
   baseUrl: process.env.YUNWU_BASE_URL || "https://yunwu.ai",
   imageEndpoint: process.env.YUNWU_IMAGE_ENDPOINT || "/v1/images/generations",
@@ -294,6 +315,7 @@ export { server, photoshopBridgeServer, photoshopBridgeEvents };
 function publicSettings() {
   return {
     hasApiKey: Boolean(config.apiKey),
+    hasArkApiKey: Boolean(config.arkApiKey),
     hasGrsaiApiKey: Boolean(config.grsaiApiKey),
     hasAnyKey: hasAnyApiKey(),
     baseUrl: config.baseUrl,
@@ -306,6 +328,13 @@ function publicSettings() {
     connectionModels: publicConnectionModels(),
     connectionPresets: connectionPresetCatalog,
     modelConnections: publicModelConnections(),
+    arkBaseUrl: config.arkBaseUrl,
+    arkModels: arkModelDefinitions.map(({ model, label, apiModel }) => ({
+      model,
+      label,
+      apiModel: connectionForModel(model).apiModel || apiModel,
+      capability: arkVideoModels.some((item) => item.model === model) ? "video" : "image"
+    })),
     cacheDir: config.cacheDir,
     version: config.version,
     updateRepo: config.updateRepo,
@@ -315,7 +344,7 @@ function publicSettings() {
 }
 
 function hasAnyApiKey() {
-  return Boolean(config.apiKey) || Boolean(config.grsaiApiKey) || Object.values(config.modelApiKeys || {}).some(Boolean);
+  return Boolean(config.apiKey) || Boolean(config.arkApiKey) || Boolean(config.grsaiApiKey) || Object.values(config.modelApiKeys || {}).some(Boolean);
 }
 
 function loadModelApiKeys() {
@@ -386,7 +415,27 @@ function apiKeyForModel(model) {
   const normalizedModel = normalizeModelAlias(model || config.defaultModel);
   if (config.modelApiKeys[normalizedModel]) return config.modelApiKeys[normalizedModel];
   if (isGrsaiImageModel(normalizedModel)) return config.grsaiApiKey || config.apiKey;
+  if (isArkModel(normalizedModel)) return config.arkApiKey || config.apiKey;
   return config.apiKey;
+}
+
+function arkDefinition(model) {
+  const normalized = normalizeModelAlias(model);
+  return arkModelDefinitions.find((item) => item.model === normalized) || null;
+}
+
+function isArkModel(model) {
+  return arkModelNames.has(normalizeModelAlias(model));
+}
+
+function isArkImageModel(model) {
+  const normalized = normalizeModelAlias(model);
+  return arkImageModels.some((item) => item.model === normalized);
+}
+
+function isArkVideoModel(model) {
+  const normalized = normalizeModelAlias(model);
+  return arkVideoModels.some((item) => item.model === normalized);
 }
 
 function assistantProviderForModel(model) {
@@ -476,6 +525,7 @@ function connectionDefinition(model) {
 function defaultConnectionForModel(model, presetId = "yunwu") {
   const normalized = normalizeModelAlias(model);
   const definition = connectionDefinition(normalized);
+  const ark = arkDefinition(normalized);
   const requestedPreset = sanitizeOptionalText(presetId).toLowerCase();
   const preset = definition.presets.includes(requestedPreset) ? requestedPreset : definition.presets[0] || "custom";
   const imageProtocol = normalized === geminiBananaImageModel ? "gemini-native" : normalized === grsaiDefaultModel ? "grsai" : "openai-images";
@@ -489,8 +539,10 @@ function defaultConnectionForModel(model, presetId = "yunwu") {
     baseUrl: config?.baseUrl || "https://yunwu.ai",
     imageEndpoint: config?.imageEndpoint || "/v1/images/generations",
     editEndpoint: config?.editEndpoint || "/v1/images/edits",
-    chatEndpoint: config?.chatEndpoint || "/v1/chat/completions"
+    chatEndpoint: config?.chatEndpoint || "/v1/chat/completions",
+    videoEndpoint: arkVideoEndpoint
   };
+  if (ark) defaults.apiModel = ark.apiModel;
   if (normalized === geminiBananaImageModel) {
     defaults.imageEndpoint = "/v1beta/models/{model}:generateContent";
     defaults.editEndpoint = "/v1beta/models/{model}:generateContent";
@@ -520,6 +572,23 @@ function defaultConnectionForModel(model, presetId = "yunwu") {
     return { ...defaults, baseUrl: "https://api.deepseek.com", protocol: "openai-chat", chatEndpoint: "/chat/completions" };
   }
   if (preset === "doubao") {
+    if (definition.capability === "image") {
+      return {
+        ...defaults,
+        baseUrl: config?.arkBaseUrl || arkDefaultBaseUrl,
+        protocol: "ark-images",
+        imageEndpoint: arkImageEndpoint,
+        editEndpoint: arkImageEndpoint
+      };
+    }
+    if (definition.capability === "video") {
+      return {
+        ...defaults,
+        baseUrl: config?.arkBaseUrl || arkDefaultBaseUrl,
+        protocol: "ark-video",
+        videoEndpoint: arkVideoEndpoint
+      };
+    }
     return { ...defaults, baseUrl: "https://ark.cn-beijing.volces.com/api/v3", protocol: "openai-chat", chatEndpoint: "/chat/completions" };
   }
   if (preset === "grsai") {
@@ -539,18 +608,19 @@ function normalizeModelConnection(model, value) {
   const normalized = normalizeModelAlias(model);
   const input = isPlainObject(value) ? value : {};
   const fallback = defaultConnectionForModel(normalized, input.preset || connectionDefinition(normalized).presets[0]);
-  const protocols = new Set(["openai-images", "openai-chat", "gemini-native", "anthropic-messages", "grsai"]);
+  const protocols = new Set(["openai-images", "openai-chat", "gemini-native", "anthropic-messages", "grsai", "ark-images", "ark-video"]);
   const authTypes = new Set(["bearer", "x-api-key", "x-goog-api-key", "none"]);
   return {
     preset: sanitizeOptionalText(input.preset) || fallback.preset,
-    capability: input.capability === "image" ? "image" : input.capability === "chat" ? "chat" : fallback.capability,
+    capability: ["image", "video", "chat"].includes(input.capability) ? input.capability : fallback.capability,
     protocol: protocols.has(input.protocol) ? input.protocol : fallback.protocol,
     authType: authTypes.has(input.authType) ? input.authType : fallback.authType,
     apiModel: sanitizeOptionalText(input.apiModel) || fallback.apiModel,
     baseUrl: sanitizeOptionalText(input.baseUrl) || fallback.baseUrl,
     imageEndpoint: sanitizeOptionalText(input.imageEndpoint) || fallback.imageEndpoint,
     editEndpoint: sanitizeOptionalText(input.editEndpoint) || fallback.editEndpoint,
-    chatEndpoint: sanitizeOptionalText(input.chatEndpoint) || fallback.chatEndpoint
+    chatEndpoint: sanitizeOptionalText(input.chatEndpoint) || fallback.chatEndpoint,
+    videoEndpoint: sanitizeOptionalText(input.videoEndpoint) || fallback.videoEndpoint || arkVideoEndpoint
   };
 }
 
@@ -583,10 +653,17 @@ function resolvedConnection(model, body = {}, mode = "chat") {
       baseUrl: sanitizeOptionalText(body.baseUrl) || connection.baseUrl,
       imageEndpoint: mode === "create" && endpoint ? endpoint : connection.imageEndpoint,
       editEndpoint: mode === "edit" && endpoint ? endpoint : connection.editEndpoint,
-      chatEndpoint: mode === "chat" && endpoint ? endpoint : connection.chatEndpoint
+      chatEndpoint: mode === "chat" && endpoint ? endpoint : connection.chatEndpoint,
+      videoEndpoint: mode === "video" && endpoint ? endpoint : connection.videoEndpoint
     });
   }
-  const endpoint = mode === "edit" ? connection.editEndpoint : mode === "create" ? connection.imageEndpoint : connection.chatEndpoint;
+  const endpoint = mode === "edit"
+    ? connection.editEndpoint
+    : mode === "create"
+      ? connection.imageEndpoint
+      : mode === "video"
+        ? connection.videoEndpoint
+        : connection.chatEndpoint;
   const endpointPath = String(endpoint || "").replaceAll("{model}", encodeURIComponent(connection.apiModel || normalized));
   return {
     ...connection,
@@ -722,6 +799,9 @@ function gcd(a, b) {
 }
 
 function missingKeyMessage(model) {
+  if (isArkModel(model)) {
+    return `火山方舟 API Key 未配置：${model}。请在设置 > 火山方舟 API 中填写。`;
+  }
   if (isGrsaiImageModel(model)) {
     return `Grsai API key is not configured for model ${model || grsaiDefaultModel}. Set it in Settings.`;
   }
@@ -923,6 +1003,8 @@ async function handleSaveSettings(req, res) {
   const clearedModels = new Set((Array.isArray(body.clearModelApiKeys) ? body.clearModelApiKeys : []).map(normalizeModelAlias));
   const nextSettings = {
     apiKey: body.clearApiKey === true ? "" : sanitizeOptionalText(body.apiKey) || config.apiKey,
+    arkApiKey: body.clearArkApiKey === true ? "" : sanitizeOptionalText(body.arkApiKey) || config.arkApiKey,
+    arkBaseUrl: sanitizeOptionalText(body.arkBaseUrl) || config.arkBaseUrl || arkDefaultBaseUrl,
     grsaiApiKey: clearedModels.has(grsaiDefaultModel) ? "" : sanitizeOptionalText(body.grsaiApiKey) || config.grsaiApiKey,
     baseUrl: sanitizeOptionalText(body.baseUrl) || config.baseUrl,
     imageEndpoint: sanitizeOptionalText(body.imageEndpoint) || config.imageEndpoint,
@@ -938,6 +1020,8 @@ async function handleSaveSettings(req, res) {
   };
 
   config.apiKey = nextSettings.apiKey;
+  config.arkApiKey = nextSettings.arkApiKey;
+  config.arkBaseUrl = nextSettings.arkBaseUrl;
   config.grsaiApiKey = nextSettings.grsaiApiKey;
   config.baseUrl = nextSettings.baseUrl;
   config.imageEndpoint = nextSettings.imageEndpoint;
@@ -1124,6 +1208,8 @@ function parseEnvBoolean(value, fallback = false) {
 async function writeSettingsEnv(settings) {
   const updates = new Map([
     ["YUNWU_API_KEY", settings.apiKey],
+    ["VOLCENGINE_ARK_API_KEY", settings.arkApiKey],
+    ["VOLCENGINE_ARK_BASE_URL", settings.arkBaseUrl],
     ["GRSAI_API_KEY", settings.grsaiApiKey],
     ["YUNWU_BASE_URL", settings.baseUrl],
     ["YUNWU_IMAGE_ENDPOINT", settings.imageEndpoint],
@@ -1263,6 +1349,10 @@ async function handleGenerate(req, res) {
 
   if (!prompt) {
     return sendJson(res, 400, { error: "Prompt is required." });
+  }
+
+  if (isArkVideoModel(body.model) || (body.mode === "video" && resolvedConnection(body.model, body, "video").protocol === "ark-video")) {
+    return await handleArkVideoGenerate(res, body, prompt);
   }
 
   if (body.mode === "video" || isDreaminaVideoModel(body.model)) {
@@ -3331,6 +3421,9 @@ function dedupeTextValues(values) {
 
 async function handleCreate(res, body, prompt) {
   const requestedModel = body.model || config.defaultModel;
+  if (isArkVideoModel(requestedModel)) {
+    return await handleArkVideoGenerate(res, body, prompt);
+  }
   if (isDreaminaVideoModel(requestedModel)) {
     return await handleDreaminaVideoGenerate(res, body, prompt);
   }
@@ -3340,6 +3433,7 @@ async function handleCreate(res, body, prompt) {
   }
 
   const connection = resolvedConnection(requestedModel, body, "create");
+  if (connection.protocol === "ark-images") return await handleArkImageGenerate(res, body, prompt, [], connection);
   if (connection.protocol === "gemini-native") return await handleGeminiNativeGenerate(res, body, prompt, [], connection);
   if (connection.protocol === "grsai") return await handleGrsaiGenerate(res, body, prompt, [], connection);
   if (connection.protocol !== "openai-images") {
@@ -3457,6 +3551,137 @@ async function handleGrsaiGenerate(res, body, prompt, imageFiles = [], suppliedC
     images,
     raw: finalData
   });
+}
+
+async function handleArkImageGenerate(res, body, prompt, imageFiles = [], suppliedConnection = null) {
+  const modelName = normalizeModelAlias(body.model);
+  const projectId = normalizeProjectId(body.projectId || "default");
+  const connection = suppliedConnection || resolvedConnection(modelName, body, imageFiles.length ? "edit" : "create");
+  if (!connection.apiKey) {
+    return sendJson(res, 500, { error: missingKeyMessage(modelName) });
+  }
+
+  const extraParams = parseExtraParamsValue(body.extraParams);
+  const count = Math.min(15, Math.max(1, Number.parseInt(body.n, 10) || 1));
+  const proModel = modelName === "ark-seedream-5.0-pro";
+  const supportsSequential = !proModel;
+  const optimizeMode = normalizeArkOptimizeMode(body.quality, modelName);
+  const payload = pruneEmpty({
+    model: connection.apiModel,
+    prompt,
+    image: imageFiles.length ? imageFiles.slice(0, arkImageReferenceLimit(modelName)).map(fileToDataUrl) : undefined,
+    size: normalizeArkImageSize(body.size, modelName),
+    response_format: "url",
+    watermark: false,
+    optimize_prompt_options: optimizeMode ? { mode: optimizeMode } : undefined,
+    output_format: proModel && ["png", "jpeg"].includes(String(body.format || "").toLowerCase())
+      ? String(body.format).toLowerCase()
+      : undefined,
+    sequential_image_generation: supportsSequential && count > 1 ? "auto" : undefined,
+    sequential_image_generation_options: supportsSequential && count > 1 ? { max_images: count } : undefined,
+    ...extraParams
+  });
+  const startedAt = Date.now();
+
+  const upstream = await fetch(connection.apiUrl, {
+    method: "POST",
+    headers: connectionAuthHeaders(connection),
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(180000)
+  });
+  const responseText = await upstream.text();
+  const upstreamData = tryParseJson(responseText);
+  if (!upstream.ok) {
+    return sendJson(res, upstream.status, {
+      error: readUpstreamError(upstreamData, responseText),
+      status: upstream.status,
+      upstream: upstreamData
+    });
+  }
+
+  const images = await normalizeAndPersistImages(upstreamData, body.format || "png", projectId);
+  if (!images.length) {
+    return sendJson(res, 502, {
+      error: "火山方舟已返回结果，但没有识别到图片数据。",
+      upstream: upstreamData
+    });
+  }
+
+  sendJson(res, 200, {
+    durationMs: Date.now() - startedAt,
+    request: {
+      provider: "volcengine-ark",
+      apiUrl: connection.apiUrl,
+      payload: { ...payload, image: imageFiles.length ? `<${imageFiles.length} reference image(s)>` : undefined }
+    },
+    images,
+    raw: upstreamData
+  });
+}
+
+function arkImageReferenceLimit(model) {
+  return normalizeModelAlias(model) === "ark-seedream-5.0-pro" ? 10 : 14;
+}
+
+function normalizeArkOptimizeMode(value, model) {
+  const requested = String(value || "").trim().toLowerCase();
+  if (!requested) return "";
+  if (requested === "fast" && ["ark-seedream-5.0-lite", "ark-seedream-4.5"].includes(normalizeModelAlias(model))) {
+    return "standard";
+  }
+  return ["standard", "fast"].includes(requested) ? requested : "";
+}
+
+function normalizeArkImageSize(value, model) {
+  const requested = String(value || "").trim().toUpperCase();
+  const normalizedModel = normalizeModelAlias(model);
+  const tiers = normalizedModel === "ark-seedream-5.0-pro"
+    ? new Set(["1K", "2K"])
+    : normalizedModel === "ark-seedream-5.0-lite"
+      ? new Set(["2K", "3K", "4K"])
+      : normalizedModel === "ark-seedream-4.5"
+        ? new Set(["2K", "4K"])
+        : new Set(["1K", "2K", "4K"]);
+  if (tiers.has(requested)) return requested;
+  const dimensions = requested.match(/^(\d{3,5})X(\d{3,5})$/u);
+  if (dimensions) {
+    const width = Number(dimensions[1]);
+    const height = Number(dimensions[2]);
+    const pixels = width * height;
+    const ratio = width / height;
+    const limits = normalizedModel === "ark-seedream-5.0-pro"
+      ? { minPixels: 3686400, maxPixels: 4624220 }
+      : normalizedModel === "ark-seedream-4.0"
+        ? { minPixels: 921600, maxPixels: 16777216 }
+        : { minPixels: 3686400, maxPixels: 16777216 };
+    if (pixels >= limits.minPixels && pixels <= limits.maxPixels && ratio >= 1 / 16 && ratio <= 16) {
+      return requested.toLowerCase();
+    }
+    return closestArkImageSize(width, height, normalizedModel);
+  }
+  return "2K";
+}
+
+function closestArkImageSize(width, height, model) {
+  const proSizes = [
+    [2048, 2048], [2368, 1776], [1776, 2368], [2816, 1584],
+    [1584, 2816], [2496, 1664], [1664, 2496], [3136, 1344]
+  ];
+  const standard2kSizes = [
+    [2048, 2048], [2304, 1728], [1728, 2304], [2848, 1600],
+    [1600, 2848], [2496, 1664], [1664, 2496], [3136, 1344]
+  ];
+  const requestedRatio = width / height;
+  const requestedPixels = width * height;
+  const candidates = model === "ark-seedream-5.0-pro" ? proSizes : standard2kSizes;
+  candidates.sort((left, right) => {
+    const leftRatioDelta = Math.abs(Math.log((left[0] / left[1]) / requestedRatio));
+    const rightRatioDelta = Math.abs(Math.log((right[0] / right[1]) / requestedRatio));
+    if (leftRatioDelta !== rightRatioDelta) return leftRatioDelta - rightRatioDelta;
+    return Math.abs(Math.log((left[0] * left[1]) / requestedPixels))
+      - Math.abs(Math.log((right[0] * right[1]) / requestedPixels));
+  });
+  return `${candidates[0][0]}x${candidates[0][1]}`;
 }
 
 async function handleGeminiNativeGenerate(res, body, prompt, imageFiles = [], suppliedConnection = null) {
@@ -3609,6 +3834,7 @@ async function handleEdit(res, body) {
   }
 
   const connection = resolvedConnection(modelName, body, "edit");
+  if (connection.protocol === "ark-images") return await handleArkImageGenerate(res, body, body.prompt, requestImages, connection);
   if (connection.protocol === "gemini-native") return await handleGeminiNativeGenerate(res, body, body.prompt, requestImages, connection);
   if (connection.protocol === "grsai") return await handleGrsaiGenerate(res, body, body.prompt, requestImages, connection);
   if (connection.protocol !== "openai-images") {
@@ -3739,6 +3965,176 @@ async function handleDreaminaGenerate(res, body, prompt, imageFiles = []) {
       await rm(inputDir, { recursive: true, force: true }).catch(() => {});
     }
   }
+}
+
+async function handleArkVideoGenerate(res, body, prompt) {
+  const modelName = normalizeModelAlias(body.model);
+  const projectId = normalizeProjectId(body.projectId || "default");
+  const files = Array.isArray(body.files) ? body.files : [];
+  const uploadedImages = files.filter((file) => file.name === "image" && String(file.contentType || "").startsWith("image/"));
+  const cachedImages = await loadCachedAssets(parseCachedAssetRefs(body.cachedImages), projectId);
+  const imageFiles = [...cachedImages, ...uploadedImages]
+    .filter((file) => String(file.contentType || "").startsWith("image/"))
+    .slice(0, 9);
+  const connection = resolvedConnection(modelName, body, "video");
+  if (connection.protocol !== "ark-video") {
+    return sendJson(res, 400, { error: `模型 ${modelName} 当前连接协议 ${connection.protocol} 不支持火山方舟视频生成。` });
+  }
+  if (!connection.apiKey) {
+    return sendJson(res, 500, { error: missingKeyMessage(modelName) });
+  }
+
+  const extraParams = parseExtraParamsValue(body.extraParams);
+  const content = [{ type: "text", text: prompt }];
+  for (const image of imageFiles) {
+    content.push({
+      type: "image_url",
+      image_url: { url: fileToDataUrl(image) },
+      role: "reference_image"
+    });
+  }
+  const payload = pruneEmpty({
+    model: connection.apiModel,
+    content,
+    resolution: normalizeArkVideoResolution(body.quality, modelName),
+    ratio: normalizeArkVideoRatio(body.size),
+    duration: normalizeArkVideoDuration(body.n),
+    generate_audio: extraParams.generate_audio === undefined ? true : Boolean(extraParams.generate_audio),
+    watermark: extraParams.watermark === undefined ? false : Boolean(extraParams.watermark),
+    return_last_frame: Boolean(extraParams.return_last_frame),
+    ...extraParams
+  });
+  const startedAt = Date.now();
+
+  try {
+    const created = await fetchArkJson(connection.apiUrl, connection, {
+      method: "POST",
+      body: JSON.stringify(payload),
+      timeoutMs: 180000
+    });
+    const taskId = String(created?.id || "").trim();
+    if (!taskId) {
+      const error = new Error("火山方舟创建视频任务后未返回任务 ID。");
+      error.data = created;
+      throw error;
+    }
+    const finalData = await pollArkVideoTask(connection, taskId);
+    const videoUrl = String(finalData?.content?.video_url || "").trim();
+    if (!videoUrl) {
+      const error = new Error("火山方舟视频任务已完成，但没有返回视频地址。");
+      error.data = finalData;
+      throw error;
+    }
+    const video = await persistArkVideo(videoUrl, projectId, finalData);
+    sendJson(res, 200, {
+      durationMs: Date.now() - startedAt,
+      request: {
+        provider: "volcengine-ark",
+        apiUrl: connection.apiUrl,
+        taskId,
+        payload: { ...payload, content: summarizeArkVideoContent(content) }
+      },
+      videos: [video],
+      raw: finalData
+    });
+  } catch (error) {
+    sendJson(res, Number(error.status) || 502, {
+      error: error.message || "火山方舟视频生成失败。",
+      upstream: error.data || undefined
+    });
+  }
+}
+
+function normalizeArkVideoRatio(value) {
+  const ratio = String(value || "16:9").trim().toLowerCase();
+  const allowed = new Set(["adaptive", "16:9", "4:3", "1:1", "3:4", "9:16", "21:9"]);
+  return allowed.has(ratio) ? ratio : "16:9";
+}
+
+function normalizeArkVideoDuration(value) {
+  const duration = Number.parseInt(value, 10);
+  return Number.isFinite(duration) ? Math.min(15, Math.max(4, duration)) : 5;
+}
+
+function normalizeArkVideoResolution(value, model) {
+  const resolution = String(value || "720p").trim().toLowerCase();
+  const normalized = normalizeModelAlias(model);
+  if (normalized === "ark-seedance-2.0" && ["480p", "720p", "1080p", "4k"].includes(resolution)) return resolution;
+  if (["480p", "720p"].includes(resolution)) return resolution;
+  return "720p";
+}
+
+async function fetchArkJson(url, connection, options = {}) {
+  const response = await fetch(url, {
+    method: options.method || "GET",
+    headers: connectionAuthHeaders(connection),
+    body: options.body,
+    signal: AbortSignal.timeout(Number(options.timeoutMs) || 60000)
+  });
+  const responseText = await response.text();
+  const data = tryParseJson(responseText);
+  if (!response.ok) {
+    const error = new Error(readUpstreamError(data, responseText));
+    error.status = response.status;
+    error.data = data;
+    throw error;
+  }
+  return data;
+}
+
+async function pollArkVideoTask(connection, taskId) {
+  const url = `${connection.apiUrl.replace(/\/+$/u, "")}/${encodeURIComponent(taskId)}`;
+  let current = null;
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    if (attempt) await delay(3000);
+    current = await fetchArkJson(url, connection, { timeoutMs: 60000 });
+    const status = normalizeModelName(current?.status);
+    if (status === "succeeded") return current;
+    if (["failed", "expired", "cancelled"].includes(status)) {
+      const error = new Error(readUpstreamError(current, current?.error?.message) || `火山方舟视频任务状态：${status}`);
+      error.data = current;
+      throw error;
+    }
+  }
+  const error = new Error("火山方舟视频任务等待超时，可使用任务 ID 在方舟控制台继续查询。");
+  error.data = current;
+  throw error;
+}
+
+async function persistArkVideo(url, projectId, taskData = {}) {
+  const response = await fetch(url, { signal: AbortSignal.timeout(10 * 60 * 1000) });
+  if (!response.ok || !response.body) throw new Error(`火山方舟视频下载失败（HTTP ${response.status}）。`);
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  if (contentLength > 1024 * 1024 * 1024) throw new Error("火山方舟视频超过 1GB，已停止本地缓存。");
+  const contentType = response.headers.get("content-type")?.split(";")[0]?.trim() || "video/mp4";
+  const urlExtension = extensionFromUrl(url);
+  const extension = dreaminaVideoExtensions.has(`.${urlExtension}`) ? urlExtension : extensionFromMime(contentType) || "mp4";
+  const filename = createOutputFilename(extension);
+  const outputRoot = projectOutputDir(projectId);
+  const outputPath = path.join(outputRoot, filename);
+  await mkdir(outputRoot, { recursive: true });
+  try {
+    await pipeline(response.body, createWriteStream(outputPath));
+  } catch (error) {
+    await rm(outputPath, { force: true }).catch(() => {});
+    throw error;
+  }
+  return {
+    type: "file",
+    url: projectPublicPath(projectId, "outputs", filename),
+    filename,
+    sourceUrl: url,
+    width: Number(taskData?.content?.width) || undefined,
+    height: Number(taskData?.content?.height) || undefined,
+    duration: Number(taskData?.duration) || undefined,
+    format: extension
+  };
+}
+
+function summarizeArkVideoContent(content) {
+  return content.map((item) => item.type === "image_url"
+    ? { type: item.type, role: item.role, image_url: { url: "<reference image>" } }
+    : item);
 }
 
 async function handleDreaminaVideoGenerate(res, body, prompt) {

@@ -2981,6 +2981,29 @@ body.assistant-open .minimap-dock {
   font-size: 13px;
 }
 
+.node-switch-control {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: var(--panel);
+}
+
+.node-switch-control input {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  accent-color: var(--accent);
+}
+
+.node-switch-control span {
+  color: var(--ink);
+  font-size: 12px;
+}
+
 .node-field-full,
 .asset-summary {
   grid-column: 1 / -1;
@@ -4357,6 +4380,36 @@ pre {
   font-size: 24px;
 }
 
+.settings-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-muted) 76%, var(--panel));
+  padding: 4px;
+}
+
+.settings-tabs button {
+  min-height: 36px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  transition: none;
+}
+
+.settings-tabs button[aria-selected="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(20, 37, 48, 0.08);
+}
+
+.settings-page-section[hidden],
+.settings-general-section[hidden] {
+  display: none;
+}
+
 .settings-field {
   display: grid;
   gap: 6px;
@@ -4380,6 +4433,83 @@ pre {
   gap: 14px;
   border-block: 1px solid var(--line);
   padding: 16px 0;
+}
+
+.ark-settings {
+  display: grid;
+  gap: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent-soft) 34%, var(--panel));
+  padding: 14px;
+}
+
+.ark-settings-head,
+.ark-model-settings-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ark-settings-head > div,
+.ark-model-settings-head {
+  min-width: 0;
+}
+
+.ark-settings-head > div,
+.ark-model-settings-head > :first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.ark-settings-head strong,
+.ark-model-settings-head strong {
+  font-size: 14px;
+}
+
+.ark-settings-head small,
+.ark-model-settings-head small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.ark-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ark-model-settings {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.ark-model-settings-head {
+  align-items: center;
+  margin-bottom: 2px;
+}
+
+.ark-model-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.65fr) minmax(0, 1.35fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.ark-model-row span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.ark-model-row input {
+  width: 100%;
+  min-height: 36px;
+  border-radius: 8px;
+  padding: 0 10px;
 }
 
 .api-connection-head,
@@ -4426,6 +4556,13 @@ pre {
 
 .api-connection-grid .settings-field[hidden] {
   display: none;
+}
+
+@media (max-width: 620px) {
+  .ark-settings-grid,
+  .ark-model-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 .settings-custom-model-row {

@@ -48,6 +48,18 @@
 - 节点默认跟随模型连接；只有在节点高级参数中开启“此节点单独覆盖模型 API 地址”时才使用节点自己的地址
 - 旧版 Yunwu Base URL、接口路径和模型 Key 会在首次保存设置时自动迁移，不需要重新填写
 
+## 火山方舟官方模型
+
+设置页提供独立的“火山方舟 API”区域。填写一个方舟 API Key 后，Seedream 与 Seedance 模型会优先共用该 Key；仍可在通用模型连接中为单个模型覆盖专用 Key。
+
+- Seedream 5.0 Pro、5.0 Lite、4.5、4.0 直接进入统一生图节点，文生图与多参考图编辑都调用方舟 `POST /api/v3/images/generations`
+- Seedream 会按模型切换 1K/2K/3K/4K 与常用画面尺寸；5.0 Pro 支持 PNG/JPEG 输出，其余型号支持顺序组图生成
+- Seedance 2.0、Fast、Mini 直接进入现有视频节点，调用 `POST /api/v3/contents/generations/tasks` 并自动轮询任务状态
+- Seedance 2.0 可选 480p、720p、1080p、4K；Fast 与 Mini 仅显示文档支持的 480p、720p
+- 视频节点支持 4-15 秒、原声音频、常用比例/自适应比例，以及最多 9 张画布或本地参考图片
+- 方舟返回的视频临时 URL 会立即下载到当前画布 `outputs/`，避免 24 小时后链接失效
+- 专属设置页可修改 Base URL，以及每个模型实际发送的 Model ID 或推理接入点 ID；控制台 ID 与内置版本不同时无需改代码
+
 ## 画布
 
 - 顶部“添加生图节点”会创建统一图片节点，节点内可切换创建/编辑模式，并可选择 GPT、Grok、Grsai 或 Dreamina（即梦）模型
@@ -57,7 +69,7 @@
 - 每个节点可以单独生成，顶部“生成全部”会并行启动所有可运行节点
 - 生成结果会自动拆成独立图片节点，以原始像素尺寸放在画布上
 - 图片节点默认以 50% 尺寸显示，选中后可以用右下角手柄自由缩放，也可以在工具条里输入缩放百分比
-- 选中图片后会在图片下方显示来源提示词，并可一键复用提示词创建新的生图节点
+- 选中生成后的图片或视频会显示来源提示词，并可一键复用完整生成参数创建新的生图或视频节点
 - 本地图片可以直接拖入画布，会写入本地缓存并生成独立图片节点
 - 本地视频可以直接拖入画布，会写入本地缓存并生成可播放、可缩放的独立视频节点
 - 编辑节点支持使用已选中的画布图片，或点击画布图片，快速设为图生图参考图
@@ -116,6 +128,8 @@ curl -s https://jimeng.jianying.com/cli | bash
 
 ```ini
 YUNWU_API_KEY=你的 Yunwu API Key
+VOLCENGINE_ARK_API_KEY=你的火山方舟 API Key
+VOLCENGINE_ARK_BASE_URL=https://ark.cn-beijing.volces.com
 YUNWU_BASE_URL=https://yunwu.ai
 YUNWU_IMAGE_ENDPOINT=/v1/images/generations
 YUNWU_EDIT_ENDPOINT=/v1/images/edits
@@ -160,6 +174,12 @@ PORT=3000
 
 ```bash
 npm start
+```
+
+方舟协议集成冒烟测试：
+
+```bash
+npm run test:ark
 ```
 
 打开 `http://localhost:3000`。

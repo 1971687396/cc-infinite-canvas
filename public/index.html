@@ -254,16 +254,82 @@
           <button id="closeSettingsButton" type="button" class="secondary compact">关闭</button>
         </div>
 
-        <label class="settings-field settings-field-full">
+        <nav class="settings-tabs settings-field-full" aria-label="设置分类">
+          <button id="settingsGeneralTab" type="button" class="is-active" aria-selected="true">通用设置</button>
+          <button id="settingsArkTab" type="button" aria-selected="false">火山方舟</button>
+        </nav>
+
+        <label class="settings-field settings-field-full settings-general-section">
           <span>全局备用 Key</span>
           <input id="settingsApiKey" type="password" autocomplete="off" placeholder="模型未配置专用 Key 时使用，留空则不修改" />
         </label>
-        <label class="connection-clear-key settings-field-full">
+        <label class="connection-clear-key settings-field-full settings-general-section">
           <input id="settingsClearApiKey" type="checkbox" />
           <span>清除已保存的全局备用 Key</span>
         </label>
 
-        <section class="api-connection-settings settings-field-full" aria-label="模型 API 连接">
+        <section class="ark-settings settings-field-full settings-page-section" aria-label="火山方舟 API 设置" hidden>
+          <div class="ark-settings-head">
+            <div>
+              <strong>火山方舟 API</strong>
+              <small>Seedream 与 Seedance 官方接口，所有模型共用一个方舟 API Key</small>
+            </div>
+            <span id="settingsArkKeyStatus" class="connection-key-status">尚未配置 Key</span>
+          </div>
+
+          <div class="ark-settings-grid">
+            <label class="settings-field">
+              <span>方舟 API Key</span>
+              <input id="settingsArkApiKey" type="password" autocomplete="off" placeholder="留空则不修改" />
+            </label>
+            <label class="settings-field">
+              <span>Base URL</span>
+              <input id="settingsArkBaseUrl" type="url" autocomplete="off" value="https://ark.cn-beijing.volces.com" />
+            </label>
+          </div>
+
+          <label class="connection-clear-key">
+            <input id="settingsArkClearApiKey" type="checkbox" />
+            <span>清除已保存的火山方舟 API Key</span>
+          </label>
+
+          <div class="ark-model-settings" aria-label="火山方舟模型 ID">
+            <div class="ark-model-settings-head">
+              <strong>模型 ID / 推理接入点 ID</strong>
+              <small>默认使用文档版本；控制台显示不同 ID 时可在这里覆盖</small>
+            </div>
+            <label class="ark-model-row">
+              <span>Seedream 5.0 Pro</span>
+              <input data-ark-model="ark-seedream-5.0-pro" type="text" autocomplete="off" />
+            </label>
+            <label class="ark-model-row">
+              <span>Seedream 5.0 Lite</span>
+              <input data-ark-model="ark-seedream-5.0-lite" type="text" autocomplete="off" />
+            </label>
+            <label class="ark-model-row">
+              <span>Seedream 4.5</span>
+              <input data-ark-model="ark-seedream-4.5" type="text" autocomplete="off" />
+            </label>
+            <label class="ark-model-row">
+              <span>Seedream 4.0</span>
+              <input data-ark-model="ark-seedream-4.0" type="text" autocomplete="off" />
+            </label>
+            <label class="ark-model-row">
+              <span>Seedance 2.0</span>
+              <input data-ark-model="ark-seedance-2.0" type="text" autocomplete="off" />
+            </label>
+            <label class="ark-model-row">
+              <span>Seedance 2.0 Fast</span>
+              <input data-ark-model="ark-seedance-2.0-fast" type="text" autocomplete="off" />
+            </label>
+            <label class="ark-model-row">
+              <span>Seedance 2.0 Mini</span>
+              <input data-ark-model="ark-seedance-2.0-mini" type="text" autocomplete="off" />
+            </label>
+          </div>
+        </section>
+
+        <section class="api-connection-settings settings-field-full settings-general-section" aria-label="模型 API 连接">
           <div class="api-connection-head">
             <div>
               <strong>模型 API 连接</strong>
@@ -296,6 +362,8 @@
                 <option value="gemini-native">Gemini generateContent</option>
                 <option value="anthropic-messages">Anthropic Messages</option>
                 <option value="grsai">Grsai 异步生图</option>
+                <option value="ark-images">火山方舟 Images</option>
+                <option value="ark-video">火山方舟视频任务</option>
               </select>
             </label>
 
@@ -323,6 +391,7 @@
               <span>模型用途</span>
               <select id="settingsConnectionCapability">
                 <option value="image">生图 / 图片编辑</option>
+                <option value="video">视频生成</option>
                 <option value="chat">助手对话</option>
               </select>
             </label>
@@ -346,6 +415,11 @@
               <span>对话接口</span>
               <input id="settingsConnectionChatEndpoint" type="text" autocomplete="off" />
             </label>
+
+            <label id="settingsConnectionVideoEndpointField" class="settings-field settings-field-full">
+              <span>视频任务接口</span>
+              <input id="settingsConnectionVideoEndpoint" type="text" autocomplete="off" />
+            </label>
           </div>
 
           <div class="api-connection-actions">
@@ -357,22 +431,22 @@
           </div>
         </section>
 
-        <label class="settings-field settings-field-full">
+        <label class="settings-field settings-field-full settings-general-section">
           <span>默认模型</span>
           <input id="settingsDefaultModel" type="text" autocomplete="off" />
         </label>
 
-        <label class="settings-field settings-field-full">
+        <label class="settings-field settings-field-full settings-general-section">
           <span>助手模型</span>
           <select id="settingsAssistantModel"></select>
         </label>
 
-        <label class="settings-field settings-field-full">
+        <label class="settings-field settings-field-full settings-general-section">
           <span>文件缓存位置</span>
           <input id="settingsCacheDir" type="text" autocomplete="off" placeholder="例如 D:\ccCanvasCache" />
         </label>
 
-        <label class="settings-switch settings-field-full">
+        <label class="settings-switch settings-field-full settings-general-section">
           <span>
             <strong>Photoshop 插件联动</strong>
             <small>开启后显示发送到 PS、接收图片和画布参考图按钮</small>
@@ -380,7 +454,7 @@
           <input id="settingsPhotoshopBridgeEnabled" type="checkbox" role="switch" />
         </label>
 
-        <section class="ps-plugin-download settings-field-full" aria-label="下载 Photoshop 插件">
+        <section class="ps-plugin-download settings-field-full settings-general-section" aria-label="下载 Photoshop 插件">
           <div>
             <strong>PS Image AI 插件</strong>
             <small>前往 GitHub 下载最新版 CCX 或一键安装包</small>
@@ -393,7 +467,7 @@
           </button>
         </section>
 
-        <section class="dreamina-settings settings-field-full" aria-label="即梦 CLI">
+        <section class="dreamina-settings settings-field-full settings-general-section" aria-label="即梦 CLI">
           <div class="dreamina-settings-head">
             <div>
               <strong>即梦 CLI</strong>
@@ -490,6 +564,10 @@
       <option value="nano-banana-2"></option>
       <option value="grok-imagine-image"></option>
       <option value="grok-3-image"></option>
+      <option value="ark-seedream-5.0-pro" label="Seedream 5.0 Pro"></option>
+      <option value="ark-seedream-5.0-lite" label="Seedream 5.0 Lite"></option>
+      <option value="ark-seedream-4.5" label="Seedream 4.5"></option>
+      <option value="ark-seedream-4.0" label="Seedream 4.0"></option>
       <option value="dreamina-5.0"></option>
       <option value="dreamina-4.7"></option>
     </datalist>

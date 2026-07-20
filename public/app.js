@@ -162,12 +162,10 @@ const settingsArkAssetKeyStatus = document.querySelector("#settingsArkAssetKeySt
 const settingsArkAccessKeyId = document.querySelector("#settingsArkAccessKeyId");
 const settingsArkSecretAccessKey = document.querySelector("#settingsArkSecretAccessKey");
 const settingsArkAssetProject = document.querySelector("#settingsArkAssetProject");
-const settingsArkAssetGroupId = document.querySelector("#settingsArkAssetGroupId");
 const settingsTosBucket = document.querySelector("#settingsTosBucket");
 const settingsTosRegion = document.querySelector("#settingsTosRegion");
 const settingsTosEndpoint = document.querySelector("#settingsTosEndpoint");
 const settingsArkClearAssetCredentials = document.querySelector("#settingsArkClearAssetCredentials");
-const settingsArkClearAssetGroupId = document.querySelector("#settingsArkClearAssetGroupId");
 const settingsArkModelInputs = [...document.querySelectorAll("[data-ark-model]")];
 const settingsConnectionModel = document.querySelector("#settingsConnectionModel");
 const settingsCustomModelRow = document.querySelector("#settingsCustomModelRow");
@@ -806,9 +804,10 @@ function addArkAssetNode(point = null) {
   const node = {
     id: createId(),
     type: "ark-asset",
-    title: "虚拟人像入库",
+    title: "角色素材入库",
     projectName: config.arkAssetProject || "default",
-    groupId: config.arkAssetGroupId || "",
+    groupId: "",
+    groupName: "",
     items: [],
     status: "idle",
     error: "",
@@ -822,7 +821,7 @@ function addArkAssetNode(point = null) {
   selectOnly(node.id);
   saveCanvasState();
   updateCanvasMeta();
-  showToast("已创建入库节点，请先点击“选择图片”，再点击画布中的图片");
+  showToast("已创建入库节点，请先选择或新建角色组，再加入这个角色的图片");
   return node;
 }
 
@@ -875,6 +874,11 @@ function appendCanvasImagesToArkAssetNode(nodeId, imageNodeIds) {
 async function importArkAssetNode(nodeId) {
   const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "ark-asset");
   if (!node || node.status === "running") return;
+  if (!node.groupId) {
+    showToast("请先为这个节点选择或新建角色素材组");
+    openArkAssetGroupDialog(node.id);
+    return;
+  }
   const pendingItems = (node.items || []).filter((item) => !item.assetId || item.status === "Failed");
   if (!pendingItems.length) {
     showToast("没有待入库的图片");
@@ -896,8 +900,8 @@ async function importArkAssetNode(nodeId) {
       body: JSON.stringify({
         projectId: currentProjectId,
         projectName: node.projectName || config.arkAssetProject || "default",
-        groupId: node.groupId || config.arkAssetGroupId || "",
-        groupName: `${currentProjectName || "cc无限画布"}虚拟人像`,
+        groupId: node.groupId,
+        groupName: node.groupName || node.title || "角色素材",
         items: pendingItems.map((item) => ({
           clientId: item.clientId,
           url: item.url,
@@ -910,7 +914,6 @@ async function importArkAssetNode(nodeId) {
     if (data.parseError) throw new Error("方舟素材接口返回了无法解析的内容");
     node.groupId = data.groupId || node.groupId;
     node.projectName = data.projectName || node.projectName;
-    if (node.groupId) config.arkAssetGroupId = node.groupId;
     mergeArkAssetItemResults(node, data.items || []);
     if (!response.ok && !(data.items || []).some((item) => item.assetId)) throw new Error(data.error || "虚拟人像入库失败");
     node.status = arkAssetNodeStatus(node);
@@ -1608,6 +1611,10 @@ async function generateNode(nodeId) {
 
     if (!response.ok) {
       throw new Error(data.error || "生成失败");
+    }
+
+    if (data.fallback?.to) {
+      showToast(`云雾文生图已自动切换兼容通道：${data.fallback.to}`);
     }
 
     const incoming = dedupeNodeImages((data.images || []).map((image) => normalizeNodeImage(image, node)));
@@ -2513,9 +2520,7 @@ function populateArkSettings() {
   settingsArkAccessKeyId.value = "";
   settingsArkSecretAccessKey.value = "";
   settingsArkClearAssetCredentials.checked = false;
-  settingsArkClearAssetGroupId.checked = false;
   settingsArkAssetProject.value = config.arkAssetProject || "default";
-  settingsArkAssetGroupId.value = config.arkAssetGroupId || "";
   settingsTosBucket.value = config.tosBucket || "";
   settingsTosRegion.value = config.tosRegion || "cn-beijing";
   settingsTosEndpoint.value = config.tosEndpoint || "";
@@ -2843,8 +2848,6 @@ async function saveSettings(event) {
       arkSecretAccessKey: settingsArkSecretAccessKey?.value.trim() || "",
       clearArkAssetCredentials: Boolean(settingsArkClearAssetCredentials?.checked),
       arkAssetProject: settingsArkAssetProject?.value.trim() || "default",
-      arkAssetGroupId: settingsArkAssetGroupId?.value.trim() || "",
-      clearArkAssetGroupId: Boolean(settingsArkClearAssetGroupId?.checked),
       tosBucket: settingsTosBucket?.value.trim() || "",
       tosRegion: settingsTosRegion?.value.trim() || "cn-beijing",
       tosEndpoint: settingsTosEndpoint?.value.trim() || "",
@@ -7319,23 +7322,28 @@ function createArkAssetNode(node) {
   const heading = document.createElement("div");
   heading.className = "ark-asset-heading";
   const title = document.createElement("strong");
-  title.textContent = node.title || "虚拟人像入库";
+  title.textContent = node.groupName ? `${node.groupName} · 素材入库` : node.title || "角色素材入库";
   const summary = document.createElement("small");
   const activeCount = (node.items || []).filter((item) => item.status === "Active").length;
-  summary.textContent = `${activeCount}/${(node.items || []).length} 个素材可用`;
+  summary.textContent = node.groupId
+    ? `${activeCount}/${(node.items || []).length} 个素材可用`
+    : "尚未选择角色素材组";
   heading.append(title, summary);
   header.append(mark, heading);
 
   tile.append(header);
-  if (selected) tile.append(createArkAssetActions(node));
+  if (selected) {
+    tile.append(createArkAssetRolePanel(node));
+    tile.append(createArkAssetActions(node));
+  }
   tile.append(createArkAssetItems(node, selected));
 
   if (selected) {
     const meta = document.createElement("div");
     meta.className = "ark-asset-meta";
     meta.textContent = node.groupId
-      ? `素材组 ${node.groupId} · ${node.projectName || "default"}`
-      : "首次入库时自动创建 AIGC 素材组";
+      ? `角色素材组 ${node.groupId} · ${node.projectName || "default"}`
+      : "每个节点对应一个角色；入库前请选择或新建角色组";
     tile.append(meta);
     if (node.error) {
       const error = document.createElement("p");
@@ -7348,6 +7356,30 @@ function createArkAssetNode(node) {
   if ((node.items || []).some((item) => item.status === "Processing")) scheduleArkAssetStatusPoll(node.id);
   tile.addEventListener("pointerdown", (event) => startNodeDrag(event, node.id));
   return tile;
+}
+
+function createArkAssetRolePanel(node) {
+  const panel = document.createElement("section");
+  panel.className = "ark-asset-role-panel";
+  panel.addEventListener("pointerdown", (event) => event.stopPropagation());
+
+  const detail = document.createElement("div");
+  detail.className = "ark-asset-role-detail";
+  const label = document.createElement("span");
+  label.textContent = "角色素材组";
+  const name = document.createElement("strong");
+  name.textContent = node.groupName || (node.groupId ? "已绑定角色组" : "未选择角色");
+  const meta = document.createElement("small");
+  meta.textContent = node.groupId ? node.groupId : "同一角色的不同角度与妆造放在同一组";
+  detail.append(label, name, meta);
+
+  const choose = document.createElement("button");
+  choose.type = "button";
+  choose.className = node.groupId ? "" : "node-action-primary";
+  choose.textContent = node.groupId ? "更换角色" : "选择 / 新建";
+  choose.addEventListener("click", () => openArkAssetGroupDialog(node.id));
+  panel.append(detail, choose);
+  return panel;
 }
 
 function createArkAssetActions(node) {
@@ -7371,7 +7403,8 @@ function createArkAssetActions(node) {
   submit.type = "button";
   submit.className = "node-action-primary";
   submit.textContent = node.status === "running" ? "处理中" : "开始入库";
-  submit.disabled = node.status === "running" || !(node.items || []).length;
+  submit.disabled = node.status === "running" || !node.groupId || !(node.items || []).length;
+  submit.title = !node.groupId ? "请先选择或新建角色素材组" : "将图片上传到当前角色素材组";
   submit.addEventListener("click", () => importArkAssetNode(node.id));
 
   const refresh = document.createElement("button");
@@ -7379,6 +7412,13 @@ function createArkAssetActions(node) {
   refresh.textContent = "刷新";
   refresh.disabled = !(node.items || []).some((item) => item.assetId);
   refresh.addEventListener("click", () => refreshArkAssetNodeStatus(node.id));
+
+  const library = document.createElement("button");
+  library.type = "button";
+  library.textContent = "素材库";
+  library.disabled = !node.groupId;
+  library.title = node.groupId ? "查看当前角色的云端素材" : "请先选择角色素材组";
+  library.addEventListener("click", () => openArkAssetLibrary(node.id));
 
   const connect = document.createElement("button");
   connect.type = "button";
@@ -7401,8 +7441,540 @@ function createArkAssetActions(node) {
   remove.textContent = "删除";
   remove.addEventListener("click", () => deleteNodes([node.id]));
 
-  actions.append(add, submit, refresh, connect, copy, remove);
+  actions.append(add, submit, refresh, library, connect, copy, remove);
   return actions;
+}
+
+function openArkAssetGroupDialog(sourceNodeId) {
+  document.querySelector(".ark-asset-group-dialog")?.remove();
+  const sourceNode = canvasState.nodes.find((item) => item.id === sourceNodeId && item.type === "ark-asset");
+  if (!sourceNode) return;
+
+  const dialog = document.createElement("dialog");
+  dialog.className = "ark-asset-group-dialog ark-asset-library-dialog";
+  const shell = document.createElement("div");
+  shell.className = "ark-asset-group-shell";
+  const header = document.createElement("header");
+  header.className = "ark-asset-library-header";
+  const heading = document.createElement("div");
+  const title = document.createElement("strong");
+  title.textContent = "选择角色素材组";
+  const subtitle = document.createElement("small");
+  subtitle.textContent = "一个角色使用一个素材组，可包含该角色的不同角度、表情和妆造";
+  heading.append(title, subtitle);
+  const close = document.createElement("button");
+  close.type = "button";
+  close.textContent = "关闭";
+  header.append(heading, close);
+
+  const createSection = document.createElement("section");
+  createSection.className = "ark-asset-group-create";
+  const createCopy = document.createElement("div");
+  const createTitle = document.createElement("strong");
+  createTitle.textContent = "新建角色";
+  const createHint = document.createElement("small");
+  createHint.textContent = "例如：云澜、男主少年期、反派战损造型";
+  createCopy.append(createTitle, createHint);
+  const roleName = document.createElement("input");
+  roleName.type = "text";
+  roleName.maxLength = 64;
+  roleName.placeholder = "输入角色或角色版本名称";
+  roleName.autocomplete = "off";
+  const createButton = document.createElement("button");
+  createButton.type = "button";
+  createButton.className = "node-action-primary";
+  createButton.textContent = "新建并使用";
+  createSection.append(createCopy, roleName, createButton);
+
+  const tools = document.createElement("div");
+  tools.className = "ark-asset-library-tools";
+  const search = document.createElement("input");
+  search.type = "search";
+  search.placeholder = "搜索已有角色素材组";
+  search.autocomplete = "off";
+  const searchButton = document.createElement("button");
+  searchButton.type = "button";
+  searchButton.textContent = "搜索";
+  const refreshButton = document.createElement("button");
+  refreshButton.type = "button";
+  refreshButton.textContent = "刷新";
+  tools.append(search, searchButton, refreshButton);
+
+  const status = document.createElement("div");
+  status.className = "ark-asset-library-status";
+  status.textContent = "正在读取角色素材组...";
+  const list = document.createElement("div");
+  list.className = "ark-asset-group-list";
+  const footer = document.createElement("footer");
+  footer.className = "ark-asset-library-footer";
+  const pageMeta = document.createElement("span");
+  const previous = document.createElement("button");
+  previous.type = "button";
+  previous.textContent = "上一页";
+  const next = document.createElement("button");
+  next.type = "button";
+  next.textContent = "下一页";
+  footer.append(pageMeta, previous, next);
+  shell.append(header, createSection, tools, status, list, footer);
+  dialog.append(shell);
+  document.body.append(dialog);
+
+  const state = { pageNumber: 1, pageSize: 24, totalCount: 0, loading: false, query: "" };
+  const closeDialog = () => {
+    dialog.close();
+    dialog.remove();
+  };
+  const selectGroup = (group) => {
+    if (!applyArkAssetGroupToNode(sourceNode, group)) return;
+    closeDialog();
+  };
+  const load = async () => {
+    if (state.loading) return;
+    state.loading = true;
+    list.setAttribute("aria-busy", "true");
+    status.hidden = false;
+    status.classList.remove("is-error");
+    status.textContent = "正在读取角色素材组...";
+    previous.disabled = true;
+    next.disabled = true;
+    try {
+      const response = await fetch("/api/ark-assets/groups", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectName: sourceNode.projectName || config.arkAssetProject || "default",
+          name: state.query,
+          pageNumber: state.pageNumber,
+          pageSize: state.pageSize
+        })
+      });
+      const data = await readJsonResponse(response);
+      if (!response.ok || data.parseError) throw new Error(data.error || "角色素材组读取失败");
+      state.pageNumber = Number(data.pageNumber) || state.pageNumber;
+      state.totalCount = Number(data.totalCount) || 0;
+      renderArkAssetGroupItems(list, data.items || [], sourceNode, selectGroup);
+      status.textContent = state.totalCount ? `共 ${state.totalCount} 个角色素材组` : "还没有角色素材组，可在上方新建";
+      pageMeta.textContent = `第 ${state.pageNumber} 页`;
+      previous.disabled = state.pageNumber <= 1;
+      next.disabled = state.pageNumber * state.pageSize >= state.totalCount;
+    } catch (error) {
+      list.replaceChildren();
+      status.classList.add("is-error");
+      status.textContent = error.message || "角色素材组读取失败";
+      pageMeta.textContent = "";
+    } finally {
+      state.loading = false;
+      list.removeAttribute("aria-busy");
+    }
+  };
+  const createGroup = async () => {
+    const name = roleName.value.trim();
+    if (!name || createButton.disabled) {
+      roleName.focus();
+      return;
+    }
+    createButton.disabled = true;
+    createButton.textContent = "创建中";
+    try {
+      const response = await fetch("/api/ark-assets/groups/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectName: sourceNode.projectName || config.arkAssetProject || "default",
+          name
+        })
+      });
+      const data = await readJsonResponse(response);
+      if (!response.ok || data.parseError) throw new Error(data.error || "角色素材组创建失败");
+      selectGroup(data.item);
+    } catch (error) {
+      status.hidden = false;
+      status.classList.add("is-error");
+      status.textContent = error.message || "角色素材组创建失败";
+      createButton.disabled = false;
+      createButton.textContent = "新建并使用";
+    }
+  };
+
+  close.addEventListener("click", closeDialog);
+  dialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeDialog();
+  });
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) closeDialog();
+  });
+  createButton.addEventListener("click", createGroup);
+  roleName.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    createGroup();
+  });
+  search.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    state.query = search.value.trim();
+    state.pageNumber = 1;
+    load();
+  });
+  searchButton.addEventListener("click", () => {
+    state.query = search.value.trim();
+    state.pageNumber = 1;
+    load();
+  });
+  refreshButton.addEventListener("click", load);
+  previous.addEventListener("click", () => {
+    if (state.pageNumber <= 1) return;
+    state.pageNumber -= 1;
+    load();
+  });
+  next.addEventListener("click", () => {
+    if (state.pageNumber * state.pageSize >= state.totalCount) return;
+    state.pageNumber += 1;
+    load();
+  });
+
+  dialog.showModal();
+  load();
+}
+
+function renderArkAssetGroupItems(container, items, sourceNode, onSelect) {
+  container.replaceChildren();
+  for (const item of items) {
+    const card = document.createElement("article");
+    card.className = "ark-asset-group-card";
+    if (item.groupId === sourceNode.groupId) card.classList.add("is-current");
+    const detail = document.createElement("div");
+    const name = document.createElement("strong");
+    name.textContent = item.name || "未命名角色";
+    const meta = document.createElement("small");
+    meta.textContent = [item.groupId, item.createTime ? formatArkAssetLibraryTime(item.createTime) : ""].filter(Boolean).join(" · ");
+    detail.append(name, meta);
+    const choose = document.createElement("button");
+    choose.type = "button";
+    choose.className = item.groupId === sourceNode.groupId ? "" : "node-action-primary";
+    choose.textContent = item.groupId === sourceNode.groupId ? "当前角色" : "使用此角色";
+    choose.disabled = item.groupId === sourceNode.groupId;
+    choose.addEventListener("click", () => onSelect(item));
+    card.append(detail, choose);
+    container.append(card);
+  }
+}
+
+function applyArkAssetGroupToNode(node, group) {
+  const groupId = String(group?.groupId || "").trim();
+  if (!groupId) return false;
+  if (node.groupId && node.groupId !== groupId && (node.items || []).some((item) => item.assetId)) {
+    const confirmed = window.confirm("更换角色组会从当前节点移除已入库素材的显示记录，但不会删除云端素材。确定更换吗？");
+    if (!confirmed) return false;
+    node.items = (node.items || []).filter((item) => !item.assetId);
+  }
+  node.groupId = groupId;
+  node.groupName = String(group.name || group.title || "").trim() || "未命名角色";
+  node.projectName = String(group.projectName || node.projectName || config.arkAssetProject || "default");
+  node.title = `${node.groupName}素材入库`;
+  node.status = arkAssetNodeStatus(node);
+  node.error = "";
+  updateNode(node);
+  saveCanvasState();
+  updateCanvasMeta();
+  showToast(`当前节点已绑定角色：${node.groupName}`);
+  return true;
+}
+
+function openArkAssetLibrary(sourceNodeId) {
+  document.querySelector(".ark-asset-library-dialog")?.remove();
+  const sourceNode = canvasState.nodes.find((item) => item.id === sourceNodeId && item.type === "ark-asset");
+  if (!sourceNode) return;
+
+  const dialog = document.createElement("dialog");
+  dialog.className = "ark-asset-library-dialog";
+  const shell = document.createElement("div");
+  shell.className = "ark-asset-library-shell";
+  const header = document.createElement("header");
+  header.className = "ark-asset-library-header";
+  const heading = document.createElement("div");
+  const title = document.createElement("strong");
+  title.textContent = "方舟素材库";
+  const subtitle = document.createElement("small");
+  subtitle.textContent = sourceNode.groupId
+    ? `${sourceNode.groupName || "当前角色"} · ${sourceNode.projectName || "default"}`
+    : "请先为节点选择角色素材组";
+  heading.append(title, subtitle);
+  const close = document.createElement("button");
+  close.type = "button";
+  close.textContent = "关闭";
+  header.append(heading, close);
+
+  const tools = document.createElement("div");
+  tools.className = "ark-asset-library-tools";
+  const search = document.createElement("input");
+  search.type = "search";
+  search.placeholder = "按素材名称搜索";
+  search.autocomplete = "off";
+  const searchButton = document.createElement("button");
+  searchButton.type = "button";
+  searchButton.textContent = "搜索";
+  const refreshButton = document.createElement("button");
+  refreshButton.type = "button";
+  refreshButton.textContent = "刷新";
+  tools.append(search, searchButton, refreshButton);
+
+  const status = document.createElement("div");
+  status.className = "ark-asset-library-status";
+  status.textContent = "正在读取方舟素材库...";
+  const grid = document.createElement("div");
+  grid.className = "ark-asset-library-grid";
+  const footer = document.createElement("footer");
+  footer.className = "ark-asset-library-footer";
+  const pageMeta = document.createElement("span");
+  const previous = document.createElement("button");
+  previous.type = "button";
+  previous.textContent = "上一页";
+  const next = document.createElement("button");
+  next.type = "button";
+  next.textContent = "下一页";
+  footer.append(pageMeta, previous, next);
+  shell.append(header, tools, status, grid, footer);
+  dialog.append(shell);
+  document.body.append(dialog);
+
+  const state = { pageNumber: 1, pageSize: 24, totalCount: 0, loading: false, query: "" };
+  const closeDialog = () => {
+    dialog.close();
+    dialog.remove();
+  };
+  const load = async () => {
+    if (state.loading) return;
+    state.loading = true;
+    grid.setAttribute("aria-busy", "true");
+    status.hidden = false;
+    status.classList.remove("is-error");
+    status.textContent = "正在读取方舟素材库...";
+    previous.disabled = true;
+    next.disabled = true;
+    try {
+      const response = await fetch("/api/ark-assets/list", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectName: sourceNode.projectName || config.arkAssetProject || "default",
+          groupId: sourceNode.groupId || "",
+          name: state.query,
+          pageNumber: state.pageNumber,
+          pageSize: state.pageSize
+        })
+      });
+      const data = await readJsonResponse(response);
+      if (!response.ok || data.parseError) throw new Error(data.error || "方舟素材库读取失败");
+      state.pageNumber = Number(data.pageNumber) || state.pageNumber;
+      state.totalCount = Number(data.totalCount) || 0;
+      renderArkAssetLibraryItems(grid, data.items || [], sourceNode, dialog, load);
+      const start = state.totalCount ? (state.pageNumber - 1) * state.pageSize + 1 : 0;
+      const end = Math.min(state.totalCount, state.pageNumber * state.pageSize);
+      status.textContent = state.totalCount ? `共 ${state.totalCount} 个素材，当前显示 ${start}-${end}` : "素材库中没有符合条件的图片";
+      pageMeta.textContent = `第 ${state.pageNumber} 页`;
+      previous.disabled = state.pageNumber <= 1;
+      next.disabled = state.pageNumber * state.pageSize >= state.totalCount;
+    } catch (error) {
+      grid.replaceChildren();
+      status.classList.add("is-error");
+      status.textContent = error.message || "方舟素材库读取失败";
+      pageMeta.textContent = "";
+    } finally {
+      state.loading = false;
+      grid.removeAttribute("aria-busy");
+    }
+  };
+
+  close.addEventListener("click", closeDialog);
+  dialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeDialog();
+  });
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) closeDialog();
+  });
+  search.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    state.query = search.value.trim();
+    state.pageNumber = 1;
+    load();
+  });
+  searchButton.addEventListener("click", () => {
+    state.query = search.value.trim();
+    state.pageNumber = 1;
+    load();
+  });
+  refreshButton.addEventListener("click", load);
+  previous.addEventListener("click", () => {
+    if (state.pageNumber <= 1) return;
+    state.pageNumber -= 1;
+    load();
+  });
+  next.addEventListener("click", () => {
+    if (state.pageNumber * state.pageSize >= state.totalCount) return;
+    state.pageNumber += 1;
+    load();
+  });
+
+  dialog.showModal();
+  load();
+}
+
+function renderArkAssetLibraryItems(container, items, sourceNode, dialog, reload) {
+  container.replaceChildren();
+  const selectedImages = canvasState.nodes.filter((node) => node.type === "image" && selectedNodeIds.has(node.id));
+  const bindTarget = selectedImages.length === 1 ? selectedImages[0] : null;
+  for (const item of items) {
+    const card = document.createElement("article");
+    card.className = "ark-asset-library-card";
+    const preview = document.createElement("img");
+    preview.src = item.url || "";
+    preview.alt = item.name || "方舟素材";
+    preview.loading = "lazy";
+    const detail = document.createElement("div");
+    detail.className = "ark-asset-library-detail";
+    const name = document.createElement("strong");
+    name.textContent = item.name || "未命名素材";
+    name.title = name.textContent;
+    const meta = document.createElement("small");
+    meta.textContent = [item.status || "Active", item.createTime ? formatArkAssetLibraryTime(item.createTime) : ""].filter(Boolean).join(" · ");
+    detail.append(name, meta);
+    const actions = document.createElement("div");
+    actions.className = "ark-asset-library-card-actions";
+    const existingNode = findCanvasImageByArkAssetId(item.assetId);
+    const download = document.createElement("button");
+    download.type = "button";
+    download.className = "node-action-primary";
+    download.textContent = existingNode ? "定位图片" : "下载到画布";
+    download.addEventListener("click", async () => {
+      const current = findCanvasImageByArkAssetId(item.assetId);
+      if (current) {
+        selectOnly(current.id);
+        return;
+      }
+      download.disabled = true;
+      download.textContent = "下载中";
+      try {
+        await downloadArkAssetLibraryItem(item, sourceNode);
+        download.textContent = "已加入画布";
+        reload();
+      } catch (error) {
+        download.disabled = false;
+        download.textContent = "重试下载";
+        showToast(error.message || "方舟素材下载失败");
+      }
+    });
+    actions.append(download);
+
+    if (bindTarget) {
+      const bind = document.createElement("button");
+      bind.type = "button";
+      const isBound = activeArkAssetForImageNode(bindTarget)?.assetId === item.assetId;
+      bind.textContent = isBound ? "已绑定选中图" : "绑定选中图";
+      bind.disabled = isBound;
+      bind.title = "将这个方舟素材身份写入当前唯一选中的本地图片";
+      bind.addEventListener("click", () => {
+        bindArkAssetLibraryItemToImage(item, bindTarget, sourceNode);
+        bind.textContent = "已绑定选中图";
+        bind.disabled = true;
+      });
+      actions.append(bind);
+    }
+    card.append(preview, detail, actions);
+    container.append(card);
+  }
+}
+
+async function downloadArkAssetLibraryItem(item, sourceNode) {
+  const response = await fetch("/api/ark-assets/download", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      projectId: currentProjectId,
+      projectName: sourceNode.projectName || config.arkAssetProject || "default",
+      assetId: item.assetId
+    })
+  });
+  const data = await readJsonResponse(response);
+  if (!response.ok || data.parseError) throw new Error(data.error || "方舟素材下载失败");
+  const point = arkAssetLibraryInsertPoint(sourceNode);
+  const imageNode = createLocalImageNode(data.asset, { width: 512, height: 512 }, point.x, point.y);
+  imageNode.sourceImageKey = `ark:${data.arkAsset.assetId}`;
+  imageNode.image.prompt = `方舟素材库：${data.item?.name || data.asset.originalName || "未命名素材"}`;
+  imageNode.image.model = "ark-asset-library";
+  imageNode.arkAsset = normalizeImageArkAsset(data.arkAsset);
+  canvasState.nodes.push(imageNode);
+  upsertArkAssetLibraryItem(sourceNode, data.item, imageNode);
+  selectedNodeIds.clear();
+  selectedNodeIds.add(imageNode.id);
+  renderCanvas();
+  saveCanvasState();
+  updateCanvasMeta();
+  showToast(data.asset.existing ? "已从本机缓存恢复方舟素材" : "方舟素材已下载并标记到画布");
+  return imageNode;
+}
+
+function bindArkAssetLibraryItemToImage(item, imageNode, sourceNode) {
+  imageNode.arkAsset = normalizeImageArkAsset({
+    assetId: item.assetId,
+    assetUri: item.assetUri || item.assetId,
+    status: "Active",
+    groupId: item.groupId || sourceNode.groupId,
+    projectName: item.projectName || sourceNode.projectName || config.arkAssetProject || "default",
+    error: "",
+    updatedAt: new Date().toISOString()
+  });
+  upsertArkAssetLibraryItem(sourceNode, item, imageNode);
+  updateNode(imageNode);
+  updateNode(sourceNode);
+  saveCanvasState();
+  updateCanvasMeta();
+  showToast("已将方舟素材身份绑定到选中的本地图片");
+}
+
+function upsertArkAssetLibraryItem(sourceNode, item, imageNode) {
+  const previous = (sourceNode.items || []).find((entry) => entry.assetId === item.assetId);
+  const next = {
+    clientId: previous?.clientId || createId(),
+    sourceImageNodeId: imageNode.id,
+    url: imageNode.image?.url || item.url,
+    previewUrl: imageNode.image?.url || item.url,
+    filename: item.name || imageNode.image?.filename || "方舟素材",
+    assetId: item.assetId,
+    assetUri: normalizeArkAssetUri(item.assetUri || item.assetId),
+    status: "Active",
+    sourceMode: "library",
+    error: ""
+  };
+  sourceNode.items = previous
+    ? (sourceNode.items || []).map((entry) => (entry.assetId === item.assetId ? { ...entry, ...next } : entry))
+    : [...(sourceNode.items || []), next];
+  sourceNode.status = arkAssetNodeStatus(sourceNode);
+  sourceNode.error = "";
+}
+
+function findCanvasImageByArkAssetId(assetId) {
+  const targetId = String(assetId || "").trim();
+  return canvasState.nodes.find((node) => node.type === "image" && activeArkAssetForImageNode(node)?.assetId === targetId) || null;
+}
+
+function arkAssetLibraryInsertPoint(sourceNode) {
+  const downloadedCount = canvasState.nodes.filter((node) => node.type === "image" && activeArkAssetForImageNode(node)).length;
+  const column = downloadedCount % 3;
+  const row = Math.floor(downloadedCount / 3) % 4;
+  return {
+    x: Math.round(sourceNode.x + (sourceNode.width || defaultArkAssetNodeWidth) + 48 + column * 288),
+    y: Math.round(sourceNode.y + row * 288)
+  };
+}
+
+function formatArkAssetLibraryTime(value) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
 }
 
 function createArkAssetItems(node, selected) {
@@ -12615,13 +13187,17 @@ function migrateNode(node) {
           error: item.error || ""
         }))
       : [];
+    const persistedGroupId = Object.prototype.hasOwnProperty.call(node, "groupId")
+      ? String(node.groupId || "")
+      : String(config.arkAssetGroupId || "");
     const migrated = {
       ...node,
       id: node.id || createId(),
       type: "ark-asset",
-      title: String(node.title || "虚拟人像入库"),
+      title: String(node.title || "角色素材入库"),
       projectName: String(node.projectName || config.arkAssetProject || "default"),
-      groupId: String(node.groupId || config.arkAssetGroupId || ""),
+      groupId: persistedGroupId,
+      groupName: String(node.groupName || ""),
       items,
       status: node.status === "running" ? arkAssetNodeStatus({ items }) : node.status || arkAssetNodeStatus({ items }),
       error: node.error || "",

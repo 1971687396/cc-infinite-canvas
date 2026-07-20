@@ -2768,6 +2768,46 @@ body.assistant-open .minimap-dock {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
+.ark-asset-role-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, var(--purple) 28%, var(--line));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--purple) 6%, var(--panel-soft));
+  padding: 8px 9px;
+}
+
+.ark-asset-role-detail {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.ark-asset-role-detail span,
+.ark-asset-role-detail small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ark-asset-role-detail strong {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ark-asset-role-panel > button {
+  min-height: 32px;
+  border-radius: 6px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
 .ark-asset-items {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2862,6 +2902,270 @@ body.assistant-open .minimap-dock {
 
 .ark-asset-error {
   margin: 0;
+}
+
+.ark-asset-library-dialog {
+  width: min(980px, calc(100vw - 32px));
+  max-width: none;
+  max-height: calc(100vh - 32px);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  padding: 0;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.3);
+}
+
+.ark-asset-library-dialog::backdrop {
+  background: var(--modal-backdrop);
+}
+
+.ark-asset-group-dialog {
+  width: min(760px, calc(100vw - 32px));
+}
+
+.ark-asset-group-shell {
+  display: grid;
+  grid-template-rows: auto auto auto auto minmax(180px, 1fr) auto;
+  max-height: calc(100vh - 34px);
+}
+
+.ark-asset-group-create {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(220px, 1.2fr) auto;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-soft);
+  padding: 12px 14px;
+}
+
+.ark-asset-group-create > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.ark-asset-group-create strong {
+  font-size: 13px;
+}
+
+.ark-asset-group-create small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ark-asset-group-create input,
+.ark-asset-group-create button {
+  min-height: 34px;
+}
+
+.ark-asset-group-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 8px;
+  overflow: auto;
+  padding: 10px 14px 14px;
+}
+
+.ark-asset-group-list[aria-busy="true"] {
+  opacity: 0.62;
+  pointer-events: none;
+}
+
+.ark-asset-group-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-soft);
+  padding: 10px;
+}
+
+.ark-asset-group-card.is-current {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
+  background: var(--accent-soft);
+}
+
+.ark-asset-group-card > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.ark-asset-group-card strong,
+.ark-asset-group-card small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ark-asset-group-card strong {
+  font-size: 13px;
+}
+
+.ark-asset-group-card small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.ark-asset-group-card button {
+  min-height: 32px;
+  border-radius: 6px;
+  padding: 0 9px;
+  font-size: 10px;
+}
+
+.ark-asset-library-shell {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(160px, 1fr) auto;
+  max-height: calc(100vh - 34px);
+}
+
+.ark-asset-library-header,
+.ark-asset-library-tools,
+.ark-asset-library-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 14px;
+}
+
+.ark-asset-library-header {
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+}
+
+.ark-asset-library-header > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.ark-asset-library-header strong {
+  font-size: 16px;
+}
+
+.ark-asset-library-header small,
+.ark-asset-library-status,
+.ark-asset-library-footer {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.ark-asset-library-header small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ark-asset-library-header button,
+.ark-asset-library-tools button,
+.ark-asset-library-footer button,
+.ark-asset-library-card-actions button {
+  min-height: 32px;
+  border-radius: 6px;
+}
+
+.ark-asset-library-tools {
+  border-bottom: 1px solid var(--line);
+}
+
+.ark-asset-library-tools input {
+  min-width: 0;
+  flex: 1;
+}
+
+.ark-asset-library-status {
+  padding: 9px 14px 0;
+}
+
+.ark-asset-library-status.is-error {
+  color: var(--warning);
+}
+
+.ark-asset-library-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-content: start;
+  gap: 10px;
+  overflow: auto;
+  padding: 10px 14px 14px;
+}
+
+.ark-asset-library-grid[aria-busy="true"] {
+  opacity: 0.62;
+  pointer-events: none;
+}
+
+.ark-asset-library-card {
+  display: grid;
+  grid-template-rows: 148px auto auto;
+  min-width: 0;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-soft);
+  padding: 7px;
+}
+
+.ark-asset-library-card > img {
+  width: 100%;
+  height: 148px;
+  border-radius: 5px;
+  background: var(--media-bg);
+  object-fit: cover;
+}
+
+.ark-asset-library-detail {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.ark-asset-library-detail strong,
+.ark-asset-library-detail small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ark-asset-library-detail strong {
+  font-size: 12px;
+}
+
+.ark-asset-library-detail small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.ark-asset-library-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.ark-asset-library-card-actions button {
+  flex: 1 1 auto;
+  padding: 0 8px;
+  font-size: 10px;
+}
+
+.ark-asset-library-footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+}
+
+.ark-asset-library-footer span {
+  margin-right: auto;
 }
 
 .ark-asset-uri-input {
@@ -4814,6 +5118,13 @@ pre {
   gap: 12px;
 }
 
+.settings-inline-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .ark-model-settings {
   display: grid;
   gap: 8px;
@@ -4895,6 +5206,11 @@ pre {
 @media (max-width: 620px) {
   .ark-settings-grid,
   .ark-model-row {
+    grid-template-columns: 1fr;
+  }
+
+  .ark-asset-group-create,
+  .ark-asset-group-list {
     grid-template-columns: 1fr;
   }
 }
@@ -5753,5 +6069,24 @@ pre {
   .ps-plugin-download {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .ark-asset-library-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ark-asset-library-tools {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .ark-asset-library-tools input {
+    flex-basis: 100%;
+  }
+}
+
+@media (min-width: 621px) and (max-width: 900px) {
+  .ark-asset-library-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

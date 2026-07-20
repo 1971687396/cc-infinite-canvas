@@ -31,6 +31,7 @@ const legacyGrokImageModel = "grok-image-image";
 const grokKeyModel = grokImageModel;
 const geminiBananaImageModel = "gemini-3.1-flash-image-preview";
 const geminiBananaImageAlias = "banana2";
+const yunwuGptImageFallbackModel = "gpt-image-2-c";
 const geminiNativeDefaultRatio = "1:1";
 const geminiNativeDefaultImageSize = "4K";
 const grsaiDefaultBaseUrl = "https://grsaiapi.com";
@@ -38,10 +39,11 @@ const grsaiGenerateEndpoint = "/v1/api/generate";
 const grsaiResultEndpoint = "/v1/api/result";
 const grsaiDefaultModel = "nano-banana-2";
 const arkDefaultBaseUrl = "https://ark.cn-beijing.volces.com";
-const arkOpenApiBaseUrl = "https://ark.cn-beijing.volcengineapi.com";
+const arkOpenApiBaseUrl = process.env.VOLCENGINE_ARK_OPEN_API_BASE_URL || "https://ark.cn-beijing.volcengineapi.com";
 const arkOpenApiRegion = "cn-beijing";
 const arkOpenApiService = "ark";
 const arkOpenApiVersion = "2024-01-01";
+const allowLocalArkAssetUrls = process.env.CC_CANVAS_ALLOW_LOCAL_ARK_ASSET_URLS === "1";
 const arkImageEndpoint = "/api/v3/images/generations";
 const arkVideoEndpoint = "/api/v3/contents/generations/tasks";
 const arkImageModels = [
@@ -193,8 +195,24 @@ const server = http.createServer(async (req, res) => {
       return await handleArkAssetImport(req, res);
     }
 
+    if (req.method === "POST" && url.pathname === "/api/ark-assets/groups") {
+      return await handleArkAssetGroups(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/ark-assets/groups/create") {
+      return await handleArkAssetGroupCreate(req, res);
+    }
+
     if (req.method === "POST" && url.pathname === "/api/ark-assets/status") {
       return await handleArkAssetStatus(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/ark-assets/list") {
+      return await handleArkAssetList(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/ark-assets/download") {
+      return await handleArkAssetDownload(req, res);
     }
 
     if (req.method === "GET" && url.pathname === "/api/dreamina/status") {
@@ -1101,20 +1119,9 @@ async function handleArkAssetImport(req, res) {
       return sendJson(res, 400, { error: "请先选择至少一张画布图片。" });
     }
 
-    let groupId = sanitizeOptionalText(body.groupId) || config.arkAssetGroupId;
+    const groupId = sanitizeOptionalText(body.groupId);
     if (!groupId) {
-      const groupName = (sanitizeOptionalText(body.groupName) || "cc无限画布虚拟人像").slice(0, 64);
-      const group = await arkOpenApiRequest("CreateAssetGroup", {
-        Name: groupName,
-        Description: "cc无限画布导入的 AI 生成人像素材",
-        GroupType: "AIGC",
-        ProjectName: projectName
-      });
-      groupId = sanitizeOptionalText(group?.Id || group?.id);
-      if (!groupId) throw new Error("方舟已响应，但未返回 Asset Group ID。请到方舟控制台确认素材库授权书状态。");
-      config.arkAssetGroupId = groupId;
-      config.arkAssetProject = projectName;
-      await writeSettingsEnv(config);
+      return sendJson(res, 400, { error: "请先在入库节点中选择或新建角色素材组。" });
     }
 
     const items = [];
@@ -1165,6 +1172,70 @@ async function handleArkAssetImport(req, res) {
   }
 }
 
+async function handleArkAssetGroups(req, res) {
+  try {
+    requireArkAssetCredentials();
+    const body = await readJsonBody(req);
+    const projectName = sanitizeOptionalText(body.projectName) || config.arkAssetProject || "default";
+    const name = sanitizeOptionalText(body.name).slice(0, 64);
+    const pageNumber = Math.max(1, Math.min(100000, Number.parseInt(body.pageNumber, 10) || 1));
+    const pageSize = Math.max(1, Math.min(100, Number.parseInt(body.pageSize, 10) || 24));
+    const filter = { GroupType: "AIGC" };
+    if (name) filter.Name = name;
+
+    const result = await arkOpenApiRequest("ListAssetGroups", {
+      Filter: filter,
+      PageNumber: pageNumber,
+      PageSize: pageSize,
+      ProjectName: projectName
+    });
+    const rawItems = Array.isArray(result?.Items)
+      ? result.Items
+      : Array.isArray(result?.AssetGroups)
+        ? result.AssetGroups
+        : Array.isArray(result?.Groups)
+          ? result.Groups
+          : Array.isArray(result?.items)
+            ? result.items
+            : [];
+    const items = rawItems.map((item) => normalizeArkAssetGroupApiItem(item, projectName)).filter((item) => item.groupId);
+
+    sendJson(res, 200, {
+      ok: true,
+      projectName,
+      pageNumber: Number(result?.PageNumber || result?.pageNumber) || pageNumber,
+      pageSize: Number(result?.PageSize || result?.pageSize) || pageSize,
+      totalCount: Number(result?.TotalCount || result?.totalCount) || items.length,
+      items
+    });
+  } catch (error) {
+    sendJson(res, 500, { error: arkAssetErrorMessage(error) });
+  }
+}
+
+async function handleArkAssetGroupCreate(req, res) {
+  try {
+    requireArkAssetCredentials();
+    const body = await readJsonBody(req);
+    const projectName = sanitizeOptionalText(body.projectName) || config.arkAssetProject || "default";
+    const name = sanitizeOptionalText(body.name).slice(0, 64);
+    if (!name) return sendJson(res, 400, { error: "请填写角色名称。" });
+
+    const result = await arkOpenApiRequest("CreateAssetGroup", {
+      Name: name,
+      Title: name,
+      Description: (sanitizeOptionalText(body.description) || `cc无限画布角色素材：${name}`).slice(0, 256),
+      GroupType: "AIGC",
+      ProjectName: projectName
+    });
+    const item = normalizeArkAssetGroupApiItem({ ...result, Name: result?.Name || name }, projectName);
+    if (!item.groupId) throw new Error("方舟已响应，但未返回 Asset Group ID。请确认素材库权限与授权书状态。");
+    sendJson(res, 200, { ok: true, projectName, item });
+  } catch (error) {
+    sendJson(res, 500, { error: arkAssetErrorMessage(error) });
+  }
+}
+
 async function handleArkAssetStatus(req, res) {
   try {
     requireArkAssetCredentials();
@@ -1200,6 +1271,181 @@ async function handleArkAssetStatus(req, res) {
   } catch (error) {
     sendJson(res, 500, { error: arkAssetErrorMessage(error) });
   }
+}
+
+async function handleArkAssetList(req, res) {
+  try {
+    requireArkAssetCredentials();
+    const body = await readJsonBody(req);
+    const projectName = sanitizeOptionalText(body.projectName) || config.arkAssetProject || "default";
+    const groupId = sanitizeOptionalText(body.groupId);
+    if (!groupId) return sendJson(res, 400, { error: "请先在节点中选择角色素材组。" });
+    const name = sanitizeOptionalText(body.name).slice(0, 64);
+    const pageNumber = Math.max(1, Math.min(100000, Number.parseInt(body.pageNumber, 10) || 1));
+    const pageSize = Math.max(1, Math.min(100, Number.parseInt(body.pageSize, 10) || 24));
+    const filter = {
+      GroupType: "AIGC",
+      Statuses: ["Active"]
+    };
+    if (groupId) filter.GroupIds = [groupId];
+    if (name) filter.Name = name;
+
+    const result = await arkOpenApiRequest("ListAssets", {
+      Filter: filter,
+      PageNumber: pageNumber,
+      PageSize: pageSize,
+      SortBy: "CreateTime",
+      SortOrder: "Desc",
+      ProjectName: projectName
+    });
+    const items = (Array.isArray(result?.Items) ? result.Items : Array.isArray(result?.items) ? result.items : [])
+      .map(normalizeArkAssetApiItem)
+      .filter((item) => item.assetId && item.assetType === "Image");
+
+    sendJson(res, 200, {
+      ok: true,
+      projectName,
+      groupId,
+      pageNumber: Number(result?.PageNumber || result?.pageNumber) || pageNumber,
+      pageSize: Number(result?.PageSize || result?.pageSize) || pageSize,
+      totalCount: Number(result?.TotalCount || result?.totalCount) || items.length,
+      items
+    });
+  } catch (error) {
+    sendJson(res, 500, { error: arkAssetErrorMessage(error) });
+  }
+}
+
+async function handleArkAssetDownload(req, res) {
+  try {
+    requireArkAssetCredentials();
+    const body = await readJsonBody(req);
+    const projectId = normalizeProjectId(body.projectId || "default");
+    const projectName = sanitizeOptionalText(body.projectName) || config.arkAssetProject || "default";
+    const assetId = sanitizeOptionalText(body.assetId);
+    if (!assetId) return sendJson(res, 400, { error: "缺少要下载的方舟素材 ID。" });
+
+    const result = await arkOpenApiRequest("GetAsset", { Id: assetId, ProjectName: projectName });
+    const item = normalizeArkAssetApiItem(result);
+    if (!item.assetId) item.assetId = assetId;
+    if (item.status !== "Active") {
+      return sendJson(res, 409, { error: `素材尚不可用，当前状态：${item.status || "Unknown"}` });
+    }
+    if (item.assetType !== "Image") {
+      return sendJson(res, 415, { error: "当前画布只支持从方舟素材库下载图片素材。" });
+    }
+    if (!isTrustedArkAssetDownloadUrl(item.url)) {
+      return sendJson(res, 502, { error: "方舟没有返回可下载的素材地址，请刷新素材库后重试。" });
+    }
+
+    const downloaded = await downloadArkAssetImage(item, projectId);
+    const assetUri = `asset://${item.assetId}`;
+    sendJson(res, 200, {
+      ok: true,
+      item: { ...item, assetUri },
+      asset: {
+        field: "image",
+        filename: downloaded.filename,
+        originalName: item.name || downloaded.filename,
+        contentType: downloaded.contentType,
+        path: `canvases/${projectId}/assets/${downloaded.filename}`,
+        url: projectPublicPath(projectId, "assets", downloaded.filename),
+        existing: downloaded.existing
+      },
+      arkAsset: {
+        assetId: item.assetId,
+        assetUri,
+        status: "Active",
+        groupId: item.groupId,
+        projectName: item.projectName || projectName,
+        error: "",
+        updatedAt: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    sendJson(res, 500, { error: arkAssetErrorMessage(error) });
+  }
+}
+
+function normalizeArkAssetApiItem(value) {
+  const item = isPlainObject(value) ? value : {};
+  const assetId = sanitizeOptionalText(item.Id || item.id || item.AssetId || item.assetId);
+  const assetType = sanitizeOptionalText(item.AssetType || item.assetType || "Image") || "Image";
+  const status = sanitizeOptionalText(item.Status || item.status) || "Processing";
+  const failedReason = item.FailedReason || item.failedReason || item.Error || item.error;
+  return {
+    assetId,
+    assetUri: status === "Active" && assetId ? `asset://${assetId}` : "",
+    name: sanitizeOptionalText(item.Name || item.name) || (assetId ? `方舟素材 ${assetId.slice(-8)}` : "方舟素材"),
+    groupId: sanitizeOptionalText(item.GroupId || item.groupId),
+    projectName: sanitizeOptionalText(item.ProjectName || item.projectName) || config.arkAssetProject || "default",
+    assetType,
+    status,
+    url: sanitizeOptionalText(item.URL || item.Url || item.url),
+    createTime: sanitizeOptionalText(item.CreateTime || item.createTime),
+    updateTime: sanitizeOptionalText(item.UpdateTime || item.updateTime),
+    error: failedReason ? arkAssetErrorMessage(failedReason) : ""
+  };
+}
+
+function normalizeArkAssetGroupApiItem(value, fallbackProjectName = "") {
+  const item = isPlainObject(value) ? value : {};
+  const groupId = sanitizeOptionalText(item.Id || item.id || item.GroupId || item.groupId);
+  return {
+    groupId,
+    name: sanitizeOptionalText(item.Name || item.name || item.Title || item.title) || (groupId ? `角色组 ${groupId.slice(-8)}` : "未命名角色"),
+    title: sanitizeOptionalText(item.Title || item.title),
+    description: sanitizeOptionalText(item.Description || item.description),
+    groupType: sanitizeOptionalText(item.GroupType || item.groupType) || "AIGC",
+    projectName: sanitizeOptionalText(item.ProjectName || item.projectName) || fallbackProjectName || config.arkAssetProject || "default",
+    createTime: sanitizeOptionalText(item.CreateTime || item.createTime),
+    updateTime: sanitizeOptionalText(item.UpdateTime || item.updateTime)
+  };
+}
+
+async function downloadArkAssetImage(item, projectId) {
+  const safeId = String(item.assetId || "asset").replace(/[^a-z0-9_-]+/giu, "-").slice(0, 96) || "asset";
+  const hintedExtension = extensionFromUrl(item.url) || extensionFromUrl(item.name);
+  const existing = await findCachedArkAssetImage(projectId, safeId, hintedExtension);
+  if (existing) return { ...existing, existing: true };
+
+  const response = await fetch(item.url, { signal: AbortSignal.timeout(60000) });
+  if (!response.ok) throw new Error(`方舟素材下载失败（HTTP ${response.status}）。`);
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  if (contentLength > 30 * 1024 * 1024) throw new Error("方舟素材图片超过 30 MB，无法下载到画布。");
+  const responseType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() || "";
+  const extension = extensionFromMime(responseType) || hintedExtension || "png";
+  if (!new Set(["png", "jpg", "jpeg", "webp", "gif", "bmp"]).has(extension.toLowerCase())) {
+    throw new Error(`暂不支持下载 ${extension || responseType || "未知"} 格式的方舟素材。`);
+  }
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (!bytes.length || bytes.length > 30 * 1024 * 1024) throw new Error("方舟素材图片为空或超过 30 MB。");
+
+  const filename = `ark-${safeId}.${extension.toLowerCase() === "jpeg" ? "jpg" : extension.toLowerCase()}`;
+  await mkdir(projectAssetDir(projectId), { recursive: true });
+  await writeFile(path.join(projectAssetDir(projectId), filename), bytes);
+  return {
+    filename,
+    contentType: responseType.startsWith("image/") ? responseType : mimeTypes.get(path.extname(filename)) || "image/png",
+    existing: false
+  };
+}
+
+async function findCachedArkAssetImage(projectId, safeId, hintedExtension) {
+  const extensions = Array.from(new Set([hintedExtension, "png", "jpg", "jpeg", "webp", "gif", "bmp"].filter(Boolean)));
+  for (const extension of extensions) {
+    const normalizedExtension = extension.toLowerCase() === "jpeg" ? "jpg" : extension.toLowerCase();
+    const filename = `ark-${safeId}.${normalizedExtension}`;
+    try {
+      const info = await stat(path.join(projectAssetDir(projectId), filename));
+      if (info.isFile() && info.size > 0) {
+        return { filename, contentType: mimeTypes.get(path.extname(filename)) || "image/png" };
+      }
+    } catch {
+      // The current device has not cached this cloud asset yet.
+    }
+  }
+  return null;
 }
 
 function requireArkAssetCredentials() {
@@ -1323,6 +1569,17 @@ function isPublicArkAssetUrl(value) {
     const private172 = hostname.match(/^172\.(\d{1,3})\./u);
     if (private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31) return false;
     return true;
+  } catch {
+    return false;
+  }
+}
+
+function isTrustedArkAssetDownloadUrl(value) {
+  if (isPublicArkAssetUrl(value)) return true;
+  if (!allowLocalArkAssetUrls) return false;
+  try {
+    const parsed = new URL(value);
+    return ["http:", "https:"].includes(parsed.protocol) && ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname);
   } catch {
     return false;
   }
@@ -3810,7 +4067,7 @@ async function handleCreate(res, body, prompt) {
 
   const projectId = normalizeProjectId(body.projectId || "default");
   const extraParams = isPlainObject(body.extraParams) ? body.extraParams : {};
-  const payload = pruneEmpty({
+  let payload = pruneEmpty({
     model: connection.apiModel,
     prompt,
     n: Number(body.n || 1),
@@ -3827,19 +4084,37 @@ async function handleCreate(res, body, prompt) {
   }
   const startedAt = Date.now();
 
-  const upstream = await fetch(apiUrl, {
+  let upstream = await fetch(apiUrl, {
     method: "POST",
     headers: connectionAuthHeaders(connection),
     body: JSON.stringify(payload)
   });
 
-  const responseText = await upstream.text();
-  const upstreamData = tryParseJson(responseText);
+  let responseText = await upstream.text();
+  let upstreamData = tryParseJson(responseText);
+  let fallback = null;
+
+  if (shouldRetryYunwuGptImageCreate(requestedModel, connection, payload, upstream, upstreamData, responseText)) {
+    fallback = {
+      from: payload.model,
+      to: yunwuGptImageFallbackModel,
+      reason: readUpstreamError(upstreamData, responseText)
+    };
+    payload = { ...payload, model: yunwuGptImageFallbackModel };
+    upstream = await fetch(apiUrl, {
+      method: "POST",
+      headers: connectionAuthHeaders(connection),
+      body: JSON.stringify(payload)
+    });
+    responseText = await upstream.text();
+    upstreamData = tryParseJson(responseText);
+  }
 
   if (!upstream.ok) {
     return sendJson(res, upstream.status, {
       error: readUpstreamError(upstreamData, responseText),
       status: upstream.status,
+      fallback,
       upstream: upstreamData
     });
   }
@@ -3848,10 +4123,29 @@ async function handleCreate(res, body, prompt) {
 
   sendJson(res, 200, {
     durationMs: Date.now() - startedAt,
-    request: { apiUrl, payload: { ...payload, prompt } },
+    request: { apiUrl, payload: { ...payload, prompt }, requestedModel },
+    fallback,
     images,
     raw: upstreamData
   });
+}
+
+function shouldRetryYunwuGptImageCreate(requestedModel, connection, payload, upstream, upstreamData, responseText) {
+  if (upstream.ok) return false;
+  if (normalizeModelAlias(requestedModel) !== "gpt-image-2") return false;
+  if (normalizeModelAlias(payload?.model) !== "gpt-image-2") return false;
+  if (connection.preset !== "yunwu" && !isYunwuApiBaseUrl(connection.baseUrl)) return false;
+  const message = readUpstreamError(upstreamData, responseText);
+  return /unknown\s+model\s*:?\s*gpt-image-2\b/iu.test(message);
+}
+
+function isYunwuApiBaseUrl(value) {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname === "yunwu.ai" || hostname.endsWith(".yunwu.ai");
+  } catch {
+    return false;
+  }
 }
 
 async function handleGrsaiGenerate(res, body, prompt, imageFiles = [], suppliedConnection = null) {

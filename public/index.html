@@ -71,6 +71,10 @@
               </span>
               <span class="rail-label">生图</span>
             </button>
+            <button id="addMidjourneyButton" type="button" class="rail-button" title="Midjourney" aria-label="Midjourney">
+              <span class="rail-icon rail-icon-mj" aria-hidden="true">MJ</span>
+              <span class="rail-label">MJ</span>
+            </button>
             <button id="addDreaminaVideoButton" type="button" class="rail-button" title="视频" aria-label="视频">
               <span class="rail-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><path d="M5 5.5h14A1.5 1.5 0 0 1 20.5 7v10A1.5 1.5 0 0 1 19 18.5H5A1.5 1.5 0 0 1 3.5 17V7A1.5 1.5 0 0 1 5 5.5Z"/><path d="M10 9.3v5.4l4.6-2.7L10 9.3Z"/><path d="M7 5.5v13M17 5.5v13"/></svg>
@@ -409,6 +413,7 @@
                 <option value="gemini-native">Gemini generateContent</option>
                 <option value="anthropic-messages">Anthropic Messages</option>
                 <option value="grsai">Grsai 异步生图</option>
+                <option value="midjourney-proxy">Midjourney Proxy Plus</option>
                 <option value="ark-images">火山方舟 Images</option>
                 <option value="ark-video">火山方舟视频任务</option>
               </select>

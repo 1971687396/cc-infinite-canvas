@@ -16,6 +16,7 @@ const photoshopBridgePollIntervalMs = 1600;
 const minZoom = 0.02;
 const maxZoom = 24;
 const defaultTaskWidth = 620;
+const defaultMidjourneyTaskWidth = 540;
 const defaultVideoTaskWidth = 440;
 const defaultArkAssetNodeWidth = 480;
 const defaultArkAssetNodeHeight = 320;
@@ -104,8 +105,36 @@ const minRegionWidth = 120;
 const minRegionHeight = 80;
 const maxRegionWidth = 6000;
 const maxRegionHeight = 6000;
+const midjourneyConnectionModel = "midjourney";
+const midjourneyReferenceLimit = 5;
+const midjourneyPromptMaxLength = 1800;
+const midjourneyAllRetriesMessage =
+  "云雾 Midjourney 上游通道全部重试失败。请先改用“平台默认（推荐）”或 V7，并用简短提示词重试；如果仍失败，通常是云雾当前通道不可用，或该 Key 未开通 Midjourney。";
+const midjourneyModelOptions = [
+  ["", "平台默认（推荐）"],
+  ["7", "Midjourney V7"],
+  ["6.1", "Midjourney V6.1"],
+  ["niji-7", "Niji 7"],
+  ["8.1", "V8.1（需通道支持）"]
+];
+const midjourneySpeedOptions = [
+  ["fast", "Fast"],
+  ["relax", "Relax"],
+  ["turbo", "Turbo"]
+];
+const midjourneyRatioOptions = [
+  ["1:1", "1:1"],
+  ["16:9", "16:9"],
+  ["9:16", "9:16"],
+  ["4:3", "4:3"],
+  ["3:4", "3:4"],
+  ["3:2", "3:2"],
+  ["2:3", "2:3"],
+  ["21:9", "21:9"]
+];
 
 const addTaskButton = document.querySelector("#addTaskButton");
+const addMidjourneyButton = document.querySelector("#addMidjourneyButton");
 const addDreaminaVideoButton = document.querySelector("#addDreaminaVideoButton");
 const addArkAssetButton = document.querySelector("#addArkAssetButton");
 const addEditTaskButton = document.querySelector("#addEditTaskButton");
@@ -505,6 +534,7 @@ let settingsConnectionDrafts = {};
 let settingsConnectionKeyDrafts = {};
 let settingsConnectionClearKeys = new Set();
 let activeSettingsConnectionModel = "";
+const midjourneyPolls = new Map();
 let canvasState = {
   nodes: [],
   viewport: { x: 120, y: 90, zoom: 1 },
@@ -544,6 +574,7 @@ async function init() {
 }
 
 addTaskButton.addEventListener("click", () => addTaskNode("create"));
+addMidjourneyButton?.addEventListener("click", () => addMidjourneyNode());
 addDreaminaVideoButton?.addEventListener("click", () => addDreaminaVideoNode());
 addArkAssetButton?.addEventListener("click", () => addArkAssetNode());
 addEditTaskButton?.addEventListener("click", () => addTaskNode("edit"));
@@ -781,6 +812,23 @@ function addTaskNode(mode = "create", point = null, options = {}) {
 
 function addGrokTaskNode(mode = "create", point = null) {
   return addTaskNode(mode, point, { preset: "grok" });
+}
+
+function addMidjourneyNode(point = null) {
+  const center = point || getViewportCenterWorld();
+  const offset = point ? 0 : canvasState.nodes.length % 8;
+  const node = createDefaultMidjourneyNode();
+  node.x = Math.round(center.x - node.width / 2 + offset * 28);
+  node.y = Math.round(center.y - 210 + offset * 28);
+  node.outputAnchorX = node.x;
+  node.outputAnchorY = node.y;
+  node.z = ++canvasState.nextZ;
+
+  canvasState.nodes.push(node);
+  selectOnly(node.id, { focusSelector: ".node-prompt" });
+  saveCanvasState();
+  updateCanvasMeta();
+  return node;
 }
 
 function addDreaminaVideoNode(point = null) {
@@ -1411,6 +1459,49 @@ function createDefaultTaskNode(mode = "create") {
   };
 }
 
+function createDefaultMidjourneyNode() {
+  return {
+    id: createId(),
+    type: "midjourney-task",
+    provider: "midjourney",
+    prompt: "",
+    model: midjourneyConnectionModel,
+    version: "",
+    botType: "MID_JOURNEY",
+    speed: "fast",
+    size: "1:1",
+    stylize: "100",
+    chaos: "0",
+    seed: "",
+    rawMode: false,
+    extraParams: {},
+    extraParamsText: "{}",
+    cachedImages: [],
+    referenceImageNodeIds: [],
+    promptNoteNodeIds: [],
+    promptNotePlacements: {},
+    cacheStatus: "pending",
+    sessionFiles: [],
+    images: [],
+    taskId: "",
+    taskStatus: "",
+    taskAction: "",
+    progress: "",
+    buttons: [],
+    status: "idle",
+    error: "",
+    durationMs: null,
+    debugOpen: false,
+    width: defaultMidjourneyTaskWidth,
+    x: 0,
+    y: 0,
+    outputAnchorX: 0,
+    outputAnchorY: 0,
+    z: 1,
+    createdAt: new Date().toISOString()
+  };
+}
+
 function createDefaultVideoTaskNode() {
   return {
     id: createId(),
@@ -1578,6 +1669,7 @@ function addChatGptNode(point = null) {
 async function generateNode(nodeId) {
   const node = canvasState.nodes.find((item) => item.id === nodeId);
   if (!node || node.status === "running") return;
+  if (node.type === "midjourney-task") return await generateMidjourneyNode(nodeId);
   if (node.type === "video-task") return await generateVideoNode(nodeId);
   if (node.type !== "task") return;
 
@@ -1640,6 +1732,385 @@ async function generateNode(nodeId) {
     saveCanvasState();
     updateCanvasMeta();
   }
+}
+
+async function generateMidjourneyNode(nodeId) {
+  const node = canvasState.nodes.find((item) => item.id === nodeId);
+  if (!node || node.type !== "midjourney-task" || node.status === "running") return;
+  if (!effectivePromptForNode(node)) {
+    showToast("Midjourney 节点提示词不能为空");
+    return;
+  }
+  if (!syncNodeExtraParams(node)) return;
+  if (fileStore.get(node.id)?.images?.length) await cacheEditFiles(node.id);
+  const previousOutputs = midjourneyOutputNodes(node.id);
+  if (!previousOutputs.length) {
+    node.outputAnchorX = node.x;
+    node.outputAnchorY = node.y;
+  }
+  const promptResult = buildMidjourneyPromptResult(node);
+  if (promptResult.truncated) {
+    showToast(`Midjourney 最多支持 ${midjourneyPromptMaxLength} 个字符，超出部分已自动裁剪`);
+  }
+
+  node.status = "running";
+  node.error = "";
+  node.taskStatus = "SUBMITTED";
+  node.progress = "提交中";
+  node.buttons = [];
+  node.z = ++canvasState.nextZ;
+  selectedNodeIds.delete(node.id);
+  updateNode(node);
+  saveCanvasState({ history: false });
+  updateCanvasMeta();
+
+  try {
+    const response = await fetch("/api/midjourney/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: currentProjectId,
+        prompt: promptResult.prompt,
+        botType: node.botType,
+        speed: node.speed,
+        cachedImages: node.cachedImages || [],
+        extraParams: node.extraParams || {},
+        state: node.id
+      })
+    });
+    const data = await readJsonResponse(response);
+    rawResponse.textContent = JSON.stringify(data.raw || data, null, 2);
+    if (!response.ok || data.parseError) throw new Error(data.error || "Midjourney 任务提交失败");
+    node.taskId = data.taskId;
+    node.taskStatus = "SUBMITTED";
+    node.progress = "已提交";
+    node.durationMs = data.durationMs || null;
+    if (data.promptTruncated && !promptResult.truncated) {
+      showToast(`Midjourney 最多支持 ${data.promptMaxLength || midjourneyPromptMaxLength} 个字符，服务端已自动裁剪`);
+    }
+    saveCanvasState({ history: false });
+    await pollMidjourneyTask(node.id);
+  } catch (error) {
+    node.status = "error";
+    node.error = error.message || "Midjourney 生成失败";
+    node.progress = "";
+    showToast(node.error);
+    updateNode(node);
+    saveCanvasState();
+    updateCanvasMeta();
+  }
+}
+
+function buildMidjourneyPromptParameters(node) {
+  const parts = [];
+  if (node.size) parts.push(`--ar ${node.size}`);
+  if (node.version === "niji-7") parts.push("--niji 7");
+  else if (node.version) parts.push(`--v ${node.version}`);
+  if (String(node.stylize || "").trim()) parts.push(`--stylize ${clamp(Number(node.stylize) || 0, 0, 1000)}`);
+  if (Number(node.chaos) > 0) parts.push(`--chaos ${clamp(Number(node.chaos), 0, 100)}`);
+  if (String(node.seed || "").trim()) parts.push(`--seed ${clamp(Number(node.seed) || 0, 0, 4294967295)}`);
+  if (node.rawMode && node.version !== "niji-7") parts.push("--raw");
+  return parts.filter(Boolean).join(" ").trim();
+}
+
+function trimTextToMaxLength(value, maxLength) {
+  const text = String(value || "");
+  if (text.length <= maxLength) return text;
+  let trimmed = text.slice(0, Math.max(0, maxLength));
+  const lastCodeUnit = trimmed.charCodeAt(trimmed.length - 1);
+  if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) trimmed = trimmed.slice(0, -1);
+  return trimmed;
+}
+
+function buildMidjourneyPromptResult(node) {
+  const body = requestPromptForNode(node).trim();
+  const parameters = buildMidjourneyPromptParameters(node);
+  const fullPrompt = [body, parameters].filter(Boolean).join(" ");
+  if (fullPrompt.length <= midjourneyPromptMaxLength) {
+    return {
+      prompt: fullPrompt,
+      truncated: false,
+      originalLength: fullPrompt.length
+    };
+  }
+
+  const reservedLength = parameters ? parameters.length + 1 : 0;
+  const availableBodyLength = Math.max(0, midjourneyPromptMaxLength - reservedLength);
+  const trimmedBody = trimTextToMaxLength(body, availableBodyLength).trimEnd();
+  const prompt = trimTextToMaxLength(
+    [trimmedBody, parameters].filter(Boolean).join(" "),
+    midjourneyPromptMaxLength
+  );
+  return {
+    prompt,
+    truncated: true,
+    originalLength: fullPrompt.length
+  };
+}
+
+async function runMidjourneyAction(nodeId, button) {
+  const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "midjourney-task");
+  if (!node || node.status === "running" || !node.taskId || !button?.customId) return;
+  const previousOutputs = midjourneyOutputNodes(node.id);
+  const anchor = resolveMidjourneyOutputAnchor(node, previousOutputs);
+  node.outputAnchorX = anchor.x;
+  node.outputAnchorY = anchor.y;
+
+  node.status = "running";
+  node.error = "";
+  node.progress = `执行 ${midjourneyButtonLabel(button)}`;
+  node.buttons = [];
+  updateNode(node);
+  saveCanvasState({ history: false });
+  updateCanvasMeta();
+
+  try {
+    const response = await fetch("/api/midjourney/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        taskId: node.taskId,
+        customId: button.customId,
+        speed: node.speed,
+        state: node.id
+      })
+    });
+    const data = await readJsonResponse(response);
+    rawResponse.textContent = JSON.stringify(data.raw || data, null, 2);
+    if (!response.ok || data.parseError) throw new Error(data.error || "Midjourney 动作提交失败");
+    node.taskId = data.taskId;
+    node.taskStatus = "SUBMITTED";
+    node.taskAction = midjourneyButtonLabel(button);
+    node.progress = "已提交";
+    saveCanvasState({ history: false });
+    await pollMidjourneyTask(node.id);
+  } catch (error) {
+    node.status = "error";
+    node.error = error.message || "Midjourney 动作失败";
+    node.progress = "";
+    showToast(node.error);
+    updateNode(node);
+    saveCanvasState();
+    updateCanvasMeta();
+  }
+}
+
+async function pollMidjourneyTask(nodeId) {
+  if (midjourneyPolls.has(nodeId)) return midjourneyPolls.get(nodeId);
+  const promise = pollMidjourneyTaskLoop(nodeId).finally(() => midjourneyPolls.delete(nodeId));
+  midjourneyPolls.set(nodeId, promise);
+  return promise;
+}
+
+async function pollMidjourneyTaskLoop(nodeId) {
+  for (let attempt = 0; attempt < 360; attempt += 1) {
+    const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "midjourney-task");
+    if (!node || !node.taskId) return;
+    if (attempt) await waitFor(2000);
+
+    const response = await fetch("/api/midjourney/task", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: currentProjectId,
+        taskId: node.taskId,
+        speed: node.speed
+      })
+    });
+    const data = await readJsonResponse(response);
+    if (!response.ok || data.parseError) throw new Error(data.error || "Midjourney 任务查询失败");
+    rawResponse.textContent = JSON.stringify(data.raw || data, null, 2);
+
+    const task = data.task || {};
+    node.taskStatus = task.status || node.taskStatus;
+    node.taskAction = task.action || node.taskAction;
+    node.progress = task.progress || midjourneyProgressText(task.status);
+    node.buttons = Array.isArray(task.buttons) ? task.buttons : [];
+
+    if (["FAILURE", "CANCEL"].includes(task.status)) {
+      node.status = "error";
+      node.error = task.failReason || `Midjourney 任务${task.status === "CANCEL" ? "已取消" : "失败"}`;
+      node.progress = "";
+      updateNode(node);
+      saveCanvasState();
+      updateCanvasMeta();
+      showToast(node.error);
+      return;
+    }
+
+    if (task.status === "MODAL") {
+      node.status = "error";
+      node.error = "该动作需要额外填写参数，当前节点暂不支持 Modal 表单。";
+      updateNode(node);
+      saveCanvasState();
+      updateCanvasMeta();
+      return;
+    }
+
+    if (task.status === "SUCCESS") {
+      const incoming = dedupeNodeImages(
+        (data.images || []).map((image) =>
+          normalizeNodeImage(
+            {
+              ...image,
+              sourceUrl: image.sourceUrl || task.imageUrl,
+              width: image.width,
+              height: image.height
+            },
+            node
+          )
+        )
+      );
+      const existingKeys = new Set((node.images || []).map(getImageKey).filter(Boolean));
+      const newImages = incoming.filter((image) => !existingKeys.has(getImageKey(image)));
+      node.images = dedupeNodeImages([...(node.images || []), ...incoming]);
+      createMidjourneyImageNodes(node, newImages);
+      node.status = "done";
+      node.error = "";
+      node.progress = "100%";
+      renderCanvas();
+      saveCanvasState();
+      updateCanvasMeta();
+      showToast(node.taskAction ? `Midjourney ${node.taskAction} 已完成` : "Midjourney 生成完成");
+      return;
+    }
+
+    node.status = "running";
+    updateNode(node);
+    saveCanvasState({ history: false });
+    updateCanvasMeta();
+  }
+
+  const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "midjourney-task");
+  if (!node) return;
+  node.status = "error";
+  node.error = "Midjourney 任务等待超时，可稍后用任务 ID 继续查询。";
+  node.progress = "";
+  updateNode(node);
+  saveCanvasState();
+  updateCanvasMeta();
+}
+
+function createMidjourneyImageNodes(taskNode, images) {
+  if (!images.length) return;
+  const existingKeys = new Set(
+    canvasState.nodes.filter((node) => node.type === "image").map((node) => node.sourceImageKey).filter(Boolean)
+  );
+  const previousOutputs = midjourneyOutputNodes(taskNode.id);
+  const anchor = resolveMidjourneyOutputAnchor(taskNode, previousOutputs);
+  const anchorX = anchor.x;
+  const anchorY = anchor.y;
+  taskNode.outputAnchorX = anchorX;
+  taskNode.outputAnchorY = anchorY;
+  let cursorY = previousOutputs.length
+    ? Math.max(...previousOutputs.map((node) => node.y + node.originalHeight * node.scale + 32))
+    : anchorY;
+  let widest = 0;
+
+  for (const image of images) {
+    const key = getImageKey(image);
+    if (key && existingKeys.has(key)) continue;
+    const dimensions = parseImageDimensions(image, taskNode.size);
+    const scale = defaultScaleForImageDimensions(dimensions.width || 1024, dimensions.height || 1024, image?.size || "4K");
+    canvasState.nodes.push({
+      id: createId(),
+      type: "image",
+      image,
+      sourceTaskId: taskNode.id,
+      sourceImageKey: key,
+      originalWidth: dimensions.width || 1024,
+      originalHeight: dimensions.height || 1024,
+      scale,
+      x: anchorX,
+      y: cursorY,
+      z: ++canvasState.nextZ,
+      createdAt: new Date().toISOString()
+    });
+    existingKeys.add(key);
+    widest = Math.max(widest, (dimensions.width || 1024) * scale);
+    cursorY += (dimensions.height || 1024) * scale + 32;
+  }
+
+  if (!previousOutputs.length && widest) {
+    taskNode.x = Math.round(anchorX + widest + 48);
+    taskNode.y = Math.round(anchorY);
+  }
+}
+
+function midjourneyOutputNodes(taskNodeId) {
+  return canvasState.nodes.filter((node) => node.type === "image" && node.sourceTaskId === taskNodeId);
+}
+
+function resolveMidjourneyOutputAnchor(taskNode, previousOutputs = midjourneyOutputNodes(taskNode.id)) {
+  const firstOutput = previousOutputs[0];
+  if (firstOutput) {
+    return {
+      x: Number(firstOutput.x) || 0,
+      y: Number(firstOutput.y) || 0
+    };
+  }
+
+  const storedX = Number(taskNode.outputAnchorX);
+  const storedY = Number(taskNode.outputAnchorY);
+  const hasStoredX = taskNode.outputAnchorX !== null && taskNode.outputAnchorX !== "" && Number.isFinite(storedX);
+  const hasStoredY = taskNode.outputAnchorY !== null && taskNode.outputAnchorY !== "" && Number.isFinite(storedY);
+  const looksLikeLegacyOrigin =
+    storedX === 0 &&
+    storedY === 0 &&
+    (Math.abs(Number(taskNode.x) || 0) > 1 || Math.abs(Number(taskNode.y) || 0) > 1);
+  if (hasStoredX && hasStoredY && !looksLikeLegacyOrigin) return { x: storedX, y: storedY };
+  return {
+    x: Number(taskNode.x) || 0,
+    y: Number(taskNode.y) || 0
+  };
+}
+
+function midjourneyProgressText(status) {
+  if (status === "NOT_START") return "等待执行";
+  if (status === "SUBMITTED") return "排队中";
+  if (status === "IN_PROGRESS") return "生成中";
+  return status || "查询中";
+}
+
+function midjourneyButtonLabel(button) {
+  const originalLabel = String(button?.label || "").trim();
+  const normalizedLabel = originalLabel.toLowerCase().replace(/\s+/gu, " ");
+  const customId = String(button?.customId || "").toLowerCase();
+  const indexedAction = originalLabel.match(/^([uv])\s*([1-4])$/iu);
+  if (indexedAction) {
+    return `${indexedAction[1].toUpperCase() === "U" ? "放大" : "变体"} ${indexedAction[2]}`;
+  }
+
+  const mappings = [
+    [/(?:reroll|re-?roll|重新生成|refresh|::reroll::)/u, "重新生成"],
+    [/(?:vary \(strong\)|high variation|variation_high|high_variation)/u, "强变化"],
+    [/(?:vary \(subtle\)|low variation|variation_low|low_variation)/u, "微变化"],
+    [/(?:vary \(region\)|vary region|inpaint|region)/u, "局部重绘"],
+    [/(?:upscale \(creative\)|creative upscale|upscale_creative)/u, "创意放大"],
+    [/(?:upscale \(subtle\)|subtle upscale|upscale_subtle)/u, "高清放大"],
+    [/(?:redo upscale|redo_upscale)/u, "重新放大"],
+    [/(?:zoom out 2x|zoomout_2x|outpaint_2x)/u, "缩小 2×"],
+    [/(?:zoom out 1\.5x|zoomout_1\.5x|outpaint_1\.5x)/u, "缩小 1.5×"],
+    [/(?:custom zoom|custom_zoom)/u, "自定义缩放"],
+    [/(?:make square|make_square|square)/u, "扩为方图"],
+    [/(?:pan[_ ]?left|::left::)/u, "向左扩图"],
+    [/(?:pan[_ ]?right|::right::)/u, "向右扩图"],
+    [/(?:pan[_ ]?up|::up::)/u, "向上扩图"],
+    [/(?:pan[_ ]?down|::down::)/u, "向下扩图"],
+    [/(?:remaster|remix)/u, "重新精修"],
+    [/(?:shorten)/u, "缩短提示词"],
+    [/(?:animate.*high|high.*motion)/u, "高动态视频"],
+    [/(?:animate.*low|low.*motion)/u, "低动态视频"]
+  ];
+  const actionText = `${normalizedLabel} ${customId}`;
+  const localized = mappings.find(([pattern]) => pattern.test(actionText))?.[1];
+  if (localized) return localized;
+  if (/[\u3400-\u9fff]/u.test(originalLabel)) return originalLabel;
+  return [button?.emoji, originalLabel].filter(Boolean).join(" ").trim() || "继续操作";
+}
+
+function waitFor(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 async function generateVideoNode(nodeId) {
@@ -4790,7 +5261,7 @@ function promptFromSelectedNodes() {
       if (node.type === "note") return node.text || "";
       if (node.type === "portrait") return portraitPromptForNode(node);
       if (node.type === "camera") return cameraPromptForNode(node);
-      if (node.type === "task" || node.type === "video-task") return node.prompt || "";
+      if (node.type === "task" || node.type === "video-task" || node.type === "midjourney-task") return node.prompt || "";
       if (node.type === "image") return getImagePrompt(node) || getImageGeneration(node)?.prompt || "";
       if (node.type === "video") return node.video?.prompt || node.video?.generation?.prompt || "";
       return "";
@@ -4806,7 +5277,7 @@ function isAssistantLayoutInstruction(content) {
 }
 
 function assistantLayoutTargetNodes() {
-  const allowedTypes = new Set(["image", "video", "note", "portrait", "camera", "task", "video-task"]);
+  const allowedTypes = new Set(["image", "video", "note", "portrait", "camera", "task", "video-task", "midjourney-task"]);
   const selected = canvasState.nodes.filter((node) => selectedNodeIds.has(node.id) && allowedTypes.has(node.type || "task"));
   const source = selected.length ? selected : canvasState.nodes.filter((node) => allowedTypes.has(node.type || "task"));
   return source
@@ -7146,7 +7617,7 @@ function referenceLinksForCanvas() {
       }
       continue;
     }
-    if (!["task", "video-task"].includes(target.type)) continue;
+    if (!["task", "video-task", "midjourney-task"].includes(target.type)) continue;
     if (target.type !== "task" || target.mode === "edit") {
       for (const sourceId of referenceSourceNodeIdsForTask(target)) {
         if (!imageIds.has(sourceId)) continue;
@@ -7292,6 +7763,7 @@ function createCanvasNode(node) {
   if (node.type === "ark-asset") return createArkAssetNode(node);
   if (node.type === "image") return createImageNode(node);
   if (node.type === "video") return createVideoNode(node);
+  if (node.type === "midjourney-task") return createMidjourneyTaskNode(node);
   if (node.type === "video-task") return createVideoTaskNode(node);
   if (node.type === "chatgpt") return createChatGptNode(node);
   return createTaskNode(node);
@@ -8871,7 +9343,9 @@ function createReferenceConnectHandle(node) {
   handle.className = "reference-connect-handle";
   if (isPromptSourceNode(node)) handle.classList.add("prompt-connect-handle");
   const isPromptSource = isPromptSourceNode(node);
-  handle.title = isPromptSource ? "拖到生图或视频节点，连接为提示词" : "拖到生图、视频或入库节点，添加图片";
+  handle.title = isPromptSource
+    ? "拖到生图、Midjourney 或视频节点，连接为提示词"
+    : "拖到生图、Midjourney、视频或入库节点，添加图片";
   handle.setAttribute("aria-label", isPromptSource ? "拖动连线添加提示词" : "拖动连线添加参考图");
   handle.addEventListener("pointerdown", (event) => startReferenceConnection(event, node.id));
   return handle;
@@ -9035,6 +9509,327 @@ function startImageResize(event, nodeId) {
 
   window.addEventListener("pointermove", move);
   window.addEventListener("pointerup", stop, { once: true });
+}
+
+function createMidjourneyTaskNode(node) {
+  const selected = selectedNodeIds.has(node.id);
+  const tile = document.createElement("article");
+  tile.className = [
+    "canvas-node",
+    "task-node",
+    "midjourney-task-node",
+    `status-${node.status || "idle"}`,
+    selected ? "is-selected" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
+  tile.dataset.nodeId = node.id;
+  tile.style.left = `${node.x}px`;
+  tile.style.top = `${node.y}px`;
+  tile.style.width = `${node.width || defaultMidjourneyTaskWidth}px`;
+  tile.style.zIndex = node.z;
+
+  tile.append(createMidjourneyHeader(node, selected));
+  if (selected) {
+    tile.append(createMidjourneyPromptField(node));
+    const linkedPrompts = createLinkedPromptSources(node);
+    if (linkedPrompts) tile.append(linkedPrompts);
+    tile.append(createMidjourneyReferencePanel(node), createMidjourneySettings(node));
+  }
+  tile.append(createMidjourneyStatusArea(node, selected));
+  if (selected) tile.append(createErrorLine(node));
+
+  if (node.status === "running" && node.taskId) {
+    window.setTimeout(() => pollMidjourneyTask(node.id).catch((error) => {
+      const current = canvasState.nodes.find((item) => item.id === node.id);
+      if (!current) return;
+      current.status = "error";
+      current.error = error.message || "Midjourney 任务查询失败";
+      updateNode(current);
+      saveCanvasState();
+    }), 0);
+  }
+
+  tile.addEventListener("pointerdown", (event) => startNodeDrag(event, node.id));
+  return tile;
+}
+
+function createMidjourneyPromptField(node) {
+  const wrap = document.createElement("div");
+  wrap.className = "midjourney-prompt-wrap";
+  const prompt = createPromptField(node);
+  prompt.maxLength = midjourneyPromptMaxLength;
+
+  const meter = document.createElement("div");
+  meter.className = "midjourney-prompt-meter";
+  const updateMeter = () => {
+    const result = buildMidjourneyPromptResult(node);
+    meter.classList.toggle("is-over-limit", result.truncated);
+    meter.textContent = result.truncated
+      ? `最终提示词 ${result.originalLength}/${midjourneyPromptMaxLength} 字符，提交时自动裁剪`
+      : `最终提示词 ${result.originalLength}/${midjourneyPromptMaxLength} 字符`;
+  };
+  prompt.addEventListener("input", updateMeter);
+  updateMeter();
+  wrap.append(prompt, meter);
+  return wrap;
+}
+
+function createMidjourneyHeader(node, selected) {
+  const header = document.createElement("div");
+  header.className = "task-header midjourney-task-header";
+
+  const status = document.createElement("span");
+  status.className = "task-status midjourney-status";
+  status.textContent = statusText(node.status);
+
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "task-title-wrap";
+  const mark = document.createElement("span");
+  mark.className = "midjourney-mark";
+  mark.textContent = "MJ";
+  const title = document.createElement("strong");
+  title.className = "task-title";
+  title.textContent = node.version === "niji-7" ? "Niji Journey" : "Midjourney";
+  titleWrap.append(mark, title);
+
+  const meta = document.createElement("span");
+  meta.className = "node-meta";
+  meta.textContent = [
+    midjourneyModelOptions.find(([value]) => value === node.version)?.[1] || node.version,
+    node.size,
+    String(node.speed || "fast").toUpperCase()
+  ].filter(Boolean).join(" · ");
+
+  header.append(status, titleWrap, meta);
+  if (selected) header.append(createTaskActions(node));
+  return header;
+}
+
+function createMidjourneyReferencePanel(node) {
+  const panel = document.createElement("section");
+  panel.className = "edit-assets midjourney-reference-panel";
+
+  const heading = document.createElement("div");
+  heading.className = "midjourney-section-heading";
+  const title = document.createElement("strong");
+  title.textContent = "参考图";
+  const meta = document.createElement("span");
+  meta.textContent = `${node.cachedImages?.length || 0}/${midjourneyReferenceLimit}`;
+  heading.append(title, meta);
+
+  const imageInput = document.createElement("input");
+  imageInput.type = "file";
+  imageInput.accept = "image/png,image/jpeg,image/webp";
+  imageInput.multiple = true;
+  imageInput.className = "reference-file-input";
+  imageInput.tabIndex = -1;
+  imageInput.addEventListener("pointerdown", (event) => event.stopPropagation());
+  imageInput.addEventListener("change", () => {
+    const stored = fileStore.get(node.id) || {};
+    const remaining = Math.max(
+      0,
+      midjourneyReferenceLimit - (node.cachedImages?.length || 0) - (stored.images?.length || 0)
+    );
+    let files = Array.from(imageInput.files || []);
+    if (files.length > remaining) showToast(`Midjourney 节点最多使用 ${midjourneyReferenceLimit} 张参考图`);
+    files = files.slice(0, remaining);
+    fileStore.set(node.id, { ...stored, images: [...(stored.images || []), ...files] });
+    node.sessionFiles = [...(node.sessionFiles || []), ...files.map((file) => file.name)];
+    node.cacheStatus = files.length ? "caching" : node.cacheStatus;
+    updateNode(node);
+    saveCanvasState();
+    if (files.length) cacheEditFiles(node.id);
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "reference-actions";
+  const upload = document.createElement("button");
+  upload.type = "button";
+  upload.className = "reference-upload-button";
+  upload.append(createNodeIcon("image"), document.createTextNode("本地上传"));
+  upload.addEventListener("click", () => imageInput.click());
+
+  const useSelected = document.createElement("button");
+  useSelected.type = "button";
+  useSelected.textContent = "使用选中图片";
+  useSelected.addEventListener("click", () => useSelectedCanvasImagesAsReference(node.id));
+
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.textContent = referencePickTargetNodeId === node.id ? "点击画布图片" : "从画布选择";
+  pick.addEventListener("click", () => {
+    referencePickTargetNodeId = node.id;
+    showToast("请点击画布中的图片作为 Midjourney 参考图");
+    updateNode(node);
+  });
+
+  actions.append(upload, useSelected, pick, imageInput);
+  const summary = document.createElement("p");
+  summary.className = "asset-summary";
+  summary.textContent = node.cachedImages?.length
+    ? `${node.cachedImages.length} 张参考图已缓存`
+    : node.sessionFiles?.length
+      ? `${node.sessionFiles.length} 张参考图正在缓存`
+      : "可本地上传，也可从画布选择或连线添加";
+  panel.append(heading, actions, createReferenceThumbnails(node, { editable: false }), summary);
+  return panel;
+}
+
+function createMidjourneySettings(node) {
+  const section = document.createElement("section");
+  section.className = "node-debug midjourney-settings";
+  const heading = document.createElement("div");
+  heading.className = "node-debug-heading";
+  heading.textContent = "参数";
+
+  const settings = document.createElement("div");
+  settings.className = "node-config-grid midjourney-config-grid";
+  settings.append(
+    createSelectField("模型", node, "version", midjourneyModelOptions, {
+      onChange: (value) => {
+        node.botType = value === "niji-7" ? "NIJI_JOURNEY" : "MID_JOURNEY";
+        updateNode(node);
+      }
+    }),
+    createSelectField("比例", node, "size", midjourneyRatioOptions),
+    createSelectField("速度", node, "speed", midjourneySpeedOptions)
+  );
+
+  const advanced = document.createElement("details");
+  advanced.className = "node-advanced";
+  advanced.open = Boolean(node.debugOpen);
+  advanced.addEventListener("toggle", () => {
+    node.debugOpen = advanced.open;
+    saveCanvasState();
+  });
+  const summary = document.createElement("summary");
+  summary.textContent = "高级参数已收起";
+  const grid = document.createElement("div");
+  grid.className = "node-config-grid";
+  grid.append(
+    createNumberField("风格化", node, "stylize", { min: 0, max: 1000, step: 1 }),
+    createNumberField("混沌", node, "chaos", { min: 0, max: 100, step: 1 }),
+    createOptionalNumberField("Seed", node, "seed", { min: 0, max: 4294967295, step: 1 }),
+    createMidjourneyRawField(node)
+  );
+
+  const extraParams = document.createElement("textarea");
+  extraParams.className = "node-extra-json";
+  extraParams.rows = 3;
+  extraParams.spellcheck = false;
+  extraParams.value = node.extraParamsText ?? JSON.stringify(node.extraParams || {}, null, 2);
+  extraParams.addEventListener("pointerdown", (event) => event.stopPropagation());
+  extraParams.addEventListener("input", () => {
+    node.extraParamsText = extraParams.value;
+    saveCanvasState();
+  });
+  grid.append(createField("额外 JSON 参数", extraParams, "node-field-full"));
+
+  const connection = document.createElement("button");
+  connection.type = "button";
+  connection.className = "secondary compact midjourney-connection-button";
+  connection.textContent = "Midjourney API 设置";
+  connection.addEventListener("click", () => openSettingsDialog({ model: midjourneyConnectionModel }));
+  grid.append(connection);
+  advanced.append(summary, grid);
+  section.append(heading, settings, advanced);
+  return section;
+}
+
+function createMidjourneyRawField(node) {
+  const control = document.createElement("label");
+  control.className = "node-switch-control";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = Boolean(node.rawMode);
+  input.disabled = node.version === "niji-7";
+  input.addEventListener("pointerdown", (event) => event.stopPropagation());
+  input.addEventListener("change", () => {
+    node.rawMode = input.checked;
+    saveCanvasState();
+  });
+  const text = document.createElement("span");
+  text.textContent = "Raw 模式";
+  control.append(input, text);
+  return createField("风格模式", control);
+}
+
+function createOptionalNumberField(label, node, key, options = {}) {
+  const input = document.createElement("input");
+  input.type = "number";
+  input.min = options.min ?? 0;
+  input.max = options.max ?? Number.MAX_SAFE_INTEGER;
+  input.step = options.step ?? 1;
+  input.value = node[key] ?? "";
+  input.placeholder = "随机";
+  input.addEventListener("pointerdown", (event) => event.stopPropagation());
+  input.addEventListener("input", () => {
+    node[key] = input.value;
+    saveCanvasState();
+  });
+  return createField(label, input);
+}
+
+function createMidjourneyStatusArea(node, selected) {
+  const area = document.createElement("section");
+  area.className = "node-image-area midjourney-status-area";
+
+  if (node.status === "running") {
+    const loading = document.createElement("div");
+    loading.className = "node-loading midjourney-loading";
+    const text = document.createElement("span");
+    text.textContent = node.progress || "Midjourney 生成中";
+    const progress = document.createElement("div");
+    progress.className = "node-progress";
+    const bar = document.createElement("span");
+    const percent = Number.parseFloat(node.progress);
+    if (Number.isFinite(percent)) bar.style.width = `${clamp(percent, 2, 100)}%`;
+    progress.append(bar);
+    loading.append(text, progress);
+    area.append(loading);
+  } else {
+    const latest = node.images?.at(-1);
+    if (latest?.url) {
+      const preview = document.createElement("img");
+      preview.className = "midjourney-result-preview";
+      preview.src = latest.url;
+      preview.alt = latest.prompt || "Midjourney result";
+      preview.draggable = false;
+      area.append(preview);
+    } else {
+      area.append(createImagePlaceholder(node.error || "等待 Midjourney 生成", "image"));
+    }
+  }
+
+  if (selected && node.taskId) {
+    const taskMeta = document.createElement("div");
+    taskMeta.className = "midjourney-task-meta";
+    const id = document.createElement("code");
+    id.textContent = node.taskId;
+    id.title = node.taskId;
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.textContent = "复制任务 ID";
+    copy.addEventListener("click", () => copyTextToClipboard(node.taskId, "任务 ID 已复制"));
+    taskMeta.append(id, copy);
+    area.append(taskMeta);
+  }
+
+  if (selected && node.status !== "running" && node.buttons?.length) {
+    const actions = document.createElement("div");
+    actions.className = "midjourney-result-actions";
+    for (const button of node.buttons) {
+      const action = document.createElement("button");
+      action.type = "button";
+      action.textContent = midjourneyButtonLabel(button);
+      action.title = [button.label, button.customId].filter(Boolean).join(" · ");
+      action.addEventListener("click", () => runMidjourneyAction(node.id, button));
+      actions.append(action);
+    }
+    area.append(actions);
+  }
+  return area;
 }
 
 function createTaskNode(node) {
@@ -10001,7 +10796,7 @@ function pendingReferenceImageCount(node) {
   return node.sessionFiles?.length || 0;
 }
 
-function createReferenceThumbnails(node) {
+function createReferenceThumbnails(node, options = {}) {
   const strip = document.createElement("div");
   strip.className = "reference-thumbs";
 
@@ -10018,8 +10813,13 @@ function createReferenceThumbnails(node) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "reference-thumb-preview";
-    button.title = "放大标注局部重绘区域";
-    button.addEventListener("click", () => openReferenceMaskEditor(node.id, index));
+    if (options.editable !== false) {
+      button.title = "放大标注局部重绘区域";
+      button.addEventListener("click", () => openReferenceMaskEditor(node.id, index));
+    } else {
+      button.tabIndex = -1;
+      button.setAttribute("aria-hidden", "true");
+    }
 
     const img = document.createElement("img");
     img.src = image.url || `/${image.path}`;
@@ -10698,7 +11498,11 @@ function startReferenceConnection(event, sourceNodeId) {
     cleanupReferenceConnection();
 
     if (!targetNodeId) {
-      showToast(isPromptSourceNode(sourceNode) ? "请把连线拖到生图或视频节点" : "请把连线拖到生图、视频或入库节点");
+      showToast(
+        isPromptSourceNode(sourceNode)
+          ? "请把连线拖到生图、Midjourney 或视频节点"
+          : "请把连线拖到生图、Midjourney、视频或入库节点"
+      );
       return;
     }
     if (isPromptSourceNode(sourceNode)) {
@@ -10771,7 +11575,10 @@ function referenceTargetFromPoint(clientX, clientY, sourceNodeId) {
   if (!nodeId || nodeId === sourceNodeId) return null;
   const node = canvasState.nodes.find((item) => item.id === nodeId);
   const source = canvasState.nodes.find((item) => item.id === sourceNodeId);
-  const allowedTypes = source?.type === "image" ? ["task", "video-task", "ark-asset"] : ["task", "video-task"];
+  const allowedTypes =
+    source?.type === "image"
+      ? ["task", "video-task", "midjourney-task", "ark-asset"]
+      : ["task", "video-task", "midjourney-task"];
   return node && allowedTypes.includes(node.type) ? node : null;
 }
 
@@ -10824,7 +11631,7 @@ async function useCanvasImagesForTarget(targetNodeId, imageNodeIds) {
 function useCanvasPromptSource(targetNodeId, sourceNodeId) {
   const target = canvasState.nodes.find((node) => node.id === targetNodeId);
   const source = canvasState.nodes.find((node) => node.id === sourceNodeId && isPromptSourceNode(node));
-  if (!target || !["task", "video-task"].includes(target.type) || !source) return;
+  if (!target || !["task", "video-task", "midjourney-task"].includes(target.type) || !source) return;
 
   const previousIds = promptSourceNodeIdsForTask(target);
   target.promptNoteNodeIds = dedupeStrings([...previousIds, source.id]);
@@ -10837,7 +11644,7 @@ function useCanvasPromptSource(targetNodeId, sourceNodeId) {
   showToast(
     previousIds.includes(source.id)
       ? "这个提示词节点已经连接"
-      : `${promptSourceTypeName(source)}节点已连接为${target.type === "video-task" ? "视频" : "生图"}后缀提示词`
+      : `${promptSourceTypeName(source)}节点已连接为${target.type === "video-task" ? "视频" : target.type === "midjourney-task" ? "Midjourney" : "生图"}后缀提示词`
   );
 }
 
@@ -10847,7 +11654,7 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
     .map((id) => canvasState.nodes.find((node) => node.id === id))
     .filter((node) => node?.type === "image" && node.image?.url);
 
-  if (!target || !["task", "video-task"].includes(target.type)) return;
+  if (!target || !["task", "video-task", "midjourney-task"].includes(target.type)) return;
   if (!imageNodes.length) {
     showToast("没有可用的画布图片");
     return;
@@ -10895,6 +11702,16 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
         showToast("视频节点最多使用 9 个参考素材，已自动截取");
         ordinaryImageNodes = ordinaryImageNodes.slice(0, availableSlots);
       }
+    } else if (target.type === "midjourney-task") {
+      availableSlots = Math.max(
+        0,
+        midjourneyReferenceLimit - (target.cachedImages?.length || 0) - (stored.images?.length || 0)
+      );
+      ordinaryImageNodes = ordinaryImageNodes.filter((imageNode) => !existingReferenceIds.has(imageNode.id));
+      if (ordinaryImageNodes.length > availableSlots) {
+        showToast(`Midjourney 节点最多使用 ${midjourneyReferenceLimit} 张参考图，已自动截取`);
+        ordinaryImageNodes = ordinaryImageNodes.slice(0, availableSlots);
+      }
     } else {
       ordinaryImageNodes = ordinaryImageNodes.filter((imageNode) => !existingReferenceIds.has(imageNode.id));
     }
@@ -10902,7 +11719,11 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
     const newAssetCount = nextAssetUris.length - existingAssetUris.length;
     const newlyLinkedAssetSourceIds = assetSourceIds.filter((id) => !existingReferenceIds.has(id));
     if (!ordinaryImageNodes.length && !newAssetCount && !newlyLinkedAssetSourceIds.length) {
-      showToast(availableSlots ? "这些图片已经添加为参考素材" : "视频节点最多使用 9 个参考素材");
+      const limitMessage =
+        target.type === "midjourney-task"
+          ? `Midjourney 节点最多使用 ${midjourneyReferenceLimit} 张参考图`
+          : "视频节点最多使用 9 个参考素材";
+      showToast(availableSlots ? "这些图片已经添加为参考素材" : limitMessage);
       return;
     }
 
@@ -12527,6 +13348,7 @@ function createContextMenu() {
 
   const options = [
     ["生图节点", () => addTaskNode("create", pendingCreatePoint)],
+    ["Midjourney 节点", () => addMidjourneyNode(pendingCreatePoint)],
     ["即梦视频", () => addDreaminaVideoNode(pendingCreatePoint)],
     ["虚拟人像入库", () => addArkAssetNode(pendingCreatePoint)],
     ["ChatGPT 节点", () => addChatGptNode(pendingCreatePoint)],
@@ -12635,7 +13457,7 @@ function duplicateNode(nodeId) {
     createdAt: new Date().toISOString()
   };
 
-  if (node.type === "task" || node.type === "video-task") {
+  if (node.type === "task" || node.type === "video-task" || node.type === "midjourney-task") {
     copy.images = [];
     copy.videos = [];
     copy.status = "idle";
@@ -12643,6 +13465,15 @@ function duplicateNode(nodeId) {
     copy.durationMs = null;
     copy.sessionFiles = [...(node.sessionFiles || [])];
     copy.cachedImages = [...(node.cachedImages || [])];
+    if (copy.type === "midjourney-task") {
+      copy.taskId = "";
+      copy.taskStatus = "";
+      copy.taskAction = "";
+      copy.progress = "";
+      copy.buttons = [];
+      copy.outputAnchorX = copy.x;
+      copy.outputAnchorY = copy.y;
+    }
     const storedFiles = fileStore.get(nodeId);
     if (storedFiles) fileStore.set(copy.id, storedFiles);
   }
@@ -12698,7 +13529,7 @@ function pasteNodesFromClipboard() {
   const pasted = nodeClipboard.nodes.map((source) => {
     const copy = preparePastedNode(source, idMap, offset, now);
     const stored = nodeClipboard.files.get(source.id);
-    if (stored && (copy.type === "task" || copy.type === "video-task")) {
+    if (stored && (copy.type === "task" || copy.type === "video-task" || copy.type === "midjourney-task")) {
       fileStore.set(copy.id, {
         images: [...(stored.images || [])],
         mask: stored.mask || null
@@ -12793,7 +13624,7 @@ function preparePastedNode(source, idMap, offset, createdAt) {
     copy.status = arkAssetNodeStatus(copy);
   }
 
-  if (copy.type === "task" || copy.type === "video-task") {
+  if (copy.type === "task" || copy.type === "video-task" || copy.type === "midjourney-task") {
     copy.images = [];
     copy.videos = [];
     copy.status = "idle";
@@ -12802,6 +13633,15 @@ function preparePastedNode(source, idMap, offset, createdAt) {
     copy.debugOpen = Boolean(copy.debugOpen);
     copy.sessionFiles = [...(copy.sessionFiles || [])];
     copy.cachedImages = [...(copy.cachedImages || [])];
+    if (copy.type === "midjourney-task") {
+      copy.taskId = "";
+      copy.taskStatus = "";
+      copy.taskAction = "";
+      copy.progress = "";
+      copy.buttons = [];
+      copy.outputAnchorX = copy.x;
+      copy.outputAnchorY = copy.y;
+    }
   }
 
   if (copy.type === "chatgpt") {
@@ -12839,7 +13679,7 @@ function deleteNodes(nodeIds) {
     fileStore.delete(id);
   }
   for (const node of canvasState.nodes) {
-    if (!["task", "video-task"].includes(node.type)) continue;
+    if (!["task", "video-task", "midjourney-task"].includes(node.type)) continue;
     node.promptNoteNodeIds = promptSourceNodeIdsForTask(node).filter((id) => !ids.has(id));
     node.promptNotePlacements = normalizePromptNotePlacements(node.promptNotePlacements, node.promptNoteNodeIds);
   }
@@ -12985,8 +13825,10 @@ function getNodeBounds(node) {
           ? node.width || defaultArkAssetNodeWidth
         : node.type === "chatgpt"
           ? clamp(Number(node.width) || defaultChatGptWidth, minChatGptWidth, maxChatGptWidth)
-          : node.type === "video-task"
-            ? node.width || defaultVideoTaskWidth
+        : node.type === "video-task"
+          ? node.width || defaultVideoTaskWidth
+        : node.type === "midjourney-task"
+          ? node.width || defaultMidjourneyTaskWidth
             : node.width || defaultTaskWidth;
   const fallbackHeight =
     node.type === "image"
@@ -13005,8 +13847,10 @@ function getNodeBounds(node) {
           ? defaultArkAssetNodeHeight
         : node.type === "chatgpt"
           ? clamp(Number(node.height) || defaultChatGptHeight, minChatGptHeight, maxChatGptHeight)
-          : node.type === "video-task"
-            ? 340
+        : node.type === "video-task"
+          ? 340
+        : node.type === "midjourney-task"
+          ? 420
             : 360;
   const width = (tile ? tile.offsetWidth : fallbackWidth) * fixedScale;
   const height = (tile ? tile.offsetHeight : fallbackHeight) * fixedScale;
@@ -13049,6 +13893,7 @@ function clearCanvas() {
 
 function updateCanvasMeta() {
   const taskNodes = canvasState.nodes.filter((node) => node.type === "task");
+  const midjourneyTaskNodes = canvasState.nodes.filter((node) => node.type === "midjourney-task");
   const videoTaskNodes = canvasState.nodes.filter((node) => node.type === "video-task");
   const imageNodes = canvasState.nodes.filter((node) => node.type === "image");
   const videoNodes = canvasState.nodes.filter((node) => node.type === "video");
@@ -13058,7 +13903,7 @@ function updateCanvasMeta() {
   const arkAssetNodes = canvasState.nodes.filter((node) => node.type === "ark-asset");
   const chatNodes = canvasState.nodes.filter((node) => node.type === "chatgpt");
   const regionNodes = canvasState.nodes.filter((node) => node.type === "region");
-  const running = [...taskNodes, ...videoTaskNodes].filter((node) => node.status === "running").length;
+  const running = [...taskNodes, ...midjourneyTaskNodes, ...videoTaskNodes].filter((node) => node.status === "running").length;
   if (running) {
     requestMeta.textContent = `${running} 个节点生成中`;
     return;
@@ -13067,11 +13912,12 @@ function updateCanvasMeta() {
     requestMeta.textContent = "等待添加节点";
     return;
   }
-  requestMeta.textContent = `${taskNodes.length} 个生图 · ${videoTaskNodes.length} 个视频任务 · ${imageNodes.length} 张图 · ${videoNodes.length} 个视频 · ${noteNodes.length} 个文字 · ${portraitNodes.length} 个肖像 · ${cameraNodes.length} 个机位 · ${arkAssetNodes.length} 个入库 · ${regionNodes.length} 个区域 · ${chatNodes.length} 个 ChatGPT`;
+  requestMeta.textContent = `${taskNodes.length} 个生图 · ${midjourneyTaskNodes.length} 个 MJ · ${videoTaskNodes.length} 个视频任务 · ${imageNodes.length} 张图 · ${videoNodes.length} 个视频 · ${noteNodes.length} 个文字 · ${portraitNodes.length} 个肖像 · ${cameraNodes.length} 个机位 · ${arkAssetNodes.length} 个入库 · ${regionNodes.length} 个区域 · ${chatNodes.length} 个 ChatGPT`;
 }
 
 function isRunnableTask(node) {
-  if (!["task", "video-task"].includes(node.type) || node.status === "running" || !effectivePromptForNode(node)) return false;
+  if (!["task", "video-task", "midjourney-task"].includes(node.type) || node.status === "running" || !effectivePromptForNode(node)) return false;
+  if (node.type === "midjourney-task") return true;
   if (node.type === "video-task") return true;
   if (node.mode !== "edit") return true;
   return Boolean(fileStore.get(node.id)?.images?.length || node.cachedImages?.length);
@@ -13253,6 +14099,10 @@ function migrateNode(node) {
     };
   }
 
+  if (node.type === "midjourney-task") {
+    return migrateMidjourneyTaskNode(node);
+  }
+
   if (node.type === "task") {
     return migrateTaskNode(node);
   }
@@ -13269,6 +14119,61 @@ function migrateNode(node) {
     images: node.url ? [normalizeNodeImage({ url: node.url, filename: node.filename }, node)] : [],
     status: node.url ? "done" : "idle"
   });
+}
+
+function migrateMidjourneyTaskNode(node) {
+  const promptNoteNodeIds = dedupeStrings(node.promptNoteNodeIds || []);
+  const upstreamRetriesFailed = String(node.error || "").toLowerCase().includes("all_retries_failed");
+  const legacyUnsupportedDefault =
+    node.version === "8.1" && upstreamRetriesFailed;
+  const requestedVersion = legacyUnsupportedDefault ? "" : String(node.version || "");
+  const version = midjourneyModelOptions.some(([value]) => value === requestedVersion) ? requestedVersion : "";
+  const speed = midjourneySpeedOptions.some(([value]) => value === node.speed) ? node.speed : "fast";
+  const size = midjourneyRatioOptions.some(([value]) => value === node.size) ? node.size : "1:1";
+  const taskId = String(node.taskId || "").trim();
+  const x = Number(node.x) || 0;
+  const y = Number(node.y) || 0;
+  return {
+    ...node,
+    id: node.id || createId(),
+    type: "midjourney-task",
+    provider: "midjourney",
+    prompt: String(node.prompt || ""),
+    model: midjourneyConnectionModel,
+    version,
+    botType: version === "niji-7" ? "NIJI_JOURNEY" : "MID_JOURNEY",
+    speed,
+    size,
+    stylize: String(node.stylize ?? "100"),
+    chaos: String(node.chaos ?? "0"),
+    seed: String(node.seed ?? ""),
+    rawMode: Boolean(node.rawMode),
+    extraParams: isPlainObject(node.extraParams) ? node.extraParams : {},
+    extraParamsText: node.extraParamsText || JSON.stringify(isPlainObject(node.extraParams) ? node.extraParams : {}, null, 2),
+    cachedImages: node.cachedImages || [],
+    referenceImageNodeIds: dedupeStrings(node.referenceImageNodeIds || []),
+    promptNoteNodeIds,
+    promptNotePlacements: normalizePromptNotePlacements(node.promptNotePlacements, promptNoteNodeIds),
+    cacheStatus: node.cacheStatus || "pending",
+    sessionFiles: node.sessionFiles || [],
+    images: dedupeNodeImages(node.images || []),
+    taskId,
+    taskStatus: String(node.taskStatus || ""),
+    taskAction: String(node.taskAction || ""),
+    progress: String(node.progress || ""),
+    buttons: Array.isArray(node.buttons) ? node.buttons.filter((button) => button?.customId) : [],
+    status: legacyUnsupportedDefault || (node.status === "running" && !taskId) ? "idle" : node.status || "idle",
+    error: legacyUnsupportedDefault ? "" : upstreamRetriesFailed ? midjourneyAllRetriesMessage : String(node.error || ""),
+    durationMs: node.durationMs || null,
+    debugOpen: Boolean(node.debugOpen),
+    width: Math.max(Number(node.width) || defaultMidjourneyTaskWidth, 480),
+    x,
+    y,
+    outputAnchorX: Number.isFinite(Number(node.outputAnchorX)) ? Number(node.outputAnchorX) : x,
+    outputAnchorY: Number.isFinite(Number(node.outputAnchorY)) ? Number(node.outputAnchorY) : y,
+    z: node.z || 1,
+    createdAt: node.createdAt || new Date().toISOString()
+  };
 }
 
 function migrateVideoNode(node) {
@@ -13401,10 +14306,16 @@ function materializeTaskImageNodes() {
 
   const additions = [];
   for (const task of canvasState.nodes) {
-    if (task.type !== "task" || !task.images?.length) continue;
+    if (!["task", "midjourney-task"].includes(task.type) || !task.images?.length) continue;
 
-    let cursorY = task.y;
-    const x = task.x + (task.width || defaultTaskWidth) + 48;
+    let cursorY =
+      task.type === "midjourney-task" && Number.isFinite(Number(task.outputAnchorY))
+        ? Number(task.outputAnchorY)
+        : task.y;
+    const x =
+      task.type === "midjourney-task" && Number.isFinite(Number(task.outputAnchorX))
+        ? Number(task.outputAnchorX)
+        : task.x + (task.width || defaultTaskWidth) + 48;
     for (const image of task.images) {
       const key = getImageKey(image);
       if (key && imageKeys.has(key)) continue;

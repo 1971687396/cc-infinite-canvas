@@ -1010,6 +1010,174 @@ body.assistant-open .minimap-dock {
     0 18px 48px rgba(18, 34, 46, 0.16);
 }
 
+.rail-icon-mj {
+  border: 1px solid color-mix(in srgb, var(--purple) 40%, var(--line));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--purple) 10%, var(--panel));
+  color: var(--purple);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
+.midjourney-task-node {
+  border-color: color-mix(in srgb, var(--purple) 34%, var(--line-strong));
+}
+
+.midjourney-task-node.is-selected {
+  border-color: var(--purple);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--purple) 22%, transparent),
+    0 18px 48px rgba(18, 34, 46, 0.16);
+}
+
+.midjourney-task-node.is-selected::before,
+.midjourney-task-node.is-selected::after {
+  background: var(--purple);
+  box-shadow: 0 5px 14px color-mix(in srgb, var(--purple) 30%, transparent);
+}
+
+.midjourney-task-header {
+  grid-template-columns: auto minmax(120px, auto) minmax(0, 1fr) auto;
+}
+
+.midjourney-mark {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--purple) 40%, var(--line));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--purple) 10%, var(--panel));
+  color: var(--purple);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.midjourney-section-heading,
+.midjourney-task-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.midjourney-section-heading strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.midjourney-section-heading span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.midjourney-prompt-wrap {
+  display: grid;
+  gap: 5px;
+}
+
+.midjourney-prompt-meter {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: right;
+}
+
+.midjourney-prompt-meter.is-over-limit {
+  color: var(--danger);
+}
+
+.midjourney-reference-panel {
+  background: var(--panel-soft);
+}
+
+.task-node .midjourney-config-grid {
+  grid-template-columns: minmax(0, 1.35fr) repeat(2, minmax(0, 0.8fr));
+}
+
+.midjourney-connection-button {
+  align-self: end;
+  min-height: 36px;
+}
+
+.midjourney-status-area {
+  display: grid;
+  gap: 8px;
+  min-height: 132px;
+  overflow: hidden;
+  border: 1px dashed color-mix(in srgb, var(--purple) 28%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--purple) 4%, var(--panel-soft));
+  padding: 8px;
+}
+
+.midjourney-result-preview {
+  display: block;
+  width: 100%;
+  max-height: 280px;
+  border-radius: 6px;
+  background: var(--media-bg);
+  object-fit: contain;
+}
+
+.midjourney-task-meta {
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 7px;
+}
+
+.midjourney-task-meta code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.midjourney-task-meta button {
+  min-height: 28px;
+  flex: 0 0 auto;
+  border-color: var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--ink);
+  padding: 0 8px;
+  font-size: 10px;
+}
+
+.midjourney-result-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.midjourney-result-actions button {
+  min-height: 31px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--purple) 32%, var(--line));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--purple) 8%, var(--panel));
+  color: var(--purple);
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.midjourney-result-actions button:hover {
+  border-color: var(--purple);
+  background: color-mix(in srgb, var(--purple) 14%, var(--panel));
+}
+
+.midjourney-loading {
+  width: 100%;
+}
+
 .task-node.is-selected::before,
 .task-node.is-selected::after {
   content: "";

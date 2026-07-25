@@ -433,6 +433,7 @@ New-Item -ItemType Directory -Path (Join-Path $payloadRoot "tools") -Force | Out
 
 $files = @(
   "server.js",
+  "midjourney-api.js",
   "package.json",
   "package-lock.json",
   "README.md",

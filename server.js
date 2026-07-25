@@ -11,6 +11,14 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
 import TosSdk from "@volcengine/tos-sdk";
+import {
+  buildMidjourneyEndpointUrl,
+  extractMidjourneyTaskId,
+  midjourneyPromptMaxLength,
+  normalizeMidjourneyMode,
+  normalizeMidjourneyTask,
+  trimMidjourneyPrompt
+} from "./midjourney-api.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,6 +40,9 @@ const grokKeyModel = grokImageModel;
 const geminiBananaImageModel = "gemini-3.1-flash-image-preview";
 const geminiBananaImageAlias = "banana2";
 const yunwuGptImageFallbackModel = "gpt-image-2-c";
+const midjourneyConnectionModel = "midjourney";
+const midjourneyDefaultRoutePrefix = "/mj";
+const midjourneyReferenceLimit = 5;
 const geminiNativeDefaultRatio = "1:1";
 const geminiNativeDefaultImageSize = "4K";
 const grsaiDefaultBaseUrl = "https://grsaiapi.com";
@@ -80,6 +91,13 @@ const assistantKeyModels = [
   "deepseek-v4-pro"
 ];
 const apiConnectionModelDefinitions = [
+  {
+    model: midjourneyConnectionModel,
+    label: "Midjourney（云雾代理）",
+    capability: "image",
+    provider: "midjourney",
+    presets: ["yunwu", "custom"]
+  },
   { model: "gpt-image-2", label: "GPT Image 2", capability: "image", provider: "openai", presets: ["yunwu", "openai", "custom"] },
   { model: geminiBananaImageModel, label: "banana2", capability: "image", provider: "google", presets: ["yunwu", "google", "custom"] },
   { model: "grok-3-image", label: "Grok 3 Image", capability: "image", provider: "xai", presets: ["yunwu", "xai", "custom"] },
@@ -125,6 +143,7 @@ let photoshopBridgeState = {
 };
 let photoshopBridgeStatePath = "";
 let photoshopReferenceSelection = null;
+const midjourneyPersistedResults = new Map();
 
 loadEnvFile(envFile);
 
@@ -257,6 +276,18 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/generate") {
       return await handleGenerate(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/midjourney/submit") {
+      return await handleMidjourneySubmit(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/midjourney/task") {
+      return await handleMidjourneyTask(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/midjourney/action") {
+      return await handleMidjourneyAction(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/assistant/chat") {
@@ -575,7 +606,14 @@ function defaultConnectionForModel(model, presetId = "yunwu") {
   const ark = arkDefinition(normalized);
   const requestedPreset = sanitizeOptionalText(presetId).toLowerCase();
   const preset = definition.presets.includes(requestedPreset) ? requestedPreset : definition.presets[0] || "custom";
-  const imageProtocol = normalized === geminiBananaImageModel ? "gemini-native" : normalized === grsaiDefaultModel ? "grsai" : "openai-images";
+  const imageProtocol =
+    normalized === midjourneyConnectionModel
+      ? "midjourney-proxy"
+      : normalized === geminiBananaImageModel
+        ? "gemini-native"
+        : normalized === grsaiDefaultModel
+          ? "grsai"
+          : "openai-images";
   const chatProtocol = "openai-chat";
   const defaults = {
     preset,
@@ -593,6 +631,11 @@ function defaultConnectionForModel(model, presetId = "yunwu") {
   if (normalized === geminiBananaImageModel) {
     defaults.imageEndpoint = "/v1beta/models/{model}:generateContent";
     defaults.editEndpoint = "/v1beta/models/{model}:generateContent";
+  }
+  if (normalized === midjourneyConnectionModel) {
+    defaults.apiModel = "MID_JOURNEY";
+    defaults.imageEndpoint = midjourneyDefaultRoutePrefix;
+    defaults.editEndpoint = midjourneyDefaultRoutePrefix;
   }
 
   if (preset === "openai") {
@@ -655,17 +698,37 @@ function normalizeModelConnection(model, value) {
   const normalized = normalizeModelAlias(model);
   const input = isPlainObject(value) ? value : {};
   const fallback = defaultConnectionForModel(normalized, input.preset || connectionDefinition(normalized).presets[0]);
-  const protocols = new Set(["openai-images", "openai-chat", "gemini-native", "anthropic-messages", "grsai", "ark-images", "ark-video"]);
+  const protocols = new Set([
+    "openai-images",
+    "openai-chat",
+    "gemini-native",
+    "anthropic-messages",
+    "grsai",
+    "ark-images",
+    "ark-video",
+    "midjourney-proxy"
+  ]);
   const authTypes = new Set(["bearer", "x-api-key", "x-goog-api-key", "none"]);
+  const preset = sanitizeOptionalText(input.preset) || fallback.preset;
+  const submittedImageEndpoint = sanitizeOptionalText(input.imageEndpoint) || fallback.imageEndpoint;
+  const imageEndpoint =
+    normalized === midjourneyConnectionModel && preset === "yunwu" && submittedImageEndpoint === "/mj-fast"
+      ? midjourneyDefaultRoutePrefix
+      : submittedImageEndpoint;
+  const submittedEditEndpoint = sanitizeOptionalText(input.editEndpoint) || fallback.editEndpoint;
+  const editEndpoint =
+    normalized === midjourneyConnectionModel && preset === "yunwu" && submittedEditEndpoint === "/mj-fast"
+      ? midjourneyDefaultRoutePrefix
+      : submittedEditEndpoint;
   return {
-    preset: sanitizeOptionalText(input.preset) || fallback.preset,
+    preset,
     capability: ["image", "video", "chat"].includes(input.capability) ? input.capability : fallback.capability,
     protocol: protocols.has(input.protocol) ? input.protocol : fallback.protocol,
     authType: authTypes.has(input.authType) ? input.authType : fallback.authType,
     apiModel: sanitizeOptionalText(input.apiModel) || fallback.apiModel,
     baseUrl: sanitizeOptionalText(input.baseUrl) || fallback.baseUrl,
-    imageEndpoint: sanitizeOptionalText(input.imageEndpoint) || fallback.imageEndpoint,
-    editEndpoint: sanitizeOptionalText(input.editEndpoint) || fallback.editEndpoint,
+    imageEndpoint,
+    editEndpoint,
     chatEndpoint: sanitizeOptionalText(input.chatEndpoint) || fallback.chatEndpoint,
     videoEndpoint: sanitizeOptionalText(input.videoEndpoint) || fallback.videoEndpoint || arkVideoEndpoint
   };
@@ -1989,6 +2052,234 @@ async function handleGenerate(req, res) {
   }
 
   return await handleCreate(res, body, prompt);
+}
+
+async function handleMidjourneySubmit(req, res) {
+  const body = await readJsonBody(req, { maxBytes: 64 * 1024 * 1024 });
+  const rawPrompt = sanitizeOptionalText(body.prompt);
+  if (!rawPrompt) return sendJson(res, 400, { error: "Midjourney 提示词不能为空。" });
+  const promptResult = trimMidjourneyPrompt(rawPrompt);
+  const prompt = promptResult.prompt;
+
+  const connection = resolvedConnection(midjourneyConnectionModel, {}, "create");
+  if (!connection.apiKey) {
+    return sendJson(res, 500, { error: missingKeyMessage(midjourneyConnectionModel) });
+  }
+  if (connection.protocol !== "midjourney-proxy") {
+    return sendJson(res, 400, { error: `Midjourney 当前连接协议 ${connection.protocol} 不受支持。` });
+  }
+
+  const projectId = normalizeProjectId(body.projectId || "default");
+  const cachedImages = await loadCachedAssets(parseCachedAssetRefs(body.cachedImages), projectId);
+  const extraParams = parseExtraParamsValue(body.extraParams);
+  const payload = pruneEmpty({
+    ...extraParams,
+    botType: body.botType === "NIJI_JOURNEY" ? "NIJI_JOURNEY" : "MID_JOURNEY",
+    prompt,
+    base64Array: cachedImages.slice(0, midjourneyReferenceLimit).map(fileToDataUrl),
+    state: sanitizeOptionalText(body.state)
+  });
+  const mode = normalizeMidjourneyMode(body.speed);
+  const apiUrl = buildMidjourneyEndpointUrl({
+    baseUrl: connection.baseUrl,
+    routePrefix: connection.imageEndpoint || midjourneyDefaultRoutePrefix,
+    mode,
+    operation: "imagine"
+  });
+  const startedAt = Date.now();
+
+  const upstreamResult = await requestMidjourneyUpstream(apiUrl, connection, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+  if (!upstreamResult.ok) {
+    return sendJson(res, upstreamResult.status, {
+      error: readMidjourneyUpstreamError(upstreamResult.data, upstreamResult.text),
+      status: upstreamResult.status,
+      upstream: upstreamResult.data
+    });
+  }
+
+  const taskId = extractMidjourneyTaskId(upstreamResult.data);
+  const code = Number(upstreamResult.data?.code);
+  if ((Number.isFinite(code) && ![1, 22].includes(code)) || !taskId) {
+    return sendJson(res, 502, {
+      error: upstreamResult.data?.description || "云雾 Midjourney 已响应，但没有返回任务 ID。",
+      upstream: upstreamResult.data
+    });
+  }
+
+  sendJson(res, 200, {
+    taskId: taskId || String(upstreamResult.data.id),
+    mode,
+    promptLength: prompt.length,
+    promptMaxLength: midjourneyPromptMaxLength,
+    promptOriginalLength: promptResult.originalLength,
+    promptTruncated: promptResult.truncated,
+    durationMs: Date.now() - startedAt,
+    raw: upstreamResult.data
+  });
+}
+
+async function handleMidjourneyTask(req, res) {
+  const body = await readJsonBody(req);
+  const taskId = sanitizeOptionalText(body.taskId);
+  if (!taskId) return sendJson(res, 400, { error: "Midjourney task ID is required." });
+
+  const connection = resolvedConnection(midjourneyConnectionModel, {}, "create");
+  if (!connection.apiKey) {
+    return sendJson(res, 500, { error: missingKeyMessage(midjourneyConnectionModel) });
+  }
+  if (connection.protocol !== "midjourney-proxy") {
+    return sendJson(res, 400, { error: `Midjourney 当前连接协议 ${connection.protocol} 不受支持。` });
+  }
+
+  const mode = normalizeMidjourneyMode(body.speed);
+  const apiUrl = buildMidjourneyEndpointUrl({
+    baseUrl: connection.baseUrl,
+    routePrefix: connection.imageEndpoint || midjourneyDefaultRoutePrefix,
+    mode,
+    operation: "task",
+    taskId
+  });
+  const upstreamResult = await requestMidjourneyUpstream(apiUrl, connection, { method: "GET" });
+  if (!upstreamResult.ok) {
+    return sendJson(res, upstreamResult.status, {
+      error: readMidjourneyUpstreamError(upstreamResult.data, upstreamResult.text),
+      status: upstreamResult.status,
+      upstream: upstreamResult.data
+    });
+  }
+
+  const code = Number(upstreamResult.data?.code);
+  if (Number.isFinite(code) && ![1, 22].includes(code)) {
+    return sendJson(res, 502, {
+      error: upstreamResult.data?.description || "云雾 Midjourney 任务查询失败。",
+      upstream: upstreamResult.data
+    });
+  }
+
+  const task = normalizeMidjourneyTask(upstreamResult.data);
+  const projectId = normalizeProjectId(body.projectId || "default");
+  let images = [];
+  if (task.status === "SUCCESS" && task.imageUrl) {
+    const cacheKey = `${projectId}:${task.id || taskId}`;
+    images = midjourneyPersistedResults.get(cacheKey) || [];
+    if (!images.length) {
+      images = await normalizeAndPersistImages({ imageUrl: task.imageUrl }, "png", projectId);
+      if (images.length) rememberMidjourneyResult(cacheKey, images);
+    }
+  }
+
+  sendJson(res, 200, {
+    task,
+    images,
+    raw: upstreamResult.data
+  });
+}
+
+async function handleMidjourneyAction(req, res) {
+  const body = await readJsonBody(req);
+  const taskId = sanitizeOptionalText(body.taskId);
+  const customId = sanitizeOptionalText(body.customId);
+  if (!taskId || !customId) {
+    return sendJson(res, 400, { error: "Midjourney 动作需要 taskId 和 customId。" });
+  }
+
+  const connection = resolvedConnection(midjourneyConnectionModel, {}, "create");
+  if (!connection.apiKey) {
+    return sendJson(res, 500, { error: missingKeyMessage(midjourneyConnectionModel) });
+  }
+  if (connection.protocol !== "midjourney-proxy") {
+    return sendJson(res, 400, { error: `Midjourney 当前连接协议 ${connection.protocol} 不受支持。` });
+  }
+
+  const mode = normalizeMidjourneyMode(body.speed);
+  const apiUrl = buildMidjourneyEndpointUrl({
+    baseUrl: connection.baseUrl,
+    routePrefix: connection.imageEndpoint || midjourneyDefaultRoutePrefix,
+    mode,
+    operation: "action"
+  });
+  const upstreamResult = await requestMidjourneyUpstream(apiUrl, connection, {
+    method: "POST",
+    body: JSON.stringify(
+      pruneEmpty({
+        chooseSameChannel: true,
+        taskId,
+        customId,
+        state: sanitizeOptionalText(body.state)
+      })
+    )
+  });
+  if (!upstreamResult.ok) {
+    return sendJson(res, upstreamResult.status, {
+      error: readMidjourneyUpstreamError(upstreamResult.data, upstreamResult.text),
+      status: upstreamResult.status,
+      upstream: upstreamResult.data
+    });
+  }
+
+  const nextTaskId = extractMidjourneyTaskId(upstreamResult.data);
+  const code = Number(upstreamResult.data?.code);
+  if ((Number.isFinite(code) && ![1, 22].includes(code)) || !nextTaskId) {
+    return sendJson(res, 502, {
+      error: upstreamResult.data?.description || "Midjourney 动作已响应，但没有返回新任务 ID。",
+      upstream: upstreamResult.data
+    });
+  }
+
+  sendJson(res, 200, {
+    taskId: nextTaskId,
+    mode,
+    raw: upstreamResult.data
+  });
+}
+
+async function requestMidjourneyUpstream(apiUrl, connection, options = {}) {
+  try {
+    const upstream = await fetch(apiUrl, {
+      ...options,
+      headers: {
+        ...connectionAuthHeaders(connection),
+        Accept: "application/json",
+        ...(options.headers || {})
+      },
+      signal: AbortSignal.timeout(60000)
+    });
+    const text = await upstream.text();
+    return {
+      ok: upstream.ok,
+      status: upstream.status,
+      text,
+      data: tryParseJson(text)
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 502,
+      text: error.message || String(error),
+      data: { error: `Midjourney 请求失败：${error.message || error}` }
+    };
+  }
+}
+
+function rememberMidjourneyResult(key, images) {
+  midjourneyPersistedResults.set(key, images);
+  while (midjourneyPersistedResults.size > 200) {
+    const oldest = midjourneyPersistedResults.keys().next().value;
+    midjourneyPersistedResults.delete(oldest);
+  }
+}
+
+function readMidjourneyUpstreamError(data, fallback) {
+  const description = sanitizeOptionalText(data?.description);
+  const type = sanitizeOptionalText(data?.type);
+  const raw = `${description} ${type} ${sanitizeOptionalText(fallback)}`.toLowerCase();
+  if (raw.includes("all_retries_failed")) {
+    return "云雾 Midjourney 上游通道全部重试失败。请先改用“平台默认（推荐）”或 V7，并用简短提示词重试；如果仍失败，通常是云雾当前通道不可用，或该 Key 未开通 Midjourney。";
+  }
+  return description || readUpstreamError(data, fallback);
 }
 
 async function handleAssistantChat(req, res, options = {}) {
@@ -5895,6 +6186,7 @@ function readUpstreamError(data, fallback) {
   if (typeof data?.error === "string") return data.error;
   if (typeof data?.error?.message === "string") return data.error.message;
   if (typeof data?.message === "string") return data.message;
+  if (typeof data?.description === "string") return data.description;
   return fallback || "The image API returned an error.";
 }
 

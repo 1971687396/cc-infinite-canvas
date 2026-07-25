@@ -42,11 +42,23 @@
 
 - 模型专用 Key 优先于全局备用 Key；未填写时自动回退使用全局备用 Key
 - 生图、图片编辑和画布助手共用模型连接配置，但每个模型互不影响
-- 支持 OpenAI Images、OpenAI Chat Completions、Gemini `generateContent`、Anthropic Messages 和 Grsai 异步生图协议
+- 支持 OpenAI Images、OpenAI Chat Completions、Gemini `generateContent`、Anthropic Messages、Grsai 异步生图和 Midjourney Proxy Plus 协议
 - `API 模型 ID` 可与画布内显示的模型名不同，适合中转站别名或供应商部署 ID
 - 新增的自定义模型保存后会自动进入对应的助手或生图模型列表
 - 节点默认跟随模型连接；只有在节点高级参数中开启“此节点单独覆盖模型 API 地址”时才使用节点自己的地址
 - 旧版 Yunwu Base URL、接口路径和模型 Key 会在首次保存设置时自动迁移，不需要重新填写
+
+## Midjourney（云雾代理）
+
+左侧工具栏的 `MJ` 会创建独立的 Midjourney 节点，不与通用生图节点混用。默认连接预设为云雾 `https://yunwu.ai`、Midjourney Proxy Plus 协议和官方文档公布的 `/mj` 路由；在“设置 > 模型 API 连接 > Midjourney（云雾代理）”中可以填写模型专用 Key，也可以留空使用全局备用 Key。自定义中转站如需按速度切换路径，可在接口路径中使用 `{mode}` 占位符。
+
+- 默认使用云雾当前平台版本，也可指定 V7、V6.1、Niji 7；V8.1 仅在云雾通道明确支持时手动启用
+- 支持本地上传、选中画布图片、点选画布图片和连线四种参考图添加方式，按 Proxy Plus 兼容限制单个节点最多 5 张
+- 文字、随机肖像和场景机位节点可以连接到 Midjourney 节点，作为前缀、正文或后缀提示词
+- 最终提交提示词按云雾通道实测限制控制在 1800 字符内，计数包含连接文字和参数；超出时保留末尾参数并自动裁剪正文
+- 节点自动轮询任务进度；成功后会把上游图片立即保存到当前画布 `outputs/`，避免只依赖临时远程链接
+- 返回的 U/V、重绘等动作会显示为中文结果按钮，执行动作后会在原结果区域继续生成，不再跳回画布原点
+- 高级设置提供 Stylize、Chaos、Seed、Raw 和附加 JSON 参数
 
 ## 火山方舟官方模型
 
@@ -192,6 +204,12 @@ npm start
 
 ```bash
 npm run test:ark
+```
+
+Midjourney Proxy Plus 集成冒烟测试：
+
+```bash
+npm run test:midjourney
 ```
 
 打开 `http://localhost:3000`。

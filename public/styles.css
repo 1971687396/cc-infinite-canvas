@@ -2677,7 +2677,19 @@ body.assistant-open .minimap-dock {
   display: block;
   width: 100%;
   height: 100%;
+  background-color: var(--panel-soft);
   user-select: none;
+}
+
+.image-node.media-is-unloaded,
+.video-node.media-is-unloaded {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--panel-soft) 88%, transparent), var(--panel));
+}
+
+.image-node.media-is-unloaded > img,
+.video-node.media-is-unloaded > video {
+  visibility: hidden;
 }
 
 .image-node img {

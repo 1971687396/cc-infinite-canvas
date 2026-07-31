@@ -293,8 +293,11 @@ internal sealed class InstallerForm : Form
                 ExtractResource("YunwuImageCanvas.zip", zipPath);
                 ExtractResource("Install-YunwuCanvas.ps1", scriptPath);
 
+                string powerShellPath = ResolveWindowsPowerShellPath();
+                AppendLog("Windows PowerShell: " + powerShellPath);
+
                 ProcessStartInfo psi = new ProcessStartInfo();
-                psi.FileName = "powershell.exe";
+                psi.FileName = powerShellPath;
                 psi.Arguments =
                     "-NoProfile -ExecutionPolicy Bypass -File \"" + scriptPath + "\"" +
                     " -InstallDir \"" + EscapeArgument(installDir) + "\"" +
@@ -368,6 +371,30 @@ internal sealed class InstallerForm : Form
     private static string EscapeArgument(string value)
     {
         return value.Replace("\"", "\\\"");
+    }
+
+    private static string ResolveWindowsPowerShellPath()
+    {
+        string systemRoot = Environment.GetEnvironmentVariable("SystemRoot");
+        if (String.IsNullOrWhiteSpace(systemRoot))
+        {
+            systemRoot = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        }
+
+        string[] candidates = new string[]
+        {
+            Path.Combine(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+            Path.Combine(systemRoot, "Sysnative", "WindowsPowerShell", "v1.0", "powershell.exe")
+        };
+
+        foreach (string candidate in candidates)
+        {
+            if (File.Exists(candidate)) return candidate;
+        }
+
+        throw new FileNotFoundException(
+            "Windows PowerShell was not found. Expected it under the Windows system directory."
+        );
     }
 
     private static void ExtractResource(string resourceName, string destination)

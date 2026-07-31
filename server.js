@@ -19,6 +19,7 @@ import {
   normalizeMidjourneyTask,
   trimMidjourneyPrompt
 } from "./midjourney-api.js";
+import { seedreamImageProfile, seedreamImageProfiles } from "./public/model-profiles.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -134,6 +135,8 @@ const photoshopReferenceSelectionLimit = 15;
 const photoshopReferenceSelectionTtlMs = 15 * 60 * 1000;
 const photoshopBridgeEvents = new EventEmitter();
 const projectWriteQueues = new Map();
+const imageThumbnailSizes = new Set([64, 256, 1024]);
+const imageThumbnailPromises = new Map();
 
 let photoshopBridgeState = {
   inbox: [],
@@ -168,6 +171,7 @@ const config = {
   chatEndpoint: process.env.YUNWU_CHAT_ENDPOINT || "/v1/chat/completions",
   defaultModel: normalizeModelAlias(process.env.YUNWU_DEFAULT_MODEL || "gpt-image-2"),
   assistantModel: process.env.YUNWU_ASSISTANT_MODEL || assistantDefaultModel,
+  theme: normalizeThemePreference(process.env.CC_CANVAS_THEME, "light"),
   modelApiKeys: loadModelApiKeys(),
   cacheDir: sanitizeCacheDir(process.env.CC_CANVAS_CACHE_DIR || process.env.YUNWU_CACHE_DIR || defaultCacheDir, defaultCacheDir),
   photoshopBridgeEnabled: parseEnvBoolean(process.env.CC_CANVAS_PHOTOSHOP_BRIDGE_ENABLED, false)
@@ -208,6 +212,10 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/settings") {
       return await handleSaveSettings(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/preferences/theme") {
+      return await handleSaveThemePreference(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/ark-assets/import") {
@@ -315,15 +323,21 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname.startsWith("/outputs/")) {
-      return await serveFile(res, path.join(__dirname, decodeURIComponent(url.pathname)));
+      return await serveFile(res, path.join(__dirname, decodeURIComponent(url.pathname)), {
+        imageThumbnailSize: normalizeImageThumbnailSize(url.searchParams.get("thumbnail"))
+      });
     }
 
     if (req.method === "GET" && url.pathname.startsWith("/cache/assets/")) {
-      return await serveFile(res, path.join(__dirname, decodeURIComponent(url.pathname)));
+      return await serveFile(res, path.join(__dirname, decodeURIComponent(url.pathname)), {
+        imageThumbnailSize: normalizeImageThumbnailSize(url.searchParams.get("thumbnail"))
+      });
     }
 
     if (req.method === "GET" && url.pathname.startsWith("/project-cache/")) {
-      return await serveProjectCacheFile(res, url.pathname);
+      return await serveProjectCacheFile(res, url.pathname, {
+        imageThumbnailSize: normalizeImageThumbnailSize(url.searchParams.get("thumbnail"))
+      });
     }
 
     if (req.method === "GET") {
@@ -397,6 +411,7 @@ function publicSettings() {
     chatEndpoint: config.chatEndpoint,
     defaultModel: config.defaultModel,
     assistantModel: config.assistantModel,
+    theme: config.theme,
     modelKeys: publicModelKeyStatus(),
     connectionModels: publicConnectionModels(),
     connectionPresets: connectionPresetCatalog,
@@ -1138,6 +1153,7 @@ async function handleSaveSettings(req, res) {
     chatEndpoint: sanitizeOptionalText(body.chatEndpoint) || config.chatEndpoint,
     defaultModel: normalizeModelAlias(sanitizeOptionalText(body.defaultModel) || config.defaultModel),
     assistantModel: sanitizeOptionalText(body.assistantModel) || config.assistantModel,
+    theme: normalizeThemePreference(body.theme, config.theme),
     modelApiKeys: mergeModelApiKeys(body),
     modelConnections: mergeModelConnections(body),
     cacheDir: sanitizeCacheDir(body.cacheDir, config.cacheDir),
@@ -1162,6 +1178,7 @@ async function handleSaveSettings(req, res) {
   config.chatEndpoint = nextSettings.chatEndpoint;
   config.defaultModel = nextSettings.defaultModel;
   config.assistantModel = nextSettings.assistantModel;
+  config.theme = nextSettings.theme;
   config.modelApiKeys = nextSettings.modelApiKeys;
   config.modelConnections = nextSettings.modelConnections;
   config.cacheDir = nextSettings.cacheDir;
@@ -1169,6 +1186,13 @@ async function handleSaveSettings(req, res) {
 
   await writeSettingsEnv(nextSettings);
   sendJson(res, 200, publicSettings());
+}
+
+async function handleSaveThemePreference(req, res) {
+  const body = await readJsonBody(req, { maxBytes: 4096 });
+  config.theme = normalizeThemePreference(body.theme, config.theme);
+  await writeSettingsEnv(config);
+  sendJson(res, 200, { theme: config.theme });
 }
 
 async function handleArkAssetImport(req, res) {
@@ -1886,6 +1910,12 @@ function parseEnvBoolean(value, fallback = false) {
   return fallback;
 }
 
+function normalizeThemePreference(value, fallback = "light") {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "dark" || normalized === "light") return normalized;
+  return fallback === "dark" ? "dark" : "light";
+}
+
 async function writeSettingsEnv(settings) {
   const updates = new Map([
     ["YUNWU_API_KEY", settings.apiKey],
@@ -1905,6 +1935,7 @@ async function writeSettingsEnv(settings) {
     ["YUNWU_CHAT_ENDPOINT", settings.chatEndpoint],
     ["YUNWU_DEFAULT_MODEL", settings.defaultModel],
     ["YUNWU_ASSISTANT_MODEL", settings.assistantModel],
+    ["CC_CANVAS_THEME", normalizeThemePreference(settings.theme, "light")],
     ["CC_CANVAS_MODEL_KEYS_B64", encodeSettingsMap(settings.modelApiKeys)],
     ["CC_CANVAS_MODEL_CONNECTIONS_B64", encodeSettingsMap(settings.modelConnections)],
     ["CC_CANVAS_CACHE_DIR", settings.cacheDir],
@@ -4516,14 +4547,15 @@ async function handleArkImageGenerate(res, body, prompt, imageFiles = [], suppli
 
   const extraParams = parseExtraParamsValue(body.extraParams);
   const count = Math.min(15, Math.max(1, Number.parseInt(body.n, 10) || 1));
-  const proModel = modelName === "ark-seedream-5.0-pro";
+  const seedreamProfile = seedreamImageProfile(modelName, connection.apiModel) || modelName;
+  const proModel = seedreamProfile === seedreamImageProfiles.PRO_5;
   const supportsSequential = !proModel;
-  const optimizeMode = normalizeArkOptimizeMode(body.quality, modelName);
+  const optimizeMode = normalizeArkOptimizeMode(body.quality, seedreamProfile);
   const payload = pruneEmpty({
     model: connection.apiModel,
     prompt,
-    image: imageFiles.length ? imageFiles.slice(0, arkImageReferenceLimit(modelName)).map(fileToDataUrl) : undefined,
-    size: normalizeArkImageSize(body.size, modelName),
+    image: imageFiles.length ? imageFiles.slice(0, arkImageReferenceLimit(seedreamProfile)).map(fileToDataUrl) : undefined,
+    size: normalizeArkImageSize(body.size, seedreamProfile),
     response_format: "url",
     watermark: false,
     optimize_prompt_options: optimizeMode ? { mode: optimizeMode } : undefined,
@@ -4573,13 +4605,14 @@ async function handleArkImageGenerate(res, body, prompt, imageFiles = [], suppli
 }
 
 function arkImageReferenceLimit(model) {
-  return normalizeModelAlias(model) === "ark-seedream-5.0-pro" ? 10 : 14;
+  return seedreamImageProfile(model) === seedreamImageProfiles.PRO_5 ? 10 : 14;
 }
 
 function normalizeArkOptimizeMode(value, model) {
   const requested = String(value || "").trim().toLowerCase();
   if (!requested) return "";
-  if (requested === "fast" && ["ark-seedream-5.0-lite", "ark-seedream-4.5"].includes(normalizeModelAlias(model))) {
+  const normalized = seedreamImageProfile(model) || normalizeModelAlias(model);
+  if (requested === "fast" && [seedreamImageProfiles.LITE_5, seedreamImageProfiles.V4_5].includes(normalized)) {
     return "standard";
   }
   return ["standard", "fast"].includes(requested) ? requested : "";
@@ -4587,12 +4620,12 @@ function normalizeArkOptimizeMode(value, model) {
 
 function normalizeArkImageSize(value, model) {
   const requested = String(value || "").trim().toUpperCase();
-  const normalizedModel = normalizeModelAlias(model);
-  const tiers = normalizedModel === "ark-seedream-5.0-pro"
+  const normalizedModel = seedreamImageProfile(model) || normalizeModelAlias(model);
+  const tiers = normalizedModel === seedreamImageProfiles.PRO_5
     ? new Set(["1K", "2K"])
-    : normalizedModel === "ark-seedream-5.0-lite"
+    : normalizedModel === seedreamImageProfiles.LITE_5
       ? new Set(["2K", "3K", "4K"])
-      : normalizedModel === "ark-seedream-4.5"
+      : normalizedModel === seedreamImageProfiles.V4_5
         ? new Set(["2K", "4K"])
         : new Set(["1K", "2K", "4K"]);
   if (tiers.has(requested)) return requested;
@@ -4602,9 +4635,9 @@ function normalizeArkImageSize(value, model) {
     const height = Number(dimensions[2]);
     const pixels = width * height;
     const ratio = width / height;
-    const limits = normalizedModel === "ark-seedream-5.0-pro"
+    const limits = normalizedModel === seedreamImageProfiles.PRO_5
       ? { minPixels: 3686400, maxPixels: 4624220 }
-      : normalizedModel === "ark-seedream-4.0"
+      : normalizedModel === seedreamImageProfiles.V4_0
         ? { minPixels: 921600, maxPixels: 16777216 }
         : { minPixels: 3686400, maxPixels: 16777216 };
     if (pixels >= limits.minPixels && pixels <= limits.maxPixels && ratio >= 1 / 16 && ratio <= 16) {
@@ -4626,7 +4659,7 @@ function closestArkImageSize(width, height, model) {
   ];
   const requestedRatio = width / height;
   const requestedPixels = width * height;
-  const candidates = model === "ark-seedream-5.0-pro" ? proSizes : standard2kSizes;
+  const candidates = seedreamImageProfile(model) === seedreamImageProfiles.PRO_5 ? proSizes : standard2kSizes;
   candidates.sort((left, right) => {
     const leftRatioDelta = Math.abs(Math.log((left[0] / left[1]) / requestedRatio));
     const rightRatioDelta = Math.abs(Math.log((right[0] / right[1]) / requestedRatio));
@@ -6085,14 +6118,16 @@ async function serveFile(res, filePath, options = {}) {
   }
 
   const mime = mimeTypes.get(path.extname(resolved).toLowerCase()) || "application/octet-stream";
-  if (options.imageThumbnail && mime.startsWith("image/") && electronNativeImage) {
-    const sourceBytes = await readFile(resolved);
-    const thumbnail = createPhotoshopThumbnail(sourceBytes);
+  const thumbnailSize = options.imageThumbnail
+    ? 360
+    : normalizeImageThumbnailSize(options.imageThumbnailSize);
+  if (thumbnailSize && mime.startsWith("image/") && electronNativeImage) {
+    const thumbnail = await loadOrCreateImageThumbnail(resolved, fileStat, thumbnailSize);
     if (thumbnail) {
       res.writeHead(200, {
         "Content-Type": thumbnail.contentType,
         "Content-Length": thumbnail.bytes.length,
-        "Cache-Control": "private, max-age=60"
+        "Cache-Control": "private, max-age=86400"
       });
       res.end(thumbnail.bytes);
       return;
@@ -6116,6 +6151,50 @@ function loadElectronNativeImage() {
 }
 
 function createPhotoshopThumbnail(bytes) {
+  return createImageThumbnail(bytes, 360);
+}
+
+function normalizeImageThumbnailSize(value) {
+  const size = Number.parseInt(String(value || ""), 10);
+  return imageThumbnailSizes.has(size) ? size : 0;
+}
+
+async function loadOrCreateImageThumbnail(sourcePath, fileStat, longestEdge) {
+  const fingerprint = createHash("sha256")
+    .update(`${path.resolve(sourcePath)}|${fileStat.size}|${fileStat.mtimeMs}|${longestEdge}`)
+    .digest("hex");
+  const thumbnailDir = path.join(config.cacheDir, "thumbnails");
+  const thumbnailPath = path.join(thumbnailDir, `${fingerprint}.png`);
+
+  try {
+    const bytes = await readFile(thumbnailPath);
+    if (bytes.length) return { bytes, contentType: "image/png" };
+  } catch {
+    // Generate the requested derivative below.
+  }
+
+  if (imageThumbnailPromises.has(thumbnailPath)) {
+    return await imageThumbnailPromises.get(thumbnailPath);
+  }
+
+  const pending = (async () => {
+    const sourceBytes = await readFile(sourcePath);
+    const thumbnail = createImageThumbnail(sourceBytes, longestEdge);
+    if (!thumbnail) return null;
+    await mkdir(thumbnailDir, { recursive: true });
+    await writeFile(thumbnailPath, thumbnail.bytes);
+    return thumbnail;
+  })();
+  imageThumbnailPromises.set(thumbnailPath, pending);
+
+  try {
+    return await pending;
+  } finally {
+    imageThumbnailPromises.delete(thumbnailPath);
+  }
+}
+
+function createImageThumbnail(bytes, requestedLongestEdge = 360) {
   if (!electronNativeImage || !bytes?.length) return null;
   try {
     const source = electronNativeImage.createFromBuffer(Buffer.from(bytes));
@@ -6123,7 +6202,8 @@ function createPhotoshopThumbnail(bytes) {
     const size = source.getSize();
     const longestEdge = Math.max(size.width, size.height);
     if (!longestEdge) return null;
-    const scale = Math.min(1, 360 / longestEdge);
+    const targetLongestEdge = Math.max(1, Number(requestedLongestEdge) || 360);
+    const scale = Math.min(1, targetLongestEdge / longestEdge);
     const thumbnail = scale < 1
       ? source.resize({
         width: Math.max(1, Math.round(size.width * scale)),

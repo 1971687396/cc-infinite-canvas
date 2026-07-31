@@ -231,7 +231,15 @@ function Install-NodeLts {
     Invoke-WebRequest -Uri $msiUrl -OutFile $msiPath -UseBasicParsing
 
     Write-Host "Installing Node.js $version. A Windows installer/UAC prompt may appear."
-    $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$msiPath`" /passive /norestart" -Wait -PassThru
+    $msiexecPath = Join-Path $env:SystemRoot "System32\msiexec.exe"
+    if (-not (Test-Path -LiteralPath $msiexecPath)) {
+      $msiexecCommand = Get-Command msiexec.exe -ErrorAction SilentlyContinue
+      if (-not $msiexecCommand) {
+        throw "Windows Installer (msiexec.exe) was not found."
+      }
+      $msiexecPath = $msiexecCommand.Source
+    }
+    $process = Start-Process -FilePath $msiexecPath -ArgumentList "/i `"$msiPath`" /passive /norestart" -Wait -PassThru
     if ($process.ExitCode -ne 0) {
       throw "Node.js installer exited with code $($process.ExitCode)."
     }
@@ -278,12 +286,15 @@ $tempDir = Join-Path $env:TEMP ("ccInfiniteCanvasInstall-" + [guid]::NewGuid().T
 New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
 try {
+  Write-Host "Extracting application files..."
   Expand-Archive -Path $payloadZip -DestinationPath $tempDir -Force
 
+  Write-Host "Copying application files to: $installDir"
   New-Item -ItemType Directory -Path $installDir -Force | Out-Null
   New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
   Copy-Item -Path (Join-Path $tempDir "*") -Destination $installDir -Recurse -Force
 
+  Write-Host "Configuring the application cache..."
   $envFile = Join-Path $installDir ".env.local"
   if (-not (Test-Path $envFile) -and (Test-Path (Join-Path $installDir ".env.local.example"))) {
     Copy-Item -LiteralPath (Join-Path $installDir ".env.local.example") -Destination $envFile -Force
@@ -311,6 +322,7 @@ try {
   $startMenuDir = Join-Path $programs $appName
   New-Item -ItemType Directory -Path $startMenuDir -Force | Out-Null
 
+  Write-Host "Creating Desktop and Start Menu shortcuts..."
   $shell = New-Object -ComObject WScript.Shell
 
   $desktopShortcut = $shell.CreateShortcut((Join-Path $desktop "$appName.lnk"))
@@ -351,6 +363,7 @@ try {
   }
   $uninstallShortcut.Save()
 
+  Write-Host "Registering the uninstaller..."
   $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$appId"
   New-Item -Path $regPath -Force | Out-Null
   New-ItemProperty -Path $regPath -Name DisplayName -Value $appName -PropertyType String -Force | Out-Null

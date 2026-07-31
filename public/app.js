@@ -1,3 +1,10 @@
+import { seedreamImageProfile, seedreamImageProfiles } from "./model-profiles.js";
+import {
+  imageMediaTierForScreenPixels,
+  imageMediaTierRank,
+  mediaUrlForTier
+} from "./media-virtualization.js";
+
 const storageKeyPrefix = "cc-infinite-canvas-project-v1";
 const currentProjectStorageKey = "cc-infinite-canvas-current-project";
 const storageKey = "yunwu-image-canvas-v2";
@@ -10,6 +17,8 @@ const assistantSkillRequestLimit = 8;
 const assistantChatBackupDelayMs = 600;
 const assistantPendingFileLimit = 5;
 const themeStorageKey = "cc-canvas-theme";
+const mediaViewportOverscan = 0.7;
+const mediaQualityUpgradeDelayMs = 220;
 const photoshopBridgeHeaders = { "X-CC-Canvas-Bridge": "psimageai" };
 const photoshopPluginReleaseUrl = "https://github.com/1971687396/ps-image-ai/releases/latest";
 const photoshopBridgePollIntervalMs = 1600;
@@ -535,6 +544,8 @@ let settingsConnectionKeyDrafts = {};
 let settingsConnectionClearKeys = new Set();
 let activeSettingsConnectionModel = "";
 const midjourneyPolls = new Map();
+let mediaVisibilityFrame = 0;
+let mediaQualityUpgradeTimer = 0;
 let canvasState = {
   nodes: [],
   viewport: { x: 120, y: 90, zoom: 1 },
@@ -726,6 +737,7 @@ async function refreshRuntimeConfig() {
   const data = await readJsonResponse(response);
   if (!response.ok || data.parseError) throw new Error(data.error || "配置读取失败");
   config = data;
+  applyTheme(config.theme || readThemePreference(), { persist: true });
   setKeyStatus(config.hasAnyKey ?? config.hasApiKey);
   renderAssistantModelSelectors();
   applyPhotoshopBridgeAvailability({ render: false });
@@ -765,6 +777,23 @@ function applyTheme(theme, options = {}) {
 function toggleTheme() {
   const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   applyTheme(next);
+  void persistThemePreference(next);
+}
+
+async function persistThemePreference(theme) {
+  try {
+    const response = await fetch("/api/preferences/theme", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ theme }),
+      keepalive: true
+    });
+    const data = await readJsonResponse(response);
+    if (!response.ok || data.parseError) throw new Error(data.error || "主题保存失败");
+    config.theme = data.theme || theme;
+  } catch {
+    // localStorage remains a same-session fallback if disk persistence is unavailable.
+  }
 }
 
 function currentCanvasTheme() {
@@ -1117,6 +1146,7 @@ function applyTaskModelDefaults(node, options = {}) {
   const isDreamina = isDreaminaModelName(node.model);
   const isGeminiNative = isGeminiNativeImageModelName(node.model);
   const isArk = isArkImageModelName(node.model);
+  const seedreamProfile = seedreamImageProfileForModel(node.model);
   node.provider = isGrok ? "grok" : isGrsai ? "grsai" : isDreamina ? "dreamina" : isGeminiNative ? "gemini" : isArk ? "ark" : "";
 
   if (isDreamina) {
@@ -1138,11 +1168,11 @@ function applyTaskModelDefaults(node, options = {}) {
     delete node.extraParams.replyType;
   } else if (isArk) {
     node.size = compatibleArkImageSize(node.size, node.model);
-    if (node.model === "ark-seedream-5.0-pro") node.n = "1";
+    if (seedreamProfile === seedreamImageProfiles.PRO_5) node.n = "1";
     node.quality = arkOptimizeOptionsForModel(node.model).some(([value]) => value === node.quality)
       ? node.quality
       : "standard";
-    node.format = node.model === "ark-seedream-5.0-pro" && ["png", "jpeg"].includes(node.format) ? node.format : "png";
+    node.format = seedreamProfile === seedreamImageProfiles.PRO_5 && ["png", "jpeg"].includes(node.format) ? node.format : "png";
     node.background = "";
     node.moderation = "";
     node.baseUrl = config.arkBaseUrl || arkDefaultBaseUrl;
@@ -1150,6 +1180,20 @@ function applyTaskModelDefaults(node, options = {}) {
     node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
     delete node.extraParams.response_format;
     delete node.extraParams.replyType;
+  } else if (seedreamProfile) {
+    node.size = compatibleArkImageSize(node.size, node.model);
+    if (seedreamProfile === seedreamImageProfiles.PRO_5) node.n = "1";
+    node.quality = "";
+    node.format = node.format || "png";
+    node.background = "";
+    node.moderation = "";
+    node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
+    delete node.extraParams.response_format;
+    delete node.extraParams.replyType;
+    if ((wasGrok || wasGrsai || wasDreamina || wasArk) && options.modelChanged) {
+      node.baseUrl = config.baseUrl || "https://yunwu.ai";
+      node.endpointPath = defaultEndpointForMode(node.mode);
+    }
   } else if (isGrsai) {
     node.model = isGrsaiModelName(node.model) ? node.model : grsaiDefaultModel;
     if (!isSizeAllowedForModel(node.size, node.model, node.mode)) {
@@ -1286,6 +1330,23 @@ function isArkImageModelName(model) {
   return arkImageModelOptions.some(([value]) => value === normalized);
 }
 
+function seedreamImageProfileForModel(model) {
+  const normalized = normalizeImageModelName(model).toLowerCase();
+  const connection = config.modelConnections?.[normalized];
+  const definition = (config.connectionModels || []).find(
+    (item) => normalizeImageModelName(item.model).toLowerCase() === normalized
+  );
+  return seedreamImageProfile(normalized, connection?.apiModel, definition?.label);
+}
+
+function isSeedreamImageModelName(model) {
+  return Boolean(seedreamImageProfileForModel(model));
+}
+
+function seedreamReferenceLimit(model) {
+  return seedreamImageProfileForModel(model) === seedreamImageProfiles.PRO_5 ? 10 : 14;
+}
+
 function isArkVideoModelName(model) {
   const normalized = String(model || "").trim().toLowerCase();
   return arkVideoModelOptions.some(([value]) => value === normalized);
@@ -1301,7 +1362,8 @@ function isGrsaiBaseUrl(value) {
 
 function sizeOptionsForModel(model, mode = "create") {
   if (isDreaminaModelName(model)) return dreaminaSizeOptionsForModel(model, mode);
-  if (isArkImageModelName(model)) return arkSeedreamSizes[normalizeImageModelName(model).toLowerCase()] || [["2K", "2K"]];
+  const seedreamProfile = seedreamImageProfileForModel(model);
+  if (seedreamProfile) return arkSeedreamSizes[seedreamProfile] || [["2K", "2K"]];
   if (isGeminiNativeImageModelName(model)) return geminiNativeRatioOptions;
   if (isGrsaiModelName(model)) return grsaiSizeOptions;
   return isGrokModelName(model) ? grokSizeOptions : gptSizeOptions;
@@ -1316,7 +1378,7 @@ function dreaminaSizeOptionsForModel(model, mode = "create") {
 
 function defaultSizeForModel(model, mode = "create") {
   if (isDreaminaModelName(model)) return dreaminaDefaultSize;
-  if (isArkImageModelName(model)) return normalizeImageModelName(model).toLowerCase() === "ark-seedream-4.0" ? "2K" : "2K";
+  if (isSeedreamImageModelName(model)) return "2K";
   if (isGeminiNativeImageModelName(model)) return geminiNativeDefaultRatio;
   if (isGrsaiModelName(model)) return grsaiDefaultSize;
   if (isGrokModelName(model)) return mode === "create" ? grokDefaultSize : "";
@@ -7497,6 +7559,133 @@ function applyViewport() {
   updateMinimap();
   renderReferenceLinks();
   syncChatGptHostSoon();
+  scheduleMediaVisibilityRefresh();
+}
+
+function scheduleMediaVisibilityRefresh() {
+  if (!mediaVisibilityFrame) {
+    mediaVisibilityFrame = window.requestAnimationFrame(() => {
+      mediaVisibilityFrame = 0;
+      refreshMediaVisibility({ allowUpgrade: false });
+    });
+  }
+
+  window.clearTimeout(mediaQualityUpgradeTimer);
+  mediaQualityUpgradeTimer = window.setTimeout(() => {
+    mediaQualityUpgradeTimer = 0;
+    refreshMediaVisibility({ allowUpgrade: true });
+  }, mediaQualityUpgradeDelayMs);
+}
+
+function refreshMediaVisibility(options = {}) {
+  if (!canvasStage || !canvasViewport) return;
+  const viewportRect = expandedMediaViewportWorldRect();
+  const nodeById = new Map(canvasState.nodes.map((node) => [node.id, node]));
+  const allowUpgrade = options.allowUpgrade === true;
+
+  for (const img of canvasStage.querySelectorAll(".image-node > img.virtualized-media")) {
+    const node = nodeById.get(img.closest(".canvas-node")?.dataset.nodeId);
+    if (node?.type === "image") syncImageMediaElement(img, node, viewportRect, allowUpgrade);
+  }
+
+  for (const video of canvasStage.querySelectorAll(".video-node > video.virtualized-media")) {
+    const node = nodeById.get(video.closest(".canvas-node")?.dataset.nodeId);
+    if (node?.type === "video") syncVideoMediaElement(video, node, viewportRect);
+  }
+}
+
+function expandedMediaViewportWorldRect() {
+  const rect = getViewportWorldRect();
+  if (!Number.isFinite(rect.width) || !Number.isFinite(rect.height) || rect.width <= 0 || rect.height <= 0) {
+    return null;
+  }
+  const paddingX = rect.width * mediaViewportOverscan;
+  const paddingY = rect.height * mediaViewportOverscan;
+  return {
+    x: rect.x - paddingX,
+    y: rect.y - paddingY,
+    width: rect.width + paddingX * 2,
+    height: rect.height + paddingY * 2
+  };
+}
+
+function mediaNodeWorldBounds(node) {
+  const isVideo = node.type === "video";
+  const fallbackWidth = isVideo ? defaultVideoWidth : 512;
+  const fallbackHeight = isVideo ? defaultVideoHeight : 512;
+  const fallbackScale = isVideo ? defaultVideoScale : defaultImageScale;
+  const scale = Number(node.scale) || fallbackScale;
+  return {
+    x: Number(node.x) || 0,
+    y: Number(node.y) || 0,
+    width: Math.max(1, Number(node.originalWidth) || fallbackWidth) * scale,
+    height: Math.max(1, Number(node.originalHeight) || fallbackHeight) * scale
+  };
+}
+
+function shouldLoadMediaNode(node, viewportRect) {
+  if (selectedNodeIds.has(node.id)) return true;
+  return !viewportRect || rectsIntersect(viewportRect, mediaNodeWorldBounds(node));
+}
+
+function syncImageMediaElement(img, node, viewportRect, allowUpgrade) {
+  const tile = img.closest(".image-node");
+  const source = String(node.image?.url || "").trim();
+  const visible = Boolean(source) && shouldLoadMediaNode(node, viewportRect);
+  tile?.classList.toggle("media-is-unloaded", !visible);
+
+  if (!visible) {
+    if (img.hasAttribute("src")) img.removeAttribute("src");
+    img.dataset.mediaTier = "unloaded";
+    img.dataset.mediaSource = source;
+    img.dataset.mediaOriginal = "false";
+    return;
+  }
+
+  const bounds = mediaNodeWorldBounds(node);
+  const screenLongestEdge = Math.max(bounds.width, bounds.height) * normalizeZoom(canvasState.viewport.zoom);
+  const desiredTier = imageMediaTierForScreenPixels(screenLongestEdge);
+  const currentTier = img.dataset.mediaTier || "unloaded";
+  const sourceChanged = img.dataset.mediaSource !== source;
+  let nextTier = desiredTier;
+
+  if (!allowUpgrade) {
+    const currentRank = imageMediaTierRank(currentTier);
+    const desiredRank = imageMediaTierRank(desiredTier);
+    if (!sourceChanged && currentRank >= 0 && desiredRank > currentRank) return;
+    if (currentRank < 0 && desiredTier === "original") nextTier = "1024";
+  }
+
+  const nextUrl = mediaUrlForTier(source, nextTier, window.location.href);
+  if (!sourceChanged && currentTier === nextTier && img.getAttribute("src") === nextUrl) return;
+
+  img.dataset.mediaSource = source;
+  img.dataset.mediaTier = nextTier;
+  img.dataset.mediaOriginal = String(nextTier === "original" || nextUrl === source);
+  img.fetchPriority = nextTier === "64" || nextTier === "256" ? "low" : "auto";
+  img.src = nextUrl;
+}
+
+function syncVideoMediaElement(video, node, viewportRect) {
+  const tile = video.closest(".video-node");
+  const source = String(node.video?.url || "").trim();
+  const visible = Boolean(source) && shouldLoadMediaNode(node, viewportRect);
+  tile?.classList.toggle("media-is-unloaded", !visible);
+
+  if (!visible) {
+    video.pause();
+    if (video.hasAttribute("src")) {
+      video.removeAttribute("src");
+      video.load();
+    }
+    video.dataset.mediaSource = source;
+    return;
+  }
+
+  if (video.dataset.mediaSource === source && video.getAttribute("src")) return;
+  video.dataset.mediaSource = source;
+  video.src = source;
+  video.load();
 }
 
 function normalizeZoom(value) {
@@ -7532,6 +7721,7 @@ function renderCanvas() {
   updateSelectionToolbar();
   updateMinimap();
   syncChatGptHostSoon();
+  scheduleMediaVisibilityRefresh();
 }
 
 function updateNode(node) {
@@ -7539,6 +7729,7 @@ function updateNode(node) {
   if (previous) previous.replaceWith(createCanvasNode(node));
   renderReferenceLinks();
   syncChatGptHostSoon();
+  scheduleMediaVisibilityRefresh();
 }
 
 function createReferenceLinkLayer() {
@@ -9053,7 +9244,7 @@ function createVideoNode(node) {
   tile.style.zIndex = node.z;
 
   const video = document.createElement("video");
-  video.src = node.video?.url || "";
+  video.className = "virtualized-media";
   video.controls = true;
   video.playsInline = true;
   video.preload = "metadata";
@@ -9266,10 +9457,13 @@ function createImageNode(node) {
   tile.style.zIndex = node.z;
 
   const img = document.createElement("img");
+  img.className = "virtualized-media";
   img.alt = node.image?.prompt || "generated image";
-  img.src = node.image?.url || "";
+  img.loading = "lazy";
+  img.decoding = "async";
   img.draggable = false;
   img.addEventListener("load", () => {
+    if (img.dataset.mediaOriginal !== "true") return;
     if (!img.naturalWidth || !img.naturalHeight) return;
     if (node.originalWidth === img.naturalWidth && node.originalHeight === img.naturalHeight) return;
     const previousDefaultScale = defaultScaleForImageNode(node, {
@@ -10572,13 +10766,23 @@ function createDebugPanel(node) {
   if (isDreaminaModelName(node.model)) {
     settings.append(modelField, createSelectField("尺寸", node, "size", sizeOptionsForModel(node.model, node.mode)));
   } else if (isArkImageModelName(node.model)) {
+    const seedreamProfile = seedreamImageProfileForModel(node.model);
     settings.append(
       modelField,
       createSelectField("尺寸", node, "size", sizeOptionsForModel(node.model, node.mode)),
-      createNumberField("数量", node, "n", { min: 1, max: node.model === "ark-seedream-5.0-pro" ? 1 : 15 }),
+      createNumberField("数量", node, "n", { min: 1, max: seedreamProfile === seedreamImageProfiles.PRO_5 ? 1 : 15 }),
       createSelectField("提示词优化", node, "quality", arkOptimizeOptionsForModel(node.model))
     );
-    if (node.model === "ark-seedream-5.0-pro") advancedGrid.append(createSelectField("格式", node, "format", [["png", "png"], ["jpeg", "jpeg"]]));
+    if (seedreamProfile === seedreamImageProfiles.PRO_5) advancedGrid.append(createSelectField("格式", node, "format", [["png", "png"], ["jpeg", "jpeg"]]));
+    if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
+  } else if (isSeedreamImageModelName(node.model)) {
+    const seedreamProfile = seedreamImageProfileForModel(node.model);
+    settings.append(
+      modelField,
+      createSelectField("尺寸", node, "size", sizeOptionsForModel(node.model, node.mode)),
+      createNumberField("数量", node, "n", { min: 1, max: seedreamProfile === seedreamImageProfiles.PRO_5 ? 1 : 15 })
+    );
+    advancedGrid.append(createSelectField("格式", node, "format", formatOptions));
     if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
   } else if (isGeminiNativeImageModelName(node.model)) {
     settings.append(
@@ -10599,7 +10803,7 @@ function createDebugPanel(node) {
     if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
   }
 
-  if (node.mode === "edit" && !isDreaminaModelName(node.model) && !isGeminiNativeImageModelName(node.model) && !isArkImageModelName(node.model)) {
+  if (node.mode === "edit" && !isDreaminaModelName(node.model) && !isGeminiNativeImageModelName(node.model) && !isSeedreamImageModelName(node.model)) {
     advancedGrid.append(
       createSelectField("背景", node, "background", backgroundOptions),
       createSelectField("审核", node, "moderation", moderationOptions)
@@ -10735,8 +10939,8 @@ function createEditAssetFields(node) {
       const remaining = Math.max(0, 10 - (node.cachedImages?.length || 0) - (stored.images?.length || 0));
       if (files.length > remaining) showToast("即梦图生图最多使用 10 张参考图片");
       files = files.slice(0, remaining);
-    } else if (isArkImageModelName(node.model)) {
-      const limit = node.model === "ark-seedream-5.0-pro" ? 10 : 14;
+    } else if (isSeedreamImageModelName(node.model)) {
+      const limit = seedreamReferenceLimit(node.model);
       const remaining = Math.max(0, limit - (node.cachedImages?.length || 0) - (stored.images?.length || 0));
       if (files.length > remaining) showToast(`当前 Seedream 模型最多使用 ${limit} 张参考图片`);
       files = files.slice(0, remaining);

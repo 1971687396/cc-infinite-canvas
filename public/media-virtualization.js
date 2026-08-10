@@ -29,3 +29,17 @@ export function mediaUrlForTier(source, tier, baseUrl) {
     return rawSource;
   }
 }
+
+export function imageDimensionsForLoadedMedia(currentWidth, currentHeight, loadedWidth, loadedHeight, isOriginal = false) {
+  const sourceWidth = Math.max(1, Number(loadedWidth) || 0);
+  const sourceHeight = Math.max(1, Number(loadedHeight) || 0);
+  if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight)) return null;
+  if (isOriginal) return { width: Math.round(sourceWidth), height: Math.round(sourceHeight) };
+
+  const currentLongestEdge = Math.max(1, Number(currentWidth) || 0, Number(currentHeight) || 0);
+  const scale = currentLongestEdge / Math.max(sourceWidth, sourceHeight);
+  return {
+    width: Math.max(1, Math.round(sourceWidth * scale)),
+    height: Math.max(1, Math.round(sourceHeight * scale))
+  };
+}

@@ -1,5 +1,6 @@
 import { seedreamImageProfile, seedreamImageProfiles } from "./model-profiles.js";
 import {
+  imageDimensionsForLoadedMedia,
   imageMediaTierForScreenPixels,
   imageMediaTierRank,
   mediaUrlForTier
@@ -12,6 +13,7 @@ const legacyStorageKey = "yunwu-image-canvas-v1";
 const assistantStorageKeyPrefix = "cc-canvas-assistant-chat-v1";
 const assistantSkillLibraryStorageKey = "cc-canvas-assistant-skill-library-v1";
 const assistantBuiltInSkillStateStorageKey = "cc-canvas-assistant-builtin-skill-state-v1";
+const assistantBehaviorStorageKey = "cc-canvas-assistant-behavior-v1";
 const assistantSkillLibraryLimit = 40;
 const assistantSkillRequestLimit = 8;
 const assistantChatBackupDelayMs = 600;
@@ -29,6 +31,8 @@ const defaultMidjourneyTaskWidth = 540;
 const defaultVideoTaskWidth = 440;
 const defaultArkAssetNodeWidth = 480;
 const defaultArkAssetNodeHeight = 320;
+const defaultStoryBreakdownWidth = 680;
+const defaultStoryBreakdownHeight = 420;
 const defaultImageScale = 0.5;
 const imageDisplayLongSideByTier = {
   "1k": 360,
@@ -145,6 +149,7 @@ const midjourneyRatioOptions = [
 const addTaskButton = document.querySelector("#addTaskButton");
 const addMidjourneyButton = document.querySelector("#addMidjourneyButton");
 const addDreaminaVideoButton = document.querySelector("#addDreaminaVideoButton");
+const addStoryBreakdownButton = document.querySelector("#addStoryBreakdownButton");
 const addArkAssetButton = document.querySelector("#addArkAssetButton");
 const addEditTaskButton = document.querySelector("#addEditTaskButton");
 const addGrokTaskButton = document.querySelector("#addGrokTaskButton");
@@ -165,6 +170,15 @@ const settingsButton = document.querySelector("#settingsButton");
 const checkUpdateButton = document.querySelector("#checkUpdateButton");
 const newProjectButton = document.querySelector("#newProjectButton");
 const saveProjectButton = document.querySelector("#saveProjectButton");
+const deleteProjectButton = document.querySelector("#deleteProjectButton");
+const batchDeleteProjectButton = document.querySelector("#batchDeleteProjectButton");
+const batchDeleteProjectDialog = document.querySelector("#batchDeleteProjectDialog");
+const batchDeleteProjectForm = document.querySelector("#batchDeleteProjectForm");
+const closeBatchDeleteProjectButton = document.querySelector("#closeBatchDeleteProjectButton");
+const batchDeleteSelectAll = document.querySelector("#batchDeleteSelectAll");
+const batchDeleteSelectionCount = document.querySelector("#batchDeleteSelectionCount");
+const batchDeleteProjectList = document.querySelector("#batchDeleteProjectList");
+const confirmBatchDeleteProjectButton = document.querySelector("#confirmBatchDeleteProjectButton");
 const projectNameInput = document.querySelector("#projectNameInput");
 const projectSelect = document.querySelector("#projectSelect");
 const zoomLevel = document.querySelector("#zoomLevel");
@@ -188,8 +202,16 @@ const settingsForm = document.querySelector("#settingsForm");
 const closeSettingsButton = document.querySelector("#closeSettingsButton");
 const settingsGeneralTab = document.querySelector("#settingsGeneralTab");
 const settingsArkTab = document.querySelector("#settingsArkTab");
+const settingsGrokBuildTab = document.querySelector("#settingsGrokBuildTab");
 const settingsGeneralSections = [...document.querySelectorAll(".settings-general-section")];
 const settingsArkSection = document.querySelector(".ark-settings");
+const settingsGrokBuildSection = document.querySelector(".grok-build-settings");
+const settingsDeepSeekTab = document.querySelector("#settingsDeepSeekTab");
+const settingsDeepSeekSection = document.querySelector(".deepseek-settings");
+const settingsDeepSeekApiKey = document.querySelector("#settingsDeepSeekApiKey");
+const settingsDeepSeekBaseUrl = document.querySelector("#settingsDeepSeekBaseUrl");
+const settingsDeepSeekModel = document.querySelector("#settingsDeepSeekModel");
+const settingsDeepSeekStatus = document.querySelector("#settingsDeepSeekStatus");
 const settingsApiKey = document.querySelector("#settingsApiKey");
 const settingsClearApiKey = document.querySelector("#settingsClearApiKey");
 const settingsArkApiKey = document.querySelector("#settingsArkApiKey");
@@ -244,6 +266,17 @@ const dreaminaActionBar = document.querySelector("#dreaminaActionBar");
 const dreaminaActionText = document.querySelector("#dreaminaActionText");
 const copyDreaminaInstallButton = document.querySelector("#copyDreaminaInstallButton");
 const copyDreaminaLoginButton = document.querySelector("#copyDreaminaLoginButton");
+const grokBuildStatusText = document.querySelector("#grokBuildStatusText");
+const grokBuildAccountMeta = document.querySelector("#grokBuildAccountMeta");
+const grokBuildInstallButton = document.querySelector("#grokBuildInstallButton");
+const grokBuildLoginButton = document.querySelector("#grokBuildLoginButton");
+const grokBuildReloginButton = document.querySelector("#grokBuildReloginButton");
+const grokBuildLogoutButton = document.querySelector("#grokBuildLogoutButton");
+const grokBuildRefreshButton = document.querySelector("#grokBuildRefreshButton");
+const grokBuildActionProgress = document.querySelector("#grokBuildActionProgress");
+const grokBuildActionBar = document.querySelector("#grokBuildActionBar");
+const grokBuildActionText = document.querySelector("#grokBuildActionText");
+const settingsGrokBuildProxy = document.querySelector("#settingsGrokBuildProxy");
 const updateDialog = document.querySelector("#updateDialog");
 const closeUpdateButton = document.querySelector("#closeUpdateButton");
 const updateStatus = document.querySelector("#updateStatus");
@@ -281,6 +314,8 @@ const assistantPendingAttachmentsEl = document.querySelector("#assistantPendingA
 const assistantForm = document.querySelector("#assistantForm");
 const assistantModelSelect = document.querySelector("#assistantModelSelect");
 const assistantModelIcon = document.querySelector("#assistantModelIcon");
+const assistantAutoAttachReferencesToggle = document.querySelector("#assistantAutoAttachReferencesToggle");
+const assistantAutoGenerateToggle = document.querySelector("#assistantAutoGenerateToggle");
 const assistantInput = document.querySelector("#assistantInput");
 const assistantSendButton = document.querySelector("#assistantSendButton");
 const assistantStopButton = document.querySelector("#assistantStopButton");
@@ -350,6 +385,11 @@ const grokImagineModel = "grok-imagine-image";
 const legacyGrokImagineModel = "grok-image-image";
 const grokDefaultModel = "grok-3-image";
 const grokDefaultSize = "960x960";
+const grokBuildImageModel = "grok-build-image";
+const grokBuildVideoModel = "grok-build-video";
+const grokBuildAssistantPrefix = "grok-build-chat:";
+const grokBuildDefaultChatModel = "grok-4.5";
+const grokBuildImageRatioOptions = ["1:1", "16:9", "9:16", "3:2", "2:3"].map((ratio) => [ratio, `${ratio}（Grok 官方 1K）`]);
 const geminiBananaImageModel = "gemini-3.1-flash-image-preview";
 const geminiBananaImageAlias = "banana2";
 const geminiNativeDefaultRatio = "1:1";
@@ -374,12 +414,14 @@ const arkDefaultApiModels = {
   "ark-seedream-4.0": "doubao-seedream-4-0-250828",
   "ark-seedance-2.0": "doubao-seedance-2-0-260128",
   "ark-seedance-2.0-fast": "doubao-seedance-2-0-fast-260128",
-  "ark-seedance-2.0-mini": "doubao-seedance-2-0-mini"
+  "ark-seedance-2.0-mini": "doubao-seedance-2-0-mini",
+  "ark-seedance-2.5": "doubao-seedance-2-5-260628"
 };
 const arkVideoModelOptions = [
   ["ark-seedance-2.0", "Seedance 2.0（方舟）"],
   ["ark-seedance-2.0-fast", "Seedance 2.0 Fast（方舟）"],
-  ["ark-seedance-2.0-mini", "Seedance 2.0 Mini（方舟）"]
+  ["ark-seedance-2.0-mini", "Seedance 2.0 Mini（方舟）"],
+  ["ark-seedance-2.5", "Seedance 2.5（方舟）"]
 ];
 const dreaminaDefaultModel = "dreamina-5.0";
 const dreaminaDefaultSize = "1:1|2k";
@@ -398,6 +440,34 @@ const assistantModelOptions = [
   ["grok-4.3", "grok-4.3"],
   ["deepseek-v4-pro", "deepseek-v4-pro"]
 ];
+const storyAspectRatioOptions = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"].map((ratio) => [ratio, ratio]);
+const storyVisualStyleOptions = [
+  ["电影级写实", "电影级写实"],
+  ["真人影视", "真人影视"],
+  ["二维动画", "二维动画"],
+  ["三维动画", "三维动画"],
+  ["漫画分镜", "漫画分镜"],
+  ["游戏 CG", "游戏 CG"]
+];
+const storyAssetKindLabels = {
+  character: "人物",
+  scene: "场景",
+  prop: "道具",
+  costume: "服装",
+  vehicle: "载具",
+  creature: "生物"
+};
+const storyAssetRatioDefaults = {
+  character: "21:9",
+  scene: "16:9",
+  prop: "1:1",
+  costume: "9:16",
+  vehicle: "16:9",
+  creature: "1:1"
+};
+const storyAssetCompositionHints = {
+  character: "特写加三视图组合（正面特写，以及正面、侧面、背面三视图）"
+};
 const assistantPlanActionTypes = new Set([
   "create_task",
   "create_video_task",
@@ -459,6 +529,7 @@ let dreaminaEditModelVersions = fallbackDreaminaModelVersions.filter((version) =
 const dreaminaRatios = ["21:9", "16:9", "3:2", "4:3", "1:1", "3:4", "2:3", "9:16"];
 const dreaminaVideoModelOptions = [
   ...arkVideoModelOptions,
+  [grokBuildVideoModel, "Grok Imagine Video（官方账号）"],
   ["dreamina-video-seedance2.0fast", "Seedance 2.0 Fast"],
   ["dreamina-video-seedance2.0", "Seedance 2.0"],
   ["dreamina-video-seedance2.0mini", "Seedance 2.0 Mini"],
@@ -467,12 +538,14 @@ const dreaminaVideoModelOptions = [
 ];
 const dreaminaVideoRatioOptions = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"].map((ratio) => [ratio, ratio]);
 const arkVideoRatioOptions = [["adaptive", "自适应"], ...dreaminaVideoRatioOptions];
+const grokBuildVideoRatioOptions = ["16:9", "9:16", "1:1", "3:2", "2:3"].map((ratio) => [ratio, ratio]);
 const dreaminaVideoResolutionOptions = [
   ["720p", "720p"],
   ["1080p", "1080p（VIP）"]
 ];
 const arkVideoFullResolutionOptions = [["480p", "480p"], ["720p", "720p"], ["1080p", "1080p"], ["4k", "4K（10bit H.265）"]];
 const arkVideoCompactResolutionOptions = [["480p", "480p"], ["720p", "720p"]];
+const grokBuildVideoResolutionOptions = [["480p", "480p"], ["720p", "720p"]];
 const arkOptimizeOptions = [["standard", "标准"], ["fast", "快速"]];
 const arkStandardOptimizeOptions = [["standard", "标准"]];
 const arkSeedreamSizes = {
@@ -483,6 +556,7 @@ const arkSeedreamSizes = {
 };
 const baseTaskModelOptions = [
   ["gpt-image-2", "gpt-image-2"],
+  [grokBuildImageModel, "Grok Imagine（官方账号）"],
   [geminiBananaImageModel, geminiBananaImageAlias],
   [grsaiDefaultModel, grsaiDefaultModel],
   ...arkImageModelOptions,
@@ -520,7 +594,10 @@ let lastHistorySnapshot = "";
 let currentProjectId = "default";
 let currentProjectName = "未命名画布";
 let projectList = [];
+let batchDeleteSelectedProjectIds = new Set();
+const storyAnalysisControllers = new Map();
 let dreaminaStatus = { installed: false, loggedIn: false };
+let grokBuildStatusState = { installed: false, loggedIn: false, models: [] };
 let assistantMessages = [];
 let assistantSkills = [];
 let assistantBuiltInSkills = [];
@@ -533,6 +610,7 @@ let assistantSkillSearchQuery = "";
 let assistantChatBackupTimer = 0;
 let assistantCopyMenu = null;
 let assistantCopyText = "";
+let assistantBehavior = loadAssistantBehavior();
 let lastCanvasPointer = null;
 let photoshopBridgePollTimer = 0;
 let photoshopBridgeImporting = false;
@@ -544,6 +622,10 @@ let settingsConnectionKeyDrafts = {};
 let settingsConnectionClearKeys = new Set();
 let activeSettingsConnectionModel = "";
 const midjourneyPolls = new Map();
+const generationControllers = new Map();
+const canvasNodeElements = new Map();
+const canvasNodeById = new Map();
+const dragModelRects = new Map();
 let mediaVisibilityFrame = 0;
 let mediaQualityUpgradeTimer = 0;
 let canvasState = {
@@ -581,12 +663,14 @@ async function init() {
   await loadProjectById(preferredProjectId, { initial: true });
   applyPhotoshopBridgeAvailability();
   refreshDreaminaStatus();
+  refreshGrokBuildStatus();
   checkForUpdates({ automatic: true });
 }
 
 addTaskButton.addEventListener("click", () => addTaskNode("create"));
 addMidjourneyButton?.addEventListener("click", () => addMidjourneyNode());
 addDreaminaVideoButton?.addEventListener("click", () => addDreaminaVideoNode());
+addStoryBreakdownButton?.addEventListener("click", () => addStoryBreakdownNode());
 addArkAssetButton?.addEventListener("click", () => addArkAssetNode());
 addEditTaskButton?.addEventListener("click", () => addTaskNode("edit"));
 addGrokTaskButton?.addEventListener("click", () => addGrokTaskNode("create"));
@@ -606,7 +690,10 @@ addPortraitButton?.addEventListener("click", () => addPortraitNode());
 addCameraButton?.addEventListener("click", () => addCameraNode());
 addRegionButton?.addEventListener("click", () => addRegionNode());
 addChatGptButton?.addEventListener("click", addChatGptNode);
-assistantButton?.addEventListener("click", openAssistantPanel);
+assistantButton?.addEventListener("click", () => {
+  if (assistantPanel && !assistantPanel.hidden) closeAssistantPanel();
+  else openAssistantPanel();
+});
 themeToggleButton?.addEventListener("click", toggleTheme);
 assistantCloseButton?.addEventListener("click", closeAssistantPanel);
 assistantAnalyzeButton?.addEventListener("click", () =>
@@ -638,6 +725,8 @@ assistantStopButton?.addEventListener("click", stopAssistantResponse);
 assistantMessagesEl?.addEventListener("click", handleAssistantMessageClick);
 assistantMessagesEl?.addEventListener("contextmenu", handleAssistantMessageContextMenu);
 assistantModelSelect?.addEventListener("change", () => updateAssistantModelSelection(assistantModelSelect.value));
+assistantAutoAttachReferencesToggle?.addEventListener("change", updateAssistantBehaviorFromControls);
+assistantAutoGenerateToggle?.addEventListener("change", updateAssistantBehaviorFromControls);
 settingsConnectionModel?.addEventListener("change", () => {
   if (settingsConnectionModel.value === "__custom__") {
     settingsCustomModelRow.hidden = false;
@@ -701,6 +790,13 @@ zoomInButton.addEventListener("click", () => zoomAtCenter(canvasState.viewport.z
 zoomOutButton.addEventListener("click", () => zoomAtCenter(canvasState.viewport.zoom / 1.2));
 newProjectButton.addEventListener("click", () => createNewProject());
 saveProjectButton.addEventListener("click", () => saveProjectNow());
+deleteProjectButton.addEventListener("click", () => deleteCurrentProject());
+batchDeleteProjectButton?.addEventListener("click", openBatchDeleteProjectDialog);
+closeBatchDeleteProjectButton?.addEventListener("click", closeBatchDeleteProjectDialog);
+batchDeleteProjectForm?.addEventListener("submit", (event) => event.preventDefault());
+batchDeleteSelectAll?.addEventListener("change", toggleAllBatchDeleteProjects);
+batchDeleteProjectList?.addEventListener("change", updateBatchDeleteSelectionState);
+confirmBatchDeleteProjectButton?.addEventListener("click", deleteSelectedProjects);
 projectSelect.addEventListener("change", () => switchProject(projectSelect.value));
 projectNameInput.addEventListener("change", () => renameCurrentProject(projectNameInput.value));
 projectNameInput.addEventListener("keydown", (event) => {
@@ -712,6 +808,8 @@ projectNameInput.addEventListener("keydown", (event) => {
 settingsButton.addEventListener("click", openSettingsDialog);
 settingsGeneralTab?.addEventListener("click", () => setSettingsPage("general"));
 settingsArkTab?.addEventListener("click", () => setSettingsPage("ark"));
+settingsGrokBuildTab?.addEventListener("click", () => setSettingsPage("grok-build"));
+settingsDeepSeekTab?.addEventListener("click", () => setSettingsPage("deepseek"));
 window.ccCanvasDesktop?.onOpenSettings?.((payload) => openSettingsDialog(payload));
 checkUpdateButton?.addEventListener("click", () => checkForUpdates());
 closeSettingsButton.addEventListener("click", () => closeSettingsDialog());
@@ -720,6 +818,11 @@ dreaminaInstallButton?.addEventListener("click", () => runDreaminaAction("instal
 dreaminaLoginButton?.addEventListener("click", () => runDreaminaAction("login"));
 dreaminaReloginButton?.addEventListener("click", () => runDreaminaAction("relogin"));
 dreaminaRefreshButton?.addEventListener("click", () => refreshDreaminaStatus({ notify: true }));
+grokBuildInstallButton?.addEventListener("click", () => runGrokBuildAction("install"));
+grokBuildLoginButton?.addEventListener("click", () => runGrokBuildAction("login"));
+grokBuildReloginButton?.addEventListener("click", () => runGrokBuildAction("relogin"));
+grokBuildLogoutButton?.addEventListener("click", () => runGrokBuildAction("logout"));
+grokBuildRefreshButton?.addEventListener("click", () => refreshGrokBuildStatus({ notify: true }));
 copyDreaminaInstallButton?.addEventListener("click", () => copyDreaminaCommand("curl -s https://jimeng.jianying.com/cli | bash"));
 copyDreaminaLoginButton?.addEventListener("click", () => copyDreaminaCommand("dreamina login"));
 photoshopPluginDownloadButton?.addEventListener("click", openPhotoshopPluginDownload);
@@ -870,6 +973,21 @@ function addDreaminaVideoNode(point = null) {
 
   canvasState.nodes.push(node);
   selectOnly(node.id, { focusSelector: ".node-prompt" });
+  saveCanvasState();
+  updateCanvasMeta();
+  return node;
+}
+
+function addStoryBreakdownNode(point = null) {
+  const center = point || getViewportCenterWorld();
+  const offset = point ? 0 : canvasState.nodes.length % 8;
+  const node = createDefaultStoryBreakdownNode();
+  node.x = Math.round(center.x - node.width / 2 + offset * 28);
+  node.y = Math.round(center.y - defaultStoryBreakdownHeight / 2 + offset * 28);
+  node.z = ++canvasState.nextZ;
+
+  canvasState.nodes.push(node);
+  selectOnly(node.id, { revealControls: true });
   saveCanvasState();
   updateCanvasMeta();
   return node;
@@ -1135,21 +1253,35 @@ function applyTaskNodePreset(node, preset) {
   applyTaskModelDefaults(node, { force: preset === "grok" });
 }
 
-function applyTaskModelDefaults(node, options = {}) {
-  node.model = normalizeImageModelName(node.model || config.defaultModel || "gpt-image-2");
-  const wasGrok = node.provider === "grok";
-  const wasGrsai = node.provider === "grsai";
-  const wasDreamina = node.provider === "dreamina";
-  const wasArk = node.provider === "ark";
-  const isGrok = isGrokModelName(node.model);
-  const isGrsai = isGrsaiModelName(node.model);
-  const isDreamina = isDreaminaModelName(node.model);
-  const isGeminiNative = isGeminiNativeImageModelName(node.model);
-  const isArk = isArkImageModelName(node.model);
-  const seedreamProfile = seedreamImageProfileForModel(node.model);
-  node.provider = isGrok ? "grok" : isGrsai ? "grsai" : isDreamina ? "dreamina" : isGeminiNative ? "gemini" : isArk ? "ark" : "";
+function imageModelProfileKind(model) {
+  const normalized = normalizeImageModelName(model);
+  if (isDreaminaModelName(normalized)) return "dreamina";
+  if (isArkImageModelName(normalized)) return "ark";
+  if (seedreamImageProfileForModel(normalized)) return "seedream";
+  if (isGeminiNativeImageModelName(normalized)) return "gemini";
+  if (isGrsaiModelName(normalized)) return "grsai";
+  if (isGrokBuildImageModelName(normalized)) return "grok-build";
+  if (isGrokModelName(normalized)) return "grok";
+  return "openai";
+}
 
-  if (isDreamina) {
+function imageModelProviderName(kind) {
+  const providers = {
+    dreamina: "dreamina",
+    ark: "ark",
+    seedream: "",
+    gemini: "gemini",
+    grsai: "grsai",
+    "grok-build": "grok-build",
+    grok: "grok",
+    openai: ""
+  };
+  return providers[kind] || "";
+}
+
+const imageModelDefaultProfiles = {
+  dreamina: {
+    apply(node, options) {
     if (node.mode === "edit" && !dreaminaEditModelVersions.includes(dreaminaModelVersion(node.model))) {
       node.model = dreaminaDefaultModel;
     }
@@ -1166,7 +1298,11 @@ function applyTaskModelDefaults(node, options = {}) {
     node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
     delete node.extraParams.response_format;
     delete node.extraParams.replyType;
-  } else if (isArk) {
+    }
+  },
+  ark: {
+    apply(node, options, context) {
+    const seedreamProfile = context.seedreamProfile;
     node.size = compatibleArkImageSize(node.size, node.model);
     if (seedreamProfile === seedreamImageProfiles.PRO_5) node.n = "1";
     node.quality = arkOptimizeOptionsForModel(node.model).some(([value]) => value === node.quality)
@@ -1180,7 +1316,11 @@ function applyTaskModelDefaults(node, options = {}) {
     node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
     delete node.extraParams.response_format;
     delete node.extraParams.replyType;
-  } else if (seedreamProfile) {
+    }
+  },
+  seedream: {
+    apply(node, options, context) {
+    const seedreamProfile = context.seedreamProfile;
     node.size = compatibleArkImageSize(node.size, node.model);
     if (seedreamProfile === seedreamImageProfiles.PRO_5) node.n = "1";
     node.quality = "";
@@ -1190,11 +1330,14 @@ function applyTaskModelDefaults(node, options = {}) {
     node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
     delete node.extraParams.response_format;
     delete node.extraParams.replyType;
-    if ((wasGrok || wasGrsai || wasDreamina || wasArk) && options.modelChanged) {
+    if (["grok", "grok-build", "grsai", "dreamina", "ark"].includes(context.previousProvider) && options.modelChanged) {
       node.baseUrl = config.baseUrl || "https://yunwu.ai";
       node.endpointPath = defaultEndpointForMode(node.mode);
     }
-  } else if (isGrsai) {
+    }
+  },
+  grsai: {
+    apply(node, options) {
     node.model = isGrsaiModelName(node.model) ? node.model : grsaiDefaultModel;
     if (!isSizeAllowedForModel(node.size, node.model, node.mode)) {
       node.size = defaultSizeForModel(node.model, node.mode);
@@ -1206,7 +1349,10 @@ function applyTaskModelDefaults(node, options = {}) {
     node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
     node.extraParams.replyType = node.extraParams.replyType || "json";
     delete node.extraParams.response_format;
-  } else if (isGeminiNative) {
+    }
+  },
+  gemini: {
+    apply(node, options) {
     node.baseUrl = config.baseUrl || "https://yunwu.ai";
     node.endpointPath = geminiNativeEndpointForModel(node.model);
     const parsedSize = parseGeminiNativeSizeValue(node.size, node.quality);
@@ -1220,9 +1366,25 @@ function applyTaskModelDefaults(node, options = {}) {
     node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
     delete node.extraParams.response_format;
     delete node.extraParams.replyType;
-  } else if (isGrok) {
+    }
+  },
+  "grok-build": {
+    apply(node, options) {
+    if (!isSizeAllowedForModel(node.size, node.model, node.mode)) node.size = defaultSizeForModel(node.model, node.mode);
+    node.n = String(Math.min(4, Math.max(1, Number(node.n) || 1)));
+    node.quality = "";
+    node.format = "jpeg";
+    node.background = "";
+    node.moderation = "";
+    node.baseUrl = "";
+    node.endpointPath = "grok-build-cli";
+    node.extraParams = {};
+    }
+  },
+  grok: {
+    apply(node, options, context) {
     node.model = isGrokModelName(node.model) ? node.model : grokDefaultModel;
-    if (wasGrsai || wasDreamina) {
+    if (["grok-build", "grsai", "dreamina"].includes(context.previousProvider)) {
       node.baseUrl = config.baseUrl || "https://yunwu.ai";
       node.endpointPath = defaultEndpointForMode(node.mode);
     }
@@ -1239,27 +1401,48 @@ function applyTaskModelDefaults(node, options = {}) {
     } else if (options.force || options.modeChanged || options.modelChanged) {
       delete node.extraParams.response_format;
     }
-  } else {
+    }
+  },
+  openai: {
+    apply(node, options, context) {
     node.model = node.model || config.defaultModel || "gpt-image-2";
     if (!isSizeAllowedForModel(node.size, node.model, node.mode)) {
       node.size = defaultSizeForModel(node.model, node.mode);
     }
-    if (wasGrok || wasGrsai || wasDreamina || wasArk || options.modelChanged) {
+    if (["grok", "grok-build", "grsai", "dreamina", "ark"].includes(context.previousProvider) || options.modelChanged) {
       node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
       delete node.extraParams.response_format;
       delete node.extraParams.replyType;
     }
-    if ((wasGrsai || wasDreamina || wasArk) && options.modelChanged) {
+    if (["grok-build", "grsai", "dreamina", "ark"].includes(context.previousProvider) && options.modelChanged) {
       node.baseUrl = config.baseUrl || "https://yunwu.ai";
       node.endpointPath = defaultEndpointForMode(node.mode);
     }
+    }
   }
+};
+
+function applyTaskModelDefaults(node, options = {}) {
+  node.model = normalizeImageModelName(node.model || config.defaultModel || "gpt-image-2");
+  const kind = imageModelProfileKind(node.model);
+  const previousProvider = node.provider || "";
+  const seedreamProfile = seedreamImageProfileForModel(node.model);
+  node.provider = imageModelProviderName(kind);
+  imageModelDefaultProfiles[kind].apply(node, options, { previousProvider, seedreamProfile });
 
   node.extraParamsText = JSON.stringify(node.extraParams, null, 2);
 }
 
 function isGrokModelName(model) {
   return normalizeImageModelName(model).toLowerCase().startsWith("grok-");
+}
+
+function isGrokBuildImageModelName(model) {
+  return normalizeImageModelName(model).toLowerCase() === grokBuildImageModel;
+}
+
+function isGrokBuildVideoModelName(model) {
+  return String(model || "").trim().toLowerCase() === grokBuildVideoModel;
 }
 
 function normalizeImageModelName(model) {
@@ -1361,6 +1544,7 @@ function isGrsaiBaseUrl(value) {
 }
 
 function sizeOptionsForModel(model, mode = "create") {
+  if (isGrokBuildImageModelName(model)) return grokBuildImageRatioOptions;
   if (isDreaminaModelName(model)) return dreaminaSizeOptionsForModel(model, mode);
   const seedreamProfile = seedreamImageProfileForModel(model);
   if (seedreamProfile) return arkSeedreamSizes[seedreamProfile] || [["2K", "2K"]];
@@ -1377,6 +1561,7 @@ function dreaminaSizeOptionsForModel(model, mode = "create") {
 }
 
 function defaultSizeForModel(model, mode = "create") {
+  if (isGrokBuildImageModelName(model)) return "1:1";
   if (isDreaminaModelName(model)) return dreaminaDefaultSize;
   if (isSeedreamImageModelName(model)) return "2K";
   if (isGeminiNativeImageModelName(model)) return geminiNativeDefaultRatio;
@@ -1470,14 +1655,57 @@ function arkOptimizeOptionsForModel(model) {
 }
 
 function videoRatioOptionsForModel(model) {
+  if (isGrokBuildVideoModelName(model)) return grokBuildVideoRatioOptions;
   return isArkVideoModelName(model) ? arkVideoRatioOptions : dreaminaVideoRatioOptions;
 }
 
 function videoResolutionOptionsForModel(model) {
+  if (isGrokBuildVideoModelName(model)) return grokBuildVideoResolutionOptions;
   if (!isArkVideoModelName(model)) return dreaminaVideoResolutionOptions;
   return String(model).toLowerCase() === "ark-seedance-2.0"
     ? arkVideoFullResolutionOptions
     : arkVideoCompactResolutionOptions;
+}
+
+function videoDurationRangeForModel(model) {
+  if (isGrokBuildVideoModelName(model)) return { min: 6, max: 10, step: 1 };
+  return String(model).toLowerCase() === "ark-seedance-2.5"
+    ? { min: 4, max: 30, step: 1 }
+    : { min: 4, max: 15, step: 1 };
+}
+
+function normalizeVideoDurationForModel(value, model) {
+  const range = videoDurationRangeForModel(model);
+  if (isGrokBuildVideoModelName(model)) {
+    const options = [["6", "6 秒"], ["10", "10 秒"]];
+    const candidate = String(value || "").trim();
+    return options.some(([option]) => option === candidate) ? candidate : "6";
+  }
+  return String(clamp(Math.round(Number(value) || 5), range.min, range.max));
+}
+
+function isSupportedVideoModelName(model) {
+  return isDreaminaVideoModelName(model) || isArkVideoModelName(model) || isGrokBuildVideoModelName(model);
+}
+
+function videoTaskProvider(model) {
+  if (isArkVideoModelName(model)) return "ark";
+  if (isGrokBuildVideoModelName(model)) return "grok-build";
+  return "dreamina";
+}
+
+function videoTaskEndpoint(model) {
+  if (isArkVideoModelName(model)) return arkVideoEndpoint;
+  if (isGrokBuildVideoModelName(model)) return "grok-build-cli";
+  return "dreamina-video-cli";
+}
+
+function videoTaskBaseUrl(model) {
+  return isArkVideoModelName(model) ? config.arkBaseUrl || arkDefaultBaseUrl : "";
+}
+
+function videoReferenceLimit(model) {
+  return isGrokBuildVideoModelName(model) ? 7 : 9;
 }
 
 function createDefaultTaskNode(mode = "create") {
@@ -1495,6 +1723,7 @@ function createDefaultTaskNode(mode = "create") {
     baseUrl: config.baseUrl || "https://yunwu.ai",
     endpointPath: defaultEndpointForMode(normalizedMode),
     connectionOverride: false,
+    apiKeyOverride: "",
     mode: normalizedMode,
     background: "",
     moderation: "",
@@ -1577,6 +1806,7 @@ function createDefaultVideoTaskNode() {
     format: "mp4",
     baseUrl: "",
     endpointPath: "dreamina-video-cli",
+    apiKeyOverride: "",
     mode: "video",
     extraParams: {},
     extraParamsText: "{}",
@@ -1600,6 +1830,121 @@ function createDefaultVideoTaskNode() {
     z: 1,
     createdAt: new Date().toISOString()
   };
+}
+
+function createDefaultStoryBreakdownNode() {
+  const imageModel = config.defaultModel || "gpt-image-2";
+  const videoModel = dreaminaVideoDefaultModel;
+  return {
+    id: createId(),
+    type: "story-breakdown",
+    title: "剧本拆解",
+    script: "",
+    scriptFileName: "",
+    instructions: "",
+    model: config.assistantModel || assistantDefaultModel,
+    aspectRatio: "16:9",
+    visualStyle: "电影级写实",
+    imageModel,
+    imageSize: defaultSizeForModel(imageModel, "create"),
+    assetRatioByKind: normalizeStoryAssetRatios({}),
+    videoModel,
+    videoSize: dreaminaVideoDefaultRatio,
+    videoQuality: dreaminaVideoDefaultResolution,
+    videoDuration: dreaminaVideoDefaultDuration,
+    result: null,
+    activeTab: "assets",
+    selectedAssetIds: [],
+    selectedStoryboardShotIds: [],
+    selectedVideoShotIds: [],
+    analysisVersion: "",
+    status: "idle",
+    error: "",
+    width: defaultStoryBreakdownWidth,
+    x: 0,
+    y: 0,
+    z: 1,
+    createdAt: new Date().toISOString()
+  };
+}
+
+function normalizeStoryBreakdownResult(value) {
+  if (!value || typeof value !== "object") return null;
+  const assetIds = new Set();
+  const assetAliases = new Map();
+  const assets = (Array.isArray(value.assets) ? value.assets : []).slice(0, 80).map((asset, index) => {
+    const id = uniqueStoryItemId(asset?.id || asset?.name, "asset", index, assetIds);
+    const kind = Object.prototype.hasOwnProperty.call(storyAssetKindLabels, asset?.kind) ? asset.kind : "prop";
+    const normalized = {
+      id,
+      kind,
+      name: String(asset?.name || `${storyAssetKindLabels[kind]} ${index + 1}`),
+      description: String(asset?.description || ""),
+      prompt: String(asset?.prompt || asset?.description || ""),
+      negativePrompt: String(asset?.negativePrompt || ""),
+      requiredByShotIds: dedupeStrings(asset?.requiredByShotIds || [])
+    };
+    for (const alias of [asset?.id, asset?.name, id].map((item) => String(item || "").trim()).filter(Boolean)) {
+      assetAliases.set(alias, id);
+    }
+    return normalized;
+  });
+  const shotIds = new Set();
+  const shotAliases = new Map();
+  const shots = (Array.isArray(value.shots) ? value.shots : []).slice(0, 120).map((shot, index) => {
+    const id = uniqueStoryItemId(shot?.id || shot?.title, "shot", index, shotIds);
+    const normalized = {
+      id,
+      scene: String(shot?.scene || shot?.sceneTitle || ""),
+      title: String(shot?.title || `镜头 ${index + 1}`),
+      sourceText: String(shot?.sourceText || shot?.sourceSpan?.text || ""),
+      durationSec: clamp(Number(shot?.durationSec) || 5, 3, 15),
+      characters: dedupeStrings(shot?.characters || shot?.entityRefs || []),
+      assetIds: dedupeStrings(shot?.assetIds || []).map((assetId) => assetAliases.get(assetId) || assetId),
+      imagePrompt: String(shot?.imagePrompt || shot?.visualDescription || ""),
+      videoPrompt: String(shot?.videoPrompt || shot?.finalPrompt || shot?.visualDescription || ""),
+      dialogue: String(shot?.dialogue || ""),
+      camera: String(shot?.camera || ""),
+      lighting: String(shot?.lighting || "")
+    };
+    for (const alias of [shot?.id, shot?.title, id].map((item) => String(item || "").trim()).filter(Boolean)) {
+      shotAliases.set(alias, id);
+    }
+    return normalized;
+  });
+  const validAssetIds = new Set(assets.map((asset) => asset.id));
+  const validShotIds = new Set(shots.map((shot) => shot.id));
+  shots.forEach((shot) => {
+    shot.assetIds = dedupeStrings(shot.assetIds).filter((id) => validAssetIds.has(id));
+  });
+  assets.forEach((asset) => {
+    asset.requiredByShotIds = dedupeStrings(asset.requiredByShotIds)
+      .map((shotId) => shotAliases.get(shotId) || shotId)
+      .filter((id) => validShotIds.has(id));
+  });
+  return {
+    schema: "cc-story-breakdown-v1",
+    title: String(value.title || "未命名剧本"),
+    logline: String(value.logline || value.summary || ""),
+    productionNotes: String(value.productionNotes || ""),
+    styleBible: String(value.styleBible || ""),
+    assets,
+    shots
+  };
+}
+
+function uniqueStoryItemId(value, prefix, index, seen) {
+  const base = String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/gu, "-")
+    .replace(/-+/gu, "-")
+    .replace(/^-|-$/gu, "")
+    .slice(0, 64) || `${prefix}-${index + 1}`;
+  let id = base;
+  let suffix = 2;
+  while (seen.has(id)) id = `${base}-${suffix++}`;
+  seen.add(id);
+  return id;
 }
 
 function addNoteNode(point = null) {
@@ -1746,6 +2091,8 @@ async function generateNode(nodeId) {
     await cacheEditFiles(node.id);
   }
 
+  const controller = new AbortController();
+  generationControllers.set(node.id, controller);
   node.status = "running";
   node.error = "";
   node.debugOpen = false;
@@ -1758,7 +2105,8 @@ async function generateNode(nodeId) {
   try {
     const response = await fetch("/api/generate", {
       method: "POST",
-      ...buildNodeRequest(node)
+      ...buildNodeRequest(node),
+      signal: controller.signal
     });
     const data = await response.json();
     rawResponse.textContent = JSON.stringify(data.raw || data, null, 2);
@@ -1786,10 +2134,12 @@ async function generateNode(nodeId) {
     node.error = "";
     removeGeneratedTaskNode(node.id);
   } catch (error) {
-    node.status = "error";
-    node.error = error.message || "生成失败";
-    showToast(node.error);
+    const stopped = controller.signal.aborted || error?.name === "AbortError";
+    node.status = stopped ? "idle" : "error";
+    node.error = stopped ? "已停止" : error.message || "生成失败";
+    if (!stopped) showToast(node.error);
   } finally {
+    if (generationControllers.get(node.id) === controller) generationControllers.delete(node.id);
     renderCanvas();
     saveCanvasState();
     updateCanvasMeta();
@@ -1815,6 +2165,8 @@ async function generateMidjourneyNode(nodeId) {
     showToast(`Midjourney 最多支持 ${midjourneyPromptMaxLength} 个字符，超出部分已自动裁剪`);
   }
 
+  const controller = new AbortController();
+  generationControllers.set(node.id, controller);
   node.status = "running";
   node.error = "";
   node.taskStatus = "SUBMITTED";
@@ -1838,7 +2190,8 @@ async function generateMidjourneyNode(nodeId) {
         cachedImages: node.cachedImages || [],
         extraParams: node.extraParams || {},
         state: node.id
-      })
+      }),
+      signal: controller.signal
     });
     const data = await readJsonResponse(response);
     rawResponse.textContent = JSON.stringify(data.raw || data, null, 2);
@@ -1851,15 +2204,18 @@ async function generateMidjourneyNode(nodeId) {
       showToast(`Midjourney 最多支持 ${data.promptMaxLength || midjourneyPromptMaxLength} 个字符，服务端已自动裁剪`);
     }
     saveCanvasState({ history: false });
-    await pollMidjourneyTask(node.id);
+    await pollMidjourneyTask(node.id, controller.signal);
   } catch (error) {
-    node.status = "error";
-    node.error = error.message || "Midjourney 生成失败";
-    node.progress = "";
-    showToast(node.error);
+    const stopped = controller.signal.aborted || error?.name === "AbortError";
+    node.status = stopped ? "idle" : "error";
+    node.error = stopped ? "已停止" : error.message || "Midjourney 生成失败";
+    node.progress = stopped ? "" : "";
+    if (!stopped) showToast(node.error);
     updateNode(node);
     saveCanvasState();
     updateCanvasMeta();
+  } finally {
+    if (generationControllers.get(node.id) === controller) generationControllers.delete(node.id);
   }
 }
 
@@ -1926,6 +2282,8 @@ async function runMidjourneyAction(nodeId, button) {
   saveCanvasState({ history: false });
   updateCanvasMeta();
 
+  const controller = new AbortController();
+  generationControllers.set(node.id, controller);
   try {
     const response = await fetch("/api/midjourney/action", {
       method: "POST",
@@ -1935,7 +2293,8 @@ async function runMidjourneyAction(nodeId, button) {
         customId: button.customId,
         speed: node.speed,
         state: node.id
-      })
+      }),
+      signal: controller.signal
     });
     const data = await readJsonResponse(response);
     rawResponse.textContent = JSON.stringify(data.raw || data, null, 2);
@@ -1945,30 +2304,37 @@ async function runMidjourneyAction(nodeId, button) {
     node.taskAction = midjourneyButtonLabel(button);
     node.progress = "已提交";
     saveCanvasState({ history: false });
-    await pollMidjourneyTask(node.id);
+    await pollMidjourneyTask(node.id, controller.signal);
   } catch (error) {
-    node.status = "error";
-    node.error = error.message || "Midjourney 动作失败";
+    const stopped = controller.signal.aborted || error?.name === "AbortError";
+    node.status = stopped ? "idle" : "error";
+    node.error = stopped ? "已停止" : error.message || "Midjourney 动作失败";
     node.progress = "";
-    showToast(node.error);
+    if (!stopped) showToast(node.error);
     updateNode(node);
     saveCanvasState();
     updateCanvasMeta();
+  } finally {
+    if (generationControllers.get(node.id) === controller) generationControllers.delete(node.id);
   }
 }
 
-async function pollMidjourneyTask(nodeId) {
+async function pollMidjourneyTask(nodeId, signal) {
   if (midjourneyPolls.has(nodeId)) return midjourneyPolls.get(nodeId);
-  const promise = pollMidjourneyTaskLoop(nodeId).finally(() => midjourneyPolls.delete(nodeId));
+  const promise = pollMidjourneyTaskLoop(nodeId, signal).finally(() => midjourneyPolls.delete(nodeId));
   midjourneyPolls.set(nodeId, promise);
   return promise;
 }
 
-async function pollMidjourneyTaskLoop(nodeId) {
+async function pollMidjourneyTaskLoop(nodeId, signal) {
   for (let attempt = 0; attempt < 360; attempt += 1) {
     const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "midjourney-task");
     if (!node || !node.taskId) return;
-    if (attempt) await waitFor(2000);
+    if (signal?.aborted) return;
+    if (attempt) {
+      await waitFor(2000);
+      if (signal?.aborted) return;
+    }
 
     const response = await fetch("/api/midjourney/task", {
       method: "POST",
@@ -1977,7 +2343,8 @@ async function pollMidjourneyTaskLoop(nodeId) {
         projectId: currentProjectId,
         taskId: node.taskId,
         speed: node.speed
-      })
+      }),
+      signal
     });
     const data = await readJsonResponse(response);
     if (!response.ok || data.parseError) throw new Error(data.error || "Midjourney 任务查询失败");
@@ -2190,6 +2557,8 @@ async function generateVideoNode(nodeId) {
     await cacheEditFiles(node.id);
   }
 
+  const controller = new AbortController();
+  generationControllers.set(node.id, controller);
   node.status = "running";
   node.error = "";
   node.z = ++canvasState.nextZ;
@@ -2201,7 +2570,8 @@ async function generateVideoNode(nodeId) {
   try {
     const response = await fetch("/api/generate", {
       method: "POST",
-      ...buildNodeRequest(node)
+      ...buildNodeRequest(node),
+      signal: controller.signal
     });
     const data = await response.json();
     rawResponse.textContent = JSON.stringify(data.raw || data, null, 2);
@@ -2222,10 +2592,12 @@ async function generateVideoNode(nodeId) {
     node.error = "";
     removeGeneratedTaskNode(node.id);
   } catch (error) {
-    node.status = "error";
-    node.error = error.message || "视频生成失败";
-    showToast(node.error);
+    const stopped = controller.signal.aborted || error?.name === "AbortError";
+    node.status = stopped ? "idle" : "error";
+    node.error = stopped ? "已停止" : error.message || "视频生成失败";
+    if (!stopped) showToast(node.error);
   } finally {
+    if (generationControllers.get(node.id) === controller) generationControllers.delete(node.id);
     renderCanvas();
     saveCanvasState();
     updateCanvasMeta();
@@ -2233,10 +2605,33 @@ async function generateVideoNode(nodeId) {
 }
 
 function removeGeneratedTaskNode(nodeId) {
-  canvasState.nodes = canvasState.nodes.filter((item) => item.id !== nodeId);
+  generationControllers.get(nodeId)?.abort();
+  generationControllers.delete(nodeId);
+  setCanvasNodes(canvasState.nodes.filter((item) => item.id !== nodeId));
   selectedNodeIds.delete(nodeId);
   fileStore.delete(nodeId);
   if (referencePickTargetNodeId === nodeId) referencePickTargetNodeId = null;
+}
+
+function stopGenerationNode(nodeId) {
+  const controller = generationControllers.get(nodeId);
+  if (!controller) return false;
+  controller.abort();
+  generationControllers.delete(nodeId);
+  const node = canvasState.nodes.find((item) => item.id === nodeId);
+  if (node && node.status === "running") {
+    node.status = "idle";
+    node.error = "已停止";
+    if (node.type === "midjourney-task") {
+      node.progress = "";
+      node.taskStatus = "";
+    }
+    updateNode(node);
+    saveCanvasState();
+    updateCanvasMeta();
+  }
+  showToast("已停止生成");
+  return true;
 }
 
 function buildNodeRequest(node) {
@@ -2298,6 +2693,7 @@ function buildNodePayload(node) {
     baseUrl: node.baseUrl,
     endpointPath: node.endpointPath || defaultEndpointForMode(node.mode),
     connectionOverride: Boolean(node.connectionOverride),
+    apiKeyOverride: node.apiKeyOverride || "",
     extraParams: node.extraParams || {},
     arkAssetUris: node.arkAssetUris || [],
     cachedImages: node.cachedImages || [],
@@ -2319,6 +2715,7 @@ function appendNodeFields(formData, node, options = {}) {
   formData.append("baseUrl", node.baseUrl);
   formData.append("endpointPath", node.endpointPath || defaultEndpointForMode(node.mode));
   formData.append("connectionOverride", String(Boolean(node.connectionOverride)));
+  formData.append("apiKeyOverride", node.apiKeyOverride || "");
   formData.append("extraParams", JSON.stringify(node.extraParams || {}));
   if (node.arkAssetUris?.length) {
     formData.append("arkAssetUris", JSON.stringify(node.arkAssetUris));
@@ -2449,6 +2846,10 @@ function createImageNodesForTask(taskNode, images) {
       image,
       sourceTaskId: taskNode.id,
       sourceImageKey: key,
+      storyNodeId: taskNode.storyNodeId || "",
+      storyItemId: taskNode.storyItemId || "",
+      storyOutputKind: taskNode.storyOutputKind || "",
+      storyAnalysisVersion: taskNode.storyAnalysisVersion || "",
       originalWidth: dimensions.width || 512,
       originalHeight: dimensions.height || 512,
       scale,
@@ -2488,6 +2889,10 @@ function createVideoNodesForTask(taskNode, videos) {
       video,
       sourceTaskId: taskNode.id,
       sourceVideoKey: key,
+      storyNodeId: taskNode.storyNodeId || "",
+      storyItemId: taskNode.storyItemId || "",
+      storyOutputKind: taskNode.storyOutputKind || "",
+      storyAnalysisVersion: taskNode.storyAnalysisVersion || "",
       originalWidth: dimensions.width,
       originalHeight: dimensions.height,
       scale: defaultVideoScale,
@@ -2742,6 +3147,10 @@ function fillAssistantModelSelect(select, value) {
   if (!select) return;
   const selected = String(value || assistantDefaultModel).trim() || assistantDefaultModel;
   const options = [...assistantModelOptions];
+  for (const grokModel of config.grokBuildModels || []) {
+    const model = `${grokBuildAssistantPrefix}${grokModel}`;
+    options.push([model, `${grokModel}（Grok 官方账号）`]);
+  }
   for (const definition of config.connectionModels || []) {
     if (definition.capability !== "chat") continue;
     if (!options.some(([model]) => model === definition.model)) {
@@ -3126,15 +3535,23 @@ function captureArkSettingsDrafts() {
 
 function setSettingsPage(page) {
   const ark = page === "ark";
-  for (const section of settingsGeneralSections) section.hidden = ark;
+  const grokBuild = page === "grok-build";
+  const deepSeek = page === "deepseek";
+  for (const section of settingsGeneralSections) section.hidden = ark || grokBuild || deepSeek;
   if (settingsArkSection) settingsArkSection.hidden = !ark;
-  settingsGeneralTab?.classList.toggle("is-active", !ark);
+  if (settingsGrokBuildSection) settingsGrokBuildSection.hidden = !grokBuild;
+  if (settingsDeepSeekSection) settingsDeepSeekSection.hidden = !deepSeek;
+  settingsGeneralTab?.classList.toggle("is-active", !ark && !grokBuild && !deepSeek);
   settingsArkTab?.classList.toggle("is-active", ark);
-  settingsGeneralTab?.setAttribute("aria-selected", String(!ark));
+  settingsGrokBuildTab?.classList.toggle("is-active", grokBuild);
+  settingsDeepSeekTab?.classList.toggle("is-active", deepSeek);
+  settingsGeneralTab?.setAttribute("aria-selected", String(!ark && !grokBuild && !deepSeek));
   settingsArkTab?.setAttribute("aria-selected", String(ark));
+  settingsGrokBuildTab?.setAttribute("aria-selected", String(grokBuild));
+  settingsDeepSeekTab?.setAttribute("aria-selected", String(deepSeek));
   const form = settingsDialog?.querySelector("form");
   if (form) form.scrollTop = 0;
-  window.setTimeout(() => (ark ? settingsArkApiKey : settingsConnectionModel)?.focus(), 0);
+  window.setTimeout(() => (ark ? settingsArkApiKey : grokBuild ? settingsGrokBuildProxy : deepSeek ? settingsDeepSeekApiKey : settingsConnectionModel)?.focus(), 0);
 }
 
 function openSettingsDialog(request = {}) {
@@ -3155,6 +3572,12 @@ function openSettingsDialog(request = {}) {
   settingsDefaultModel.value = taskModelSettingsValue(config.defaultModel || "gpt-image-2");
   renderAssistantModelSelectors();
   settingsCacheDir.value = config.cacheDir || "";
+  if (settingsGrokBuildProxy) settingsGrokBuildProxy.value = config.grokBuildProxyUrl || "";
+  const deepSeekConnection = config.modelConnections?.["deepseek-v4-pro"] || {};
+  if (settingsDeepSeekBaseUrl) settingsDeepSeekBaseUrl.value = deepSeekConnection.baseUrl || "https://api.deepseek.com";
+  if (settingsDeepSeekModel) settingsDeepSeekModel.value = deepSeekConnection.apiModel || "deepseek-v4-pro";
+  if (settingsDeepSeekApiKey) settingsDeepSeekApiKey.value = "";
+  if (settingsDeepSeekStatus) settingsDeepSeekStatus.textContent = config.modelKeys?.["deepseek-v4-pro"] ? "已配置 Key" : "尚未配置 Key";
   if (settingsPhotoshopBridgeEnabled) {
     settingsPhotoshopBridgeEnabled.checked = Boolean(config.photoshopBridgeEnabled);
   }
@@ -3162,10 +3585,11 @@ function openSettingsDialog(request = {}) {
   const modelKeyCount = Object.values(config.modelKeys || {}).filter(Boolean).length;
   const keyCount = Number(Boolean(config.hasApiKey)) + Number(Boolean(config.hasArkApiKey)) + Number(Boolean(config.hasGrsaiApiKey)) + modelKeyCount;
   settingsStatus.textContent = keyCount ? `Key 已配置（${keyCount} 个）` : "Key 未配置";
-  setSettingsPage(requestedModel.startsWith("ark-") ? "ark" : "general");
+  setSettingsPage(requestedModel.startsWith("ark-") ? "ark" : requestedModel.startsWith("grok-build-") ? "grok-build" : requestedModel.includes("deepseek") ? "deepseek" : "general");
   pauseChatGptHost();
   if (!settingsDialog.open) settingsDialog.showModal();
   refreshDreaminaStatus();
+  refreshGrokBuildStatus();
 }
 
 function closeSettingsDialog() {
@@ -3179,6 +3603,90 @@ function openPhotoshopPluginDownload() {
     return;
   }
   window.open(photoshopPluginReleaseUrl, "_blank", "noreferrer");
+}
+
+async function refreshGrokBuildStatus(options = {}) {
+  if (!grokBuildStatusText) return null;
+  grokBuildStatusText.textContent = "检测中";
+  setGrokBuildBusy(true);
+  try {
+    const response = await fetch("/api/grok-build/status");
+    const data = await readJsonResponse(response);
+    renderGrokBuildStatus(data);
+    if (options.notify) showToast(data.loggedIn ? "Grok 官方账号连接正常" : data.error || "Grok Build 尚未登录");
+    return data;
+  } catch (error) {
+    const data = { installed: false, loggedIn: false, models: [], error: error.message || "Grok Build 状态读取失败" };
+    renderGrokBuildStatus(data);
+    if (options.notify) showToast(data.error);
+    return data;
+  } finally {
+    setGrokBuildBusy(false);
+  }
+}
+
+function renderGrokBuildStatus(data = {}) {
+  const installed = Boolean(data.installed);
+  const loggedIn = Boolean(data.loggedIn);
+  const models = Array.isArray(data.models) ? data.models.filter(Boolean) : [];
+  grokBuildStatusState = { ...data, installed, loggedIn, models };
+  grokBuildStatusText.textContent = !installed ? "未安装" : loggedIn ? "已登录" : "未登录";
+  const meta = [];
+  if (data.version) meta.push(`v${data.version}`);
+  if (models.length) meta.push(`可用模型 ${models.join("、")}`);
+  if (!meta.length && data.error) meta.push(data.error);
+  grokBuildAccountMeta.textContent = meta.join(" · ");
+  config.grokBuildLoggedIn = loggedIn;
+  config.grokBuildModels = models;
+  renderAssistantModelSelectors();
+  updateGrokBuildButtons();
+}
+
+function updateGrokBuildButtons(isBusy = false, action = "") {
+  if (grokBuildInstallButton) {
+    grokBuildInstallButton.disabled = isBusy;
+    grokBuildInstallButton.textContent = isBusy && action === "install" ? "打开中..." : grokBuildStatusState.installed ? "更新 Grok CLI" : "安装 Grok CLI";
+  }
+  if (grokBuildLoginButton) grokBuildLoginButton.disabled = isBusy || !grokBuildStatusState.installed;
+  if (grokBuildReloginButton) grokBuildReloginButton.disabled = isBusy || !grokBuildStatusState.installed;
+  if (grokBuildLogoutButton) grokBuildLogoutButton.disabled = isBusy || !grokBuildStatusState.loggedIn;
+  if (grokBuildRefreshButton) grokBuildRefreshButton.disabled = isBusy;
+}
+
+function setGrokBuildBusy(isBusy, action = "") {
+  updateGrokBuildButtons(isBusy, action);
+}
+
+async function runGrokBuildAction(action) {
+  const labels = { install: "安装/更新 Grok Build", login: "登录 Grok", relogin: "切换 Grok 账号", logout: "退出 Grok 登录" };
+  setGrokBuildBusy(true, action);
+  setGrokBuildActionProgress(
+    action === "install" ? "正在打开官方 CLI 安装/更新窗口..." : action === "relogin" ? "正在打开账号切换窗口..." : action === "logout" ? "正在打开退出登录窗口..." : "正在打开设备授权窗口...",
+    "active"
+  );
+  try {
+    const response = await fetch(`/api/grok-build/${action}`, { method: "POST" });
+    const data = await readJsonResponse(response);
+    if (!response.ok || data.parseError) throw new Error(data.error || `${labels[action]}启动失败`);
+    setGrokBuildActionProgress(`${data.message || labels[action]} 完成终端操作后点击“测试连接”。`, "done");
+    showToast(data.message || `${labels[action]}窗口已打开`);
+    window.setTimeout(() => refreshGrokBuildStatus(), action === "logout" ? 2500 : 5000);
+  } catch (error) {
+    setGrokBuildActionProgress(`${labels[action]}失败：${error.message || error}`, "error");
+    showToast(error.message || `${labels[action]}失败`);
+  } finally {
+    setGrokBuildBusy(false);
+  }
+}
+
+function setGrokBuildActionProgress(message, state = "active") {
+  if (!grokBuildActionProgress || !grokBuildActionText) return;
+  grokBuildActionProgress.hidden = false;
+  grokBuildActionProgress.classList.toggle("is-active", state === "active");
+  grokBuildActionProgress.classList.toggle("is-done", state === "done");
+  grokBuildActionProgress.classList.toggle("is-error", state === "error");
+  if (grokBuildActionBar) grokBuildActionBar.style.width = state === "active" ? "" : "100%";
+  grokBuildActionText.textContent = message;
 }
 
 async function refreshDreaminaStatus(options = {}) {
@@ -3368,6 +3876,16 @@ async function saveSettings(event) {
     captureSettingsConnectionDraft();
     captureSettingsConnectionKeyDraft();
     captureArkSettingsDrafts();
+    const deepSeekConnection = { ...(settingsConnectionDrafts["deepseek-v4-pro"] || {}) };
+    deepSeekConnection.preset = "deepseek";
+    deepSeekConnection.capability = "chat";
+    deepSeekConnection.protocol = "openai-chat";
+    deepSeekConnection.authType = "bearer";
+    deepSeekConnection.apiModel = settingsDeepSeekModel?.value.trim() || "deepseek-v4-pro";
+    deepSeekConnection.baseUrl = settingsDeepSeekBaseUrl?.value.trim() || "https://api.deepseek.com";
+    deepSeekConnection.chatEndpoint = "/chat/completions";
+    settingsConnectionDrafts["deepseek-v4-pro"] = deepSeekConnection;
+    if (settingsDeepSeekApiKey?.value.trim()) settingsConnectionKeyDrafts["deepseek-v4-pro"] = settingsDeepSeekApiKey.value.trim();
     const modelApiKeys = Object.fromEntries(
       Object.entries(settingsConnectionKeyDrafts).filter(([, value]) => Boolean(value))
     );
@@ -3389,6 +3907,7 @@ async function saveSettings(event) {
       modelConnections: settingsConnectionDrafts,
       defaultModel: settingsDefaultModel.value.trim(),
       assistantModel: settingsAssistantModel.value,
+      grokBuildProxyUrl: settingsGrokBuildProxy?.value.trim() || "",
       cacheDir: settingsCacheDir.value.trim(),
       photoshopBridgeEnabled: Boolean(settingsPhotoshopBridgeEnabled?.checked)
     };
@@ -3416,6 +3935,7 @@ async function saveSettings(event) {
       chatEndpoint: data.chatEndpoint,
       defaultModel: data.defaultModel,
       assistantModel: data.assistantModel,
+      grokBuildProxyUrl: data.grokBuildProxyUrl,
       modelKeys: data.modelKeys,
       connectionModels: data.connectionModels,
       connectionPresets: data.connectionPresets,
@@ -3654,10 +4174,46 @@ function openAssistantPanel() {
   pauseChatGptHost();
   assistantPanel.hidden = false;
   document.body.classList.add("assistant-open");
+  syncAssistantBehaviorControls();
   renderAssistantSkillLibrary();
   renderAssistantPendingAttachments();
   renderAssistantMessages();
   window.setTimeout(() => assistantInput?.focus(), 0);
+}
+
+function loadAssistantBehavior() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(assistantBehaviorStorageKey) || "{}");
+    return {
+      autoAttachReferences: stored.autoAttachReferences !== false,
+      autoGenerate: stored.autoGenerate === true
+    };
+  } catch {
+    return { autoAttachReferences: true, autoGenerate: false };
+  }
+}
+
+function saveAssistantBehavior() {
+  try {
+    localStorage.setItem(assistantBehaviorStorageKey, JSON.stringify(assistantBehavior));
+  } catch {
+    // The switches still work for this session if browser storage is unavailable.
+  }
+}
+
+function syncAssistantBehaviorControls() {
+  if (assistantAutoAttachReferencesToggle) {
+    assistantAutoAttachReferencesToggle.checked = assistantBehavior.autoAttachReferences;
+  }
+  if (assistantAutoGenerateToggle) assistantAutoGenerateToggle.checked = assistantBehavior.autoGenerate;
+}
+
+function updateAssistantBehaviorFromControls() {
+  assistantBehavior = {
+    autoAttachReferences: Boolean(assistantAutoAttachReferencesToggle?.checked),
+    autoGenerate: Boolean(assistantAutoGenerateToggle?.checked)
+  };
+  saveAssistantBehavior();
 }
 
 function closeAssistantPanel() {
@@ -3665,6 +4221,7 @@ function closeAssistantPanel() {
   document.body.classList.remove("assistant-open");
   closeAssistantSkillLibrary();
   resumeChatGptHost();
+  canvasViewport?.focus({ preventScroll: true });
 }
 
 function toggleAssistantSkillLibrary() {
@@ -4381,6 +4938,7 @@ async function sendAssistantPrompt(content, options = {}) {
     ? cloneAssistantAttachments(options.attachments)
     : consumeAssistantPendingImages();
   const mode = options.mode || inferAssistantMessageMode(content);
+  const selectedReferenceImageIds = selectedAssistantReferenceImageIds();
   assistantMessages.push({
     id: createId(),
     role: "user",
@@ -4395,14 +4953,16 @@ async function sendAssistantPrompt(content, options = {}) {
 
   const localPlan = options.localPlan === true ? createLocalAssistantPlan(content, mode) : null;
   if (localPlan) {
-    assistantMessages.push({
+    const assistantMessage = {
       id: createId(),
       role: "assistant",
       content: localPlan.summary,
       plan: localPlan,
       retryOf: options.retryOf || "",
       createdAt: new Date().toISOString()
-    });
+    };
+    assistantMessages.push(assistantMessage);
+    await autoApplyAssistantPlanMessage(assistantMessage, selectedReferenceImageIds);
     saveAssistantChat();
     renderAssistantMessages();
     return;
@@ -4435,14 +4995,16 @@ async function sendAssistantPrompt(content, options = {}) {
       createAssistantFallbackPlan(content, mode, assistantContent) ||
       createAssistantSummaryFallbackPlan(content, assistantContent);
     const responseContent = extractedPlan.content || assistantContent || responsePlan?.summary || "";
-    assistantMessages.push({
+    const assistantMessage = {
       id: createId(),
       role: "assistant",
       content: responseContent,
       plan: responsePlan,
       retryOf: options.retryOf || "",
       createdAt: new Date().toISOString()
-    });
+    };
+    assistantMessages.push(assistantMessage);
+    await autoApplyAssistantPlanMessage(assistantMessage, selectedReferenceImageIds);
     saveAssistantChat();
   } catch (error) {
     const stopped = error?.name === "AbortError";
@@ -4460,6 +5022,39 @@ async function sendAssistantPrompt(content, options = {}) {
     assistantAbortController = null;
     setAssistantBusy(false);
     renderAssistantMessages();
+  }
+}
+
+function selectedAssistantReferenceImageIds() {
+  if (!assistantBehavior.autoAttachReferences) return [];
+  return canvasState.nodes
+    .filter((node) => node.type === "image" && node.image?.url && selectedNodeIds.has(node.id))
+    .map((node) => node.id);
+}
+
+async function autoApplyAssistantPlanMessage(message, selectedReferenceImageIds = []) {
+  const plan = message?.plan;
+  if (!assistantBehavior.autoGenerate || !Array.isArray(plan?.actions) || !plan.actions.length || plan.applied || plan.ignored) {
+    return false;
+  }
+
+  plan.applying = true;
+  plan.autoApplied = true;
+  renderAssistantMessages();
+  try {
+    const applied = await applyAssistantPlan(plan, {
+      skipConfirmation: true,
+      selectedReferenceImageIds: assistantBehavior.autoAttachReferences ? selectedReferenceImageIds : []
+    });
+    plan.applied = applied;
+    if (!applied) plan.autoApplied = false;
+    return applied;
+  } catch (error) {
+    plan.autoApplied = false;
+    showToast(error.message || "自动应用助手计划失败");
+    return false;
+  } finally {
+    plan.applying = false;
   }
 }
 
@@ -5463,7 +6058,15 @@ function createAssistantPlanElement(message) {
 
   const title = document.createElement("div");
   title.className = "assistant-plan-title";
-  const statusText = plan.applied ? "已应用" : plan.ignored ? "已不使用" : "";
+  const statusText = plan.applying
+    ? "自动执行中"
+    : plan.applied
+      ? plan.autoApplied
+        ? "已自动执行"
+        : "已应用"
+      : plan.ignored
+        ? "已不使用"
+        : "";
   title.textContent = `操作计划 · ${plan.actions.length} 步${statusText ? ` · ${statusText}` : ""}`;
 
   const list = document.createElement("ol");
@@ -5479,11 +6082,24 @@ function createAssistantPlanElement(message) {
 
   const apply = document.createElement("button");
   apply.type = "button";
-  apply.textContent = plan.applied ? "已应用" : "应用计划";
-  apply.disabled = Boolean(plan.applied || plan.ignored);
-  apply.addEventListener("click", () => {
-    const applied = applyAssistantPlan(plan);
-    if (!applied) return;
+  apply.textContent = plan.applying ? "执行中..." : plan.applied ? "已应用" : "应用计划";
+  apply.disabled = Boolean(plan.applied || plan.ignored || plan.applying);
+  apply.addEventListener("click", async () => {
+    apply.disabled = true;
+    ignore.disabled = true;
+    apply.textContent = "应用中...";
+    let applied = false;
+    try {
+      applied = await applyAssistantPlan(plan);
+    } catch (error) {
+      showToast(error.message || "应用助手计划失败");
+    }
+    if (!applied) {
+      apply.disabled = Boolean(plan.applied || plan.ignored);
+      ignore.disabled = Boolean(plan.applied || plan.ignored);
+      apply.textContent = plan.applied ? "已应用" : "应用计划";
+      return;
+    }
     plan.applied = true;
     saveAssistantChat();
     renderAssistantMessages();
@@ -5493,7 +6109,7 @@ function createAssistantPlanElement(message) {
   ignore.type = "button";
   ignore.className = "secondary";
   ignore.textContent = plan.ignored ? "已不使用" : "不使用";
-  ignore.disabled = Boolean(plan.applied || plan.ignored);
+  ignore.disabled = Boolean(plan.applied || plan.ignored || plan.applying);
   ignore.addEventListener("click", () => {
     plan.ignored = true;
     saveAssistantChat();
@@ -5537,7 +6153,7 @@ function formatAssistantPlanAction(action = {}) {
   return `未知动作：${type || "-"}`;
 }
 
-function applyAssistantPlan(plan) {
+async function applyAssistantPlan(plan, options = {}) {
   if (plan?.ignored) {
     showToast("这条计划已标记为不使用");
     return false;
@@ -5547,14 +6163,21 @@ function applyAssistantPlan(plan) {
     showToast("计划里没有可执行动作");
     return false;
   }
-  if (!window.confirm(`确认应用这 ${actions.length} 个画布操作吗？`)) return false;
+  if (!options.skipConfirmation && !window.confirm(`确认应用这 ${actions.length} 个画布操作吗？`)) return false;
 
   const touchedIds = new Set();
+  const applyContext = {
+    selectedReferenceImageIds: Array.isArray(options.selectedReferenceImageIds)
+      ? dedupeStrings(options.selectedReferenceImageIds)
+      : selectedAssistantReferenceImageIds(),
+    createdGenerationNodeIds: [],
+    referenceFailedNodeIds: new Set()
+  };
   let appliedCount = 0;
 
   for (const action of actions) {
     if (!isPlainObject(action)) continue;
-    if (applyAssistantAction(action, touchedIds)) appliedCount += 1;
+    if (applyAssistantAction(action, touchedIds, applyContext)) appliedCount += 1;
   }
 
   if (!appliedCount) {
@@ -5562,18 +6185,39 @@ function applyAssistantPlan(plan) {
     return false;
   }
 
+  if (applyContext.selectedReferenceImageIds.length) {
+    for (const nodeId of applyContext.createdGenerationNodeIds) {
+      const attached = await useCanvasImagesAsReference(nodeId, applyContext.selectedReferenceImageIds);
+      if (!attached) applyContext.referenceFailedNodeIds.add(nodeId);
+    }
+  }
+
   selectedNodeIds.clear();
   for (const id of touchedIds) selectedNodeIds.add(id);
   renderCanvas();
+  canvasViewport?.focus({ preventScroll: true });
+  void canvasStage?.offsetHeight;
   saveCanvasState();
-  showToast(`已应用 ${appliedCount} 个画布操作`);
+
+  const autoGenerateIds = assistantBehavior.autoGenerate
+    ? applyContext.createdGenerationNodeIds.filter((nodeId) => {
+        const node = canvasState.nodes.find((item) => item.id === nodeId);
+        return Boolean(node && !applyContext.referenceFailedNodeIds.has(nodeId) && isRunnableTask(node));
+      })
+    : [];
+  if (autoGenerateIds.length) {
+    autoGenerateIds.forEach((nodeId) => void generateNode(nodeId));
+    showToast(`已应用 ${appliedCount} 个画布操作，正在自动生成 ${autoGenerateIds.length} 个节点`);
+  } else {
+    showToast(`已应用 ${appliedCount} 个画布操作`);
+  }
   return true;
 }
 
-function applyAssistantAction(action, touchedIds) {
+function applyAssistantAction(action, touchedIds, applyContext) {
   const type = String(action.type || "").trim();
-  if (type === "create_task") return applyAssistantCreateTask(action, touchedIds);
-  if (type === "create_video_task") return applyAssistantCreateVideoTask(action, touchedIds);
+  if (type === "create_task") return applyAssistantCreateTask(action, touchedIds, applyContext);
+  if (type === "create_video_task") return applyAssistantCreateVideoTask(action, touchedIds, applyContext);
   if (type === "create_note") return applyAssistantCreateNote(action, touchedIds);
   if (type === "move_node") return applyAssistantMoveNode(action, touchedIds);
   if (type === "move_nodes") return applyAssistantMoveNodes(action, touchedIds);
@@ -5593,7 +6237,7 @@ function assistantPlannedNodeId(action) {
   return id;
 }
 
-function applyAssistantCreateTask(action, touchedIds) {
+function applyAssistantCreateTask(action, touchedIds, applyContext) {
   const center = getViewportCenterWorld();
   const mode = action.mode === "edit" ? "edit" : "create";
   const node = createDefaultTaskNode(mode);
@@ -5607,26 +6251,28 @@ function applyAssistantCreateTask(action, touchedIds) {
   applyAssistantTaskFields(node, action);
   canvasState.nodes.push(node);
   touchedIds.add(node.id);
+  applyContext?.createdGenerationNodeIds.push(node.id);
   return true;
 }
 
-function applyAssistantCreateVideoTask(action, touchedIds) {
+function applyAssistantCreateVideoTask(action, touchedIds, applyContext) {
   const center = getViewportCenterWorld();
   const node = createDefaultVideoTaskNode();
   node.id = assistantPlannedNodeId(action) || node.id;
   node.prompt = String(action.prompt || "").trim();
-  node.model = isDreaminaVideoModelName(action.model) || isArkVideoModelName(action.model) ? action.model : node.model;
-  node.provider = isArkVideoModelName(node.model) ? "ark" : "dreamina";
-  node.baseUrl = isArkVideoModelName(node.model) ? config.arkBaseUrl || arkDefaultBaseUrl : "";
-  node.endpointPath = isArkVideoModelName(node.model) ? arkVideoEndpoint : "dreamina-video-cli";
+  node.model = isSupportedVideoModelName(action.model) ? action.model : node.model;
+  node.provider = videoTaskProvider(node.model);
+  node.baseUrl = videoTaskBaseUrl(node.model);
+  node.endpointPath = videoTaskEndpoint(node.model);
   node.x = Math.round(planNumber(action.x, center.x));
   node.y = Math.round(planNumber(action.y, center.y));
   node.z = ++canvasState.nextZ;
   if (videoRatioOptionsForModel(node.model).some(([value]) => value === action.size)) node.size = action.size;
   if (videoResolutionOptionsForModel(node.model).some(([value]) => value === action.quality)) node.quality = action.quality;
-  if (action.n || action.count) node.n = String(action.n || action.count);
+  if (action.n || action.count) node.n = normalizeVideoDurationForModel(action.n || action.count, node.model);
   canvasState.nodes.push(node);
   touchedIds.add(node.id);
+  applyContext?.createdGenerationNodeIds.push(node.id);
   return true;
 }
 
@@ -5677,13 +6323,13 @@ function applyAssistantUpdateTask(action, touchedIds) {
 
   if (node.type === "video-task") {
     if (typeof action.prompt === "string") node.prompt = action.prompt.trim();
-    if (isDreaminaVideoModelName(action.model) || isArkVideoModelName(action.model)) node.model = action.model;
-    node.provider = isArkVideoModelName(node.model) ? "ark" : "dreamina";
-    node.baseUrl = isArkVideoModelName(node.model) ? config.arkBaseUrl || arkDefaultBaseUrl : "";
-    node.endpointPath = isArkVideoModelName(node.model) ? arkVideoEndpoint : "dreamina-video-cli";
+    if (isSupportedVideoModelName(action.model)) node.model = action.model;
+    node.provider = videoTaskProvider(node.model);
+    node.baseUrl = videoTaskBaseUrl(node.model);
+    node.endpointPath = videoTaskEndpoint(node.model);
     if (videoRatioOptionsForModel(node.model).some(([value]) => value === action.size)) node.size = action.size;
     if (videoResolutionOptionsForModel(node.model).some(([value]) => value === action.quality)) node.quality = action.quality;
-    if (action.n) node.n = String(action.n);
+    if (action.n) node.n = normalizeVideoDurationForModel(action.n, node.model);
   } else {
     if (action.mode === "edit" || action.mode === "create") {
       node.mode = action.mode;
@@ -6302,6 +6948,11 @@ function buildAssistantContext(options = {}) {
         y: Math.round(Number(canvasState.viewport.y) || 0)
       }
     },
+    assistantBehavior: {
+      autoAttachSelectedReferences: assistantBehavior.autoAttachReferences,
+      autoApplyPlans: assistantBehavior.autoGenerate,
+      autoGenerateCreatedNodes: assistantBehavior.autoGenerate
+    },
     selection: selected.slice(0, nodeLimit).map((node) => summarizeNodeForAssistant(node, promptLimit)),
     recentNodes: recentNodes.map((node) => summarizeNodeForAssistant(node, promptLimit))
   };
@@ -6573,7 +7224,7 @@ function getVideoGeneration(node) {
   const model = generation.model || video.model || dreaminaVideoDefaultModel;
   return {
     prompt,
-    model: isArkVideoModelName(model) || isDreaminaVideoModelName(model) ? model : dreaminaVideoDefaultModel,
+    model: isSupportedVideoModelName(model) ? model : dreaminaVideoDefaultModel,
     n: String(generation.n || video.duration || dreaminaVideoDefaultDuration),
     size: generation.size || video.size || dreaminaVideoDefaultRatio,
     quality: generation.quality || dreaminaVideoDefaultResolution,
@@ -6595,7 +7246,7 @@ function applyGenerationToVideoTask(task, generation) {
   task.promptNoteNodeIds = [];
   task.promptNotePlacements = {};
   task.model = generation.model || dreaminaVideoDefaultModel;
-  task.provider = isArkVideoModelName(task.model) ? "ark" : "dreamina";
+  task.provider = videoTaskProvider(task.model);
   task.n = String(generation.n || dreaminaVideoDefaultDuration);
   task.size = videoRatioOptionsForModel(task.model).some(([value]) => value === generation.size)
     ? generation.size
@@ -6604,8 +7255,8 @@ function applyGenerationToVideoTask(task, generation) {
     ? generation.quality
     : dreaminaVideoDefaultResolution;
   task.format = generation.format || "mp4";
-  task.baseUrl = generation.baseUrl || (task.provider === "ark" ? config.arkBaseUrl || arkDefaultBaseUrl : "");
-  task.endpointPath = generation.endpointPath || (task.provider === "ark" ? arkVideoEndpoint : "dreamina-video-cli");
+  task.baseUrl = generation.baseUrl || videoTaskBaseUrl(task.model);
+  task.endpointPath = generation.endpointPath || videoTaskEndpoint(task.model);
   task.extraParams = isPlainObject(generation.extraParams) ? clonePlainValue(generation.extraParams) : {};
   task.extraParamsText = JSON.stringify(task.extraParams, null, 2);
   task.arkAssetUris = Array.isArray(generation.arkAssetUris) ? dedupeStrings(generation.arkAssetUris).slice(0, 9) : [];
@@ -7503,17 +8154,35 @@ function removeSelectionBox() {
   canvasViewport.classList.remove("is-selecting");
 }
 
+let pendingWheelDelta = 0;
+let pendingWheelPoint = null;
+let wheelFrame = 0;
+
+function normalizeWheelDelta(event) {
+  return event.deltaMode === WheelEvent.DOM_DELTA_LINE
+    ? event.deltaY * 16
+    : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+      ? event.deltaY * 320
+      : event.deltaY;
+}
+
+function applyPendingWheel() {
+  wheelFrame = 0;
+  const delta = pendingWheelDelta;
+  const point = pendingWheelPoint;
+  pendingWheelDelta = 0;
+  pendingWheelPoint = null;
+  if (!delta || !point) return;
+  const factor = clamp(Math.exp(-delta * 0.0015), 0.5, 2);
+  zoomAtPoint(canvasState.viewport.zoom * factor, point.x, point.y);
+}
+
 function handleWheel(event) {
   if (shouldLetFieldHandleWheel(event)) return;
   event.preventDefault();
-  const delta =
-    event.deltaMode === WheelEvent.DOM_DELTA_LINE
-      ? event.deltaY * 16
-      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
-        ? event.deltaY * 320
-        : event.deltaY;
-  const factor = clamp(Math.exp(-delta * 0.0015), 0.5, 2);
-  zoomAtPoint(canvasState.viewport.zoom * factor, event.clientX, event.clientY);
+  pendingWheelDelta += normalizeWheelDelta(event);
+  pendingWheelPoint = { x: event.clientX, y: event.clientY };
+  if (!wheelFrame) wheelFrame = requestAnimationFrame(applyPendingWheel);
 }
 
 function shouldLetFieldHandleWheel(event) {
@@ -7709,10 +8378,15 @@ function resetViewport() {
 function renderCanvas() {
   syncNoteEditingWithSelection();
   canvasStage.replaceChildren();
+  canvasNodeElements.clear();
+  canvasNodeById.clear();
   canvasStage.append(createReferenceLinkLayer());
 
   for (const node of canvasState.nodes) {
-    canvasStage.append(createCanvasNode(node));
+    const tile = createCanvasNode(node);
+    canvasNodeElements.set(node.id, tile);
+    canvasNodeById.set(node.id, node);
+    canvasStage.append(tile);
   }
 
   renderReferenceLinks();
@@ -7725,8 +8399,11 @@ function renderCanvas() {
 }
 
 function updateNode(node) {
-  const previous = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === node.id);
-  if (previous) previous.replaceWith(createCanvasNode(node));
+  const previous = canvasNodeElement(node.id);
+  const tile = createCanvasNode(node);
+  canvasNodeElements.set(node.id, tile);
+  canvasNodeById.set(node.id, node);
+  if (previous) previous.replaceWith(tile);
   renderReferenceLinks();
   syncChatGptHostSoon();
   scheduleMediaVisibilityRefresh();
@@ -7930,9 +8607,13 @@ function referenceLinkAnchors(sourceRect, targetRect) {
 }
 
 function getNodeVisualWorldRect(nodeId) {
-  const node = canvasState.nodes.find((item) => item.id === nodeId);
+  const node = canvasNodeByIdGet(nodeId);
   if (!node) return null;
-  const tile = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === nodeId);
+  if (dragModelRects.has(nodeId)) {
+    const metrics = dragModelRects.get(nodeId);
+    return { x: node.x, y: node.y, width: metrics.width, height: metrics.height };
+  }
+  const tile = canvasNodeElement(nodeId);
   if (!tile) return getNodeBounds(node);
 
   const rect = tile.getBoundingClientRect();
@@ -7946,18 +8627,854 @@ function getNodeVisualWorldRect(nodeId) {
   };
 }
 
+function canvasNodeElement(nodeId) {
+  return canvasNodeElements.get(nodeId) || Array.from(canvasStage.children).find((child) => child.dataset.nodeId === nodeId);
+}
+
+function canvasNodeByIdGet(nodeId) {
+  return canvasNodeById.get(nodeId) || canvasState.nodes.find((item) => item.id === nodeId);
+}
+
+function setCanvasNodes(nodes) {
+  canvasState.nodes = nodes;
+  canvasNodeById.clear();
+  for (const node of nodes) canvasNodeById.set(node.id, node);
+}
+
 function createCanvasNode(node) {
   if (node.type === "region") return createRegionNode(node);
   if (node.type === "note") return createNoteNode(node);
   if (node.type === "portrait") return createPortraitNode(node);
   if (node.type === "camera") return createCameraNode(node);
   if (node.type === "ark-asset") return createArkAssetNode(node);
+  if (node.type === "story-breakdown") return createStoryBreakdownCanvasNode(node);
   if (node.type === "image") return createImageNode(node);
   if (node.type === "video") return createVideoNode(node);
   if (node.type === "midjourney-task") return createMidjourneyTaskNode(node);
   if (node.type === "video-task") return createVideoTaskNode(node);
   if (node.type === "chatgpt") return createChatGptNode(node);
   return createTaskNode(node);
+}
+
+function createStoryBreakdownCanvasNode(node) {
+  const selected = selectedNodeIds.has(node.id);
+  const tile = document.createElement("article");
+  tile.className = [
+    "canvas-node",
+    "story-breakdown-node",
+    `status-${node.status || "idle"}`,
+    selected ? "is-selected" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
+  tile.dataset.nodeId = node.id;
+  tile.style.left = `${node.x}px`;
+  tile.style.top = `${node.y}px`;
+  tile.style.width = `${node.width || defaultStoryBreakdownWidth}px`;
+  tile.style.zIndex = node.z;
+
+  tile.append(createStoryBreakdownHeader(node, selected));
+  if (selected) tile.append(createStoryBreakdownEditor(node));
+  else tile.append(createStoryBreakdownCompactSummary(node));
+  tile.addEventListener("pointerdown", (event) => startNodeDrag(event, node.id));
+  return tile;
+}
+
+function createStoryBreakdownHeader(node, selected) {
+  const header = document.createElement("header");
+  header.className = "story-breakdown-header";
+  const mark = document.createElement("span");
+  mark.className = "story-breakdown-mark";
+  mark.textContent = "STORY";
+  const heading = document.createElement("div");
+  heading.className = "story-breakdown-heading";
+  const title = document.createElement("strong");
+  title.textContent = node.result?.title || node.title || "剧本拆解";
+  const meta = document.createElement("small");
+  const assetCount = node.result?.assets?.length || 0;
+  const shotCount = node.result?.shots?.length || 0;
+  meta.textContent = node.status === "running"
+    ? "正在拆解剧本资产与镜头"
+    : node.status === "loading-file"
+      ? "正在读取剧本文件"
+      : node.result
+        ? `${assetCount} 个资产 · ${shotCount} 个镜头`
+        : node.script
+          ? `${node.script.length.toLocaleString("zh-CN")} 字 · 等待分析`
+          : "上传剧本后开始拆解";
+  heading.append(title, meta);
+  header.append(mark, heading);
+
+  if (node.result) {
+    const progress = storyChildProgress(node);
+    if (progress.children.length) {
+      const done = progress.children.filter((item) => ["done", "succeeded"].includes(item.status)).length;
+      const badge = document.createElement("span");
+      badge.className = "story-breakdown-pct-badge";
+      badge.textContent = `${Math.round((done / progress.children.length) * 100)}%`;
+      header.append(badge);
+    }
+  }
+
+  if (selected) {
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "story-breakdown-remove";
+    remove.title = "删除剧本拆解节点";
+    remove.setAttribute("aria-label", "删除剧本拆解节点");
+    remove.append(createNodeIcon("trash"));
+    remove.addEventListener("click", () => deleteNodes([node.id]));
+    header.append(remove);
+  }
+  return header;
+}
+
+function storyChildNodes(node) {
+  return canvasState.nodes.filter(
+    (item) => item.storyNodeId === node.id && ["task", "video-task"].includes(item.type)
+  );
+}
+
+function storyChildProgress(node) {
+  const children = storyChildNodes(node);
+  const images = children.filter((item) => item.type === "task");
+  const videos = children.filter((item) => item.type === "video-task");
+  return {
+    children,
+    images,
+    videos,
+    imgDone: images.filter((item) => item.status === "done").length,
+    vidDone: videos.filter((item) => ["done", "succeeded"].includes(item.status)).length
+  };
+}
+
+function createStoryBreakdownCompactSummary(node) {
+  const summary = document.createElement("div");
+  summary.className = "story-breakdown-compact";
+  if (node.status === "running" || node.status === "loading-file") {
+    const progress = document.createElement("div");
+    progress.className = "story-breakdown-progress";
+    progress.append(document.createElement("span"));
+    summary.append(progress);
+  }
+  const progress = storyChildProgress(node);
+  if (progress.children.length) {
+    const parts = [];
+    if (progress.images.length) parts.push(`生图 ${progress.imgDone}/${progress.images.length}`);
+    if (progress.videos.length) parts.push(`视频 ${progress.vidDone}/${progress.videos.length}`);
+    const stat = document.createElement("p");
+    stat.className = "story-breakdown-child-stat";
+    stat.textContent = parts.join(" · ");
+    summary.append(stat);
+    const staleCount = progress.children.filter(
+      (item) => node.analysisVersion && item.storyAnalysisVersion && item.storyAnalysisVersion !== node.analysisVersion
+    ).length;
+    if (staleCount) {
+      const stale = document.createElement("p");
+      stale.className = "story-breakdown-stale";
+      stale.textContent = `有 ${staleCount} 个节点来自旧版拆解`;
+      summary.append(stale);
+    }
+  } else {
+    const text = document.createElement("p");
+    text.textContent = node.error || node.result?.logline || node.instructions || "选中节点以导入剧本并开始拆解。";
+    summary.append(text);
+  }
+  return summary;
+}
+
+function createStoryBreakdownEditor(node) {
+  const editor = document.createElement("div");
+  editor.className = "story-breakdown-editor";
+  editor.addEventListener("pointerdown", (event) => event.stopPropagation());
+
+  const source = document.createElement("section");
+  source.className = "story-source-panel";
+  const sourceHead = document.createElement("div");
+  sourceHead.className = "story-section-head";
+  const sourceTitle = document.createElement("strong");
+  sourceTitle.textContent = "剧本与制作要求";
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.hidden = true;
+  fileInput.accept = ".txt,.md,.markdown,.docx,.json,.csv,.srt,.ass,.yaml,.yml,text/plain";
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files?.[0];
+    if (file) importStoryScriptFile(node.id, file);
+    fileInput.value = "";
+  });
+  const upload = document.createElement("button");
+  upload.type = "button";
+  upload.className = "story-upload-button";
+  upload.append(createNodeIcon("story"), document.createTextNode(node.scriptFileName ? "更换文件" : "上传剧本"));
+  upload.addEventListener("click", () => fileInput.click());
+  sourceHead.append(sourceTitle, upload, fileInput);
+
+  const fileMeta = document.createElement("p");
+  fileMeta.className = "story-file-meta";
+  fileMeta.textContent = node.scriptFileName
+    ? `${node.scriptFileName} · ${node.script.length.toLocaleString("zh-CN")} 字`
+    : "支持 TXT、Markdown、DOCX、JSON、SRT 等文本剧本";
+
+  const script = document.createElement("textarea");
+  script.className = "story-script-input";
+  script.rows = 8;
+  script.spellcheck = false;
+  script.placeholder = "粘贴剧本正文，或点击右上角上传剧本文件";
+  script.value = node.script || "";
+  script.addEventListener("input", () => {
+    node.script = script.value;
+    node.scriptFileName = node.scriptFileName && script.value ? node.scriptFileName : "";
+    saveCanvasState({ history: false });
+  });
+
+  const instructions = document.createElement("textarea");
+  instructions.className = "story-instructions-input";
+  instructions.rows = 3;
+  instructions.spellcheck = false;
+  instructions.placeholder = "输入拆解要求，例如：真人短剧、重点拆人物服装与核心道具、每个镜头 5 秒、保持角色一致性";
+  instructions.value = node.instructions || "";
+  instructions.addEventListener("input", () => {
+    node.instructions = instructions.value;
+    saveCanvasState({ history: false });
+  });
+
+  const settings = document.createElement("div");
+  settings.className = "story-analysis-settings";
+  settings.append(
+    createStoryAssistantModelField(node),
+    createStorySelectControl("画面比例", node.aspectRatio, storyAspectRatioOptions, (value) => {
+      node.aspectRatio = value;
+      if (videoRatioOptionsForModel(node.videoModel).some(([ratio]) => ratio === value)) node.videoSize = value;
+      saveCanvasState();
+    }),
+    createStorySelectControl("视觉方向", node.visualStyle, storyVisualStyleOptions, (value) => {
+      node.visualStyle = value;
+      saveCanvasState();
+    })
+  );
+
+  const actions = document.createElement("div");
+  actions.className = "story-analysis-actions";
+  const analyze = document.createElement("button");
+  analyze.type = "button";
+  analyze.className = "story-primary-action";
+  analyze.disabled = node.status === "running" || node.status === "loading-file" || !node.script.trim();
+  analyze.append(createNodeIcon("spark"), document.createTextNode(node.result ? "重新拆解" : "开始拆解"));
+  analyze.addEventListener("click", () => analyzeStoryBreakdown(node.id));
+  const scriptLength = (node.script || "").length;
+  if (scriptLength > 30000) {
+    const warn = document.createElement("p");
+    warn.className = "story-script-warn";
+    warn.textContent = `剧本 ${(scriptLength / 1000).toFixed(1)}K 字，超过建议上限（30,000 字），可能超时。建议手动分段后分次导入拆解。`;
+    actions.prepend(warn);
+  }
+  actions.append(analyze);
+  if (node.status === "running") {
+    const stop = document.createElement("button");
+    stop.type = "button";
+    stop.className = "story-stop-action";
+    stop.textContent = "停止";
+    stop.addEventListener("click", () => stopStoryBreakdown(node.id));
+    actions.append(stop);
+  }
+
+  source.append(sourceHead, fileMeta, script, instructions, settings, actions);
+  if (node.status === "running" || node.status === "loading-file") {
+    const progress = document.createElement("div");
+    progress.className = "story-breakdown-progress";
+    progress.append(document.createElement("span"));
+    source.append(progress);
+  }
+  if (node.error) {
+    const error = document.createElement("p");
+    error.className = "node-error story-breakdown-error";
+    error.textContent = node.error;
+    source.append(error);
+  }
+  editor.append(source);
+  if (node.result) editor.append(createStoryBreakdownResults(node));
+  return editor;
+}
+
+function createStoryAssistantModelField(node) {
+  const select = document.createElement("select");
+  fillAssistantModelSelect(select, node.model);
+  select.addEventListener("change", () => {
+    node.model = select.value;
+    saveCanvasState();
+  });
+  return createStoryControlField("分析模型", select);
+}
+
+function createStorySelectControl(label, value, options, onChange) {
+  const select = document.createElement("select");
+  for (const [optionValue, optionLabel] of options) {
+    const option = document.createElement("option");
+    option.value = optionValue;
+    option.textContent = optionLabel;
+    select.append(option);
+  }
+  select.value = value;
+  select.addEventListener("change", () => onChange(select.value));
+  return createStoryControlField(label, select);
+}
+
+function createStoryNumberControl(label, value, options, onCommit) {
+  const input = document.createElement("input");
+  input.type = "number";
+  input.min = options.min;
+  input.max = options.max;
+  input.step = options.step || 1;
+  input.value = value;
+  const commit = () => onCommit(input.value);
+  input.addEventListener("change", commit);
+  input.addEventListener("blur", commit);
+  return createStoryControlField(label, input);
+}
+
+function createStoryControlField(label, control) {
+  const field = document.createElement("label");
+  field.className = "story-control-field";
+  const text = document.createElement("span");
+  text.textContent = label;
+  control.addEventListener("pointerdown", (event) => event.stopPropagation());
+  field.append(text, control);
+  return field;
+}
+
+function createStoryBreakdownResults(node) {
+  const result = node.result;
+  const section = document.createElement("section");
+  section.className = "story-results-panel";
+  const overview = document.createElement("div");
+  overview.className = "story-result-overview";
+  const copy = document.createElement("div");
+  const title = document.createElement("strong");
+  title.textContent = result.title;
+  const logline = document.createElement("p");
+  logline.textContent = result.logline || result.productionNotes || "拆解完成，可分别创建生图与视频节点。";
+  copy.append(title, logline);
+  const counts = document.createElement("span");
+  counts.textContent = `${result.assets.length} 资产 / ${result.shots.length} 镜头`;
+  overview.append(copy, counts);
+
+  const tabs = document.createElement("div");
+  tabs.className = "story-output-tabs";
+  const tabOptions = [
+    ["assets", "资产生图", result.assets.length],
+    ["storyboards", "分镜生图", result.shots.length],
+    ["videos", "镜头视频", result.shots.length]
+  ];
+  for (const [value, label, count] of tabOptions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.classList.toggle("is-active", node.activeTab === value);
+    button.textContent = `${label} ${count}`;
+    button.addEventListener("click", () => {
+      node.activeTab = value;
+      updateNode(node);
+      saveCanvasState();
+    });
+    tabs.append(button);
+  }
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "story-selection-toolbar";
+  const selectionKey = storySelectionKey(node.activeTab);
+  const items = node.activeTab === "assets" ? result.assets : result.shots;
+  const selectedIds = new Set(node[selectionKey] || []);
+  const selectionMeta = document.createElement("span");
+  selectionMeta.textContent = `已选 ${selectedIds.size}/${items.length}`;
+  const selectAll = document.createElement("button");
+  selectAll.type = "button";
+  selectAll.textContent = "全选";
+  selectAll.addEventListener("click", () => setStorySelection(node, selectionKey, items.map((item) => item.id)));
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.textContent = "清空";
+  clear.addEventListener("click", () => setStorySelection(node, selectionKey, []));
+  toolbar.append(selectionMeta, selectAll, clear);
+
+  const list = document.createElement("div");
+  list.className = "story-result-list";
+  for (const item of items) list.append(createStoryResultItem(node, item, selectionKey, selectedIds.has(item.id)));
+
+  const output = node.activeTab === "videos" ? createStoryVideoOutputControls(node) : createStoryImageOutputControls(node);
+  const oneClick = document.createElement("button");
+  oneClick.type = "button";
+  oneClick.className = "story-primary-action story-one-click";
+  oneClick.append(createNodeIcon("spark"), document.createTextNode("一键创建所有节点"));
+  oneClick.addEventListener("click", () => {
+    node.selectedAssetIds = result.assets.map((asset) => asset.id);
+    node.selectedStoryboardShotIds = result.shots.map((shot) => shot.id);
+    node.selectedVideoShotIds = result.shots.map((shot) => shot.id);
+    saveCanvasState();
+    createStoryImageTasks(node.id, "assets");
+    createStoryImageTasks(node.id, "storyboards");
+    void createStoryVideoTasks(node.id);
+  });
+  section.append(overview, oneClick, tabs, toolbar, list, output);
+
+  const failedNodes = storyChildNodes(node).filter((item) => ["error", "failed"].includes(item.status));
+  if (failedNodes.length) {
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "story-retry-action";
+    retry.textContent = `重试失败 (${failedNodes.length})`;
+    retry.addEventListener("click", () => {
+      failedNodes.forEach((item) => generateNode(item.id));
+      updateNode(node);
+      saveCanvasState();
+    });
+    section.append(retry);
+  }
+  return section;
+}
+
+function storySelectionKey(tab) {
+  if (tab === "videos") return "selectedVideoShotIds";
+  if (tab === "storyboards") return "selectedStoryboardShotIds";
+  return "selectedAssetIds";
+}
+
+function setStorySelection(node, key, ids) {
+  node[key] = dedupeStrings(ids);
+  updateNode(node);
+  saveCanvasState();
+}
+
+function createStoryResultItem(node, item, selectionKey, checked) {
+  const label = document.createElement("label");
+  label.className = "story-result-item";
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.checked = checked;
+  checkbox.addEventListener("change", () => {
+    const ids = new Set(node[selectionKey] || []);
+    if (checkbox.checked) ids.add(item.id);
+    else ids.delete(item.id);
+    setStorySelection(node, selectionKey, [...ids]);
+  });
+  const copy = document.createElement("span");
+  copy.className = "story-result-item-copy";
+  const line = document.createElement("span");
+  const kind = document.createElement("em");
+  kind.textContent = item.kind ? storyAssetKindLabels[item.kind] || "资产" : `${item.durationSec || 5}s`;
+  const name = document.createElement("strong");
+  name.textContent = item.name || item.title;
+  line.append(kind, name);
+  const prompt = document.createElement("small");
+  prompt.textContent = node.activeTab === "assets"
+    ? item.prompt || item.description
+    : node.activeTab === "videos"
+      ? item.videoPrompt
+      : item.imagePrompt;
+  copy.append(line, prompt);
+  label.append(checkbox, copy);
+  return label;
+}
+
+function normalizeStoryAssetRatios(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const result = {};
+  for (const kind of Object.keys(storyAssetKindLabels)) {
+    const ratio = source[kind];
+    result[kind] = storyAspectRatioOptions.some(([option]) => option === ratio)
+      ? ratio
+      : storyAssetRatioDefaults[kind];
+  }
+  return result;
+}
+
+function storySizeForRatio(model, ratio) {
+  const options = sizeOptionsForModel(model, "create");
+  const [ratioW, ratioH] = String(ratio || "16:9").split(":").map(Number);
+  const target = (ratioW || 16) / (ratioH || 9);
+  let best = null;
+  let bestDelta = Infinity;
+  for (const [value] of options) {
+    let width = 0;
+    let height = 0;
+    const ratioMatch = /^(\d+):(\d+)/.exec(value);
+    if (ratioMatch) {
+      width = Number(ratioMatch[1]);
+      height = Number(ratioMatch[2]);
+    } else {
+      const dimensionMatch = /(\d+)\s*[x×]\s*(\d+)/i.exec(value);
+      if (dimensionMatch) {
+        width = Number(dimensionMatch[1]);
+        height = Number(dimensionMatch[2]);
+      }
+    }
+    if (!width || !height) continue;
+    const delta = Math.abs(width / height - target);
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      best = value;
+    }
+  }
+  return best || defaultSizeForModel(model, "create");
+}
+
+function createStoryAssetRatioControls(node) {
+  const wrap = document.createElement("div");
+  wrap.className = "story-asset-ratio-grid";
+  const counts = new Map();
+  for (const asset of node.result?.assets || []) {
+    const kind = Object.prototype.hasOwnProperty.call(storyAssetKindLabels, asset?.kind) ? asset.kind : "prop";
+    counts.set(kind, (counts.get(kind) || 0) + 1);
+  }
+  for (const [kind, count] of counts) {
+    const row = createStorySelectControl(
+      (String(storyAssetKindLabels[kind] || "资产") + " " + String(count)),
+      node.assetRatioByKind?.[kind] || storyAssetRatioDefaults[kind] || "16:9",
+      storyAspectRatioOptions,
+      (value) => {
+        node.assetRatioByKind = { ...(node.assetRatioByKind || {}), [kind]: value };
+        saveCanvasState();
+      }
+    );
+    row.classList.add("story-asset-ratio-field");
+    wrap.append(row);
+  }
+  return wrap;
+}
+
+function createStoryImageOutputControls(node) {
+  const controls = document.createElement("div");
+  controls.className = "story-output-controls";
+  const isAsset = node.activeTab === "assets";
+  const modelOptions = storyImageModelOptions(node.imageModel);
+  controls.append(
+    createStorySelectControl("生图模型", node.imageModel, modelOptions, (value) => {
+      node.imageModel = value;
+      node.imageSize = defaultSizeForModel(value, "create");
+      updateNode(node);
+      saveCanvasState();
+    })
+  );
+  if (isAsset) {
+    controls.append(createStoryAssetRatioControls(node));
+  } else {
+    controls.append(
+      createStorySelectControl("图片尺寸", node.imageSize, sizeOptionsForModel(node.imageModel, "create"), (value) => {
+        node.imageSize = value;
+        saveCanvasState();
+      })
+    );
+  }
+  const create = document.createElement("button");
+  create.type = "button";
+  create.className = "story-primary-action";
+  create.append(createNodeIcon("image-generate"), document.createTextNode(isAsset ? "创建资产生图节点" : "创建分镜生图节点"));
+  create.disabled = !(node[storySelectionKey(node.activeTab)] || []).length;
+  create.addEventListener("click", () => createStoryImageTasks(node.id, isAsset ? "assets" : "storyboards"));
+  controls.append(create);
+  return controls;
+}
+
+function storyImageModelOptions(currentModel) {
+  const options = [...taskModelOptions];
+  for (const definition of config.connectionModels || []) {
+    if (definition.capability !== "image") continue;
+    if (!options.some(([value]) => value === definition.model)) options.push([definition.model, definition.label || definition.model]);
+  }
+  if (!options.some(([value]) => value === currentModel)) options.push([currentModel, currentModel]);
+  return options;
+}
+
+function createStoryVideoOutputControls(node) {
+  const controls = document.createElement("div");
+  controls.className = "story-output-controls story-video-output-controls";
+  controls.append(
+    createStorySelectControl("视频模型", node.videoModel, dreaminaVideoModelOptions, (value) => {
+      node.videoModel = value;
+      node.videoSize = videoRatioOptionsForModel(value).some(([ratio]) => ratio === node.aspectRatio)
+        ? node.aspectRatio
+        : videoRatioOptionsForModel(value)[0]?.[0] || dreaminaVideoDefaultRatio;
+      node.videoQuality = videoResolutionOptionsForModel(value)[0]?.[0] || dreaminaVideoDefaultResolution;
+      node.videoDuration = normalizeVideoDurationForModel(node.videoDuration, value);
+      updateNode(node);
+      saveCanvasState();
+    }),
+    createStorySelectControl("视频比例", node.videoSize, videoRatioOptionsForModel(node.videoModel), (value) => {
+      node.videoSize = value;
+      saveCanvasState();
+    }),
+    createStorySelectControl("清晰度", node.videoQuality, videoResolutionOptionsForModel(node.videoModel), (value) => {
+      node.videoQuality = value;
+      saveCanvasState();
+    }),
+    isGrokBuildVideoModelName(node.videoModel)
+      ? createStorySelectControl("默认时长", node.videoDuration, [["6", "6 秒"], ["10", "10 秒"]], (value) => {
+          node.videoDuration = value;
+          saveCanvasState();
+        })
+      : createStoryNumberControl("默认时长", node.videoDuration, videoDurationRangeForModel(node.videoModel), (value) => {
+          node.videoDuration = normalizeVideoDurationForModel(value, node.videoModel);
+          saveCanvasState();
+        })
+  );
+  const create = document.createElement("button");
+  create.type = "button";
+  create.className = "story-primary-action";
+  create.disabled = !(node.selectedVideoShotIds || []).length;
+  create.append(createNodeIcon("camera"), document.createTextNode("创建镜头视频节点"));
+  create.addEventListener("click", () => createStoryVideoTasks(node.id));
+  controls.append(create);
+  return controls;
+}
+
+async function importStoryScriptFile(nodeId, file) {
+  const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "story-breakdown");
+  if (!node || !file) return;
+  node.status = "loading-file";
+  node.error = "";
+  updateNode(node);
+  saveCanvasState({ history: false });
+
+  try {
+    const formData = new FormData();
+    formData.append("files", file, file.name);
+    const response = await fetch("/api/assistant/extract-files", { method: "POST", body: formData });
+    const data = await readJsonResponse(response);
+    if (!response.ok || data.parseError) throw new Error(data.error || "剧本文件读取失败");
+    const document = Array.isArray(data.files) ? data.files.find((item) => item?.text) : null;
+    if (!document) {
+      const detail = data.errors?.[0]?.error;
+      throw new Error(detail || "没有从文件中读取到剧本文本");
+    }
+    const current = canvasState.nodes.find((item) => item.id === nodeId && item.type === "story-breakdown");
+    if (!current) return;
+    current.script = String(document.text || "").slice(0, 120000);
+    current.scriptFileName = document.name || file.name;
+    current.status = "idle";
+    current.error = "";
+    updateNode(current);
+    saveCanvasState();
+    showToast(`已导入剧本：${current.scriptFileName}`);
+  } catch (error) {
+    const current = canvasState.nodes.find((item) => item.id === nodeId && item.type === "story-breakdown");
+    if (!current) return;
+    current.status = "error";
+    current.error = error.message || "剧本文件读取失败";
+    updateNode(current);
+    saveCanvasState({ history: false });
+  }
+}
+
+async function analyzeStoryBreakdown(nodeId) {
+  const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "story-breakdown");
+  if (!node || node.status === "running" || !node.script.trim()) return;
+
+  storyAnalysisControllers.get(nodeId)?.abort();
+  const controller = new AbortController();
+  storyAnalysisControllers.set(nodeId, controller);
+  node.status = "running";
+  node.error = "";
+  node.z = ++canvasState.nextZ;
+  updateNode(node);
+  saveCanvasState({ history: false });
+  updateCanvasMeta();
+
+  try {
+    const response = await fetch("/api/story/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: node.model,
+        script: node.script,
+        instructions: node.instructions,
+        aspectRatio: node.aspectRatio,
+        visualStyle: node.visualStyle
+      }),
+      signal: controller.signal
+    });
+    const data = await readJsonResponse(response);
+    if (!response.ok || data.parseError) throw new Error(data.error || "剧本拆解失败");
+    const result = normalizeStoryBreakdownResult(data.result);
+    if (!result || (!result.assets.length && !result.shots.length)) throw new Error("拆解结果中没有可用资产或镜头");
+    const current = canvasState.nodes.find((item) => item.id === nodeId && item.type === "story-breakdown");
+    if (!current) return;
+    current.result = result;
+    current.title = result.title || current.title;
+    current.selectedAssetIds = result.assets.map((asset) => asset.id);
+    current.selectedStoryboardShotIds = result.shots.map((shot) => shot.id);
+    current.selectedVideoShotIds = result.shots.map((shot) => shot.id);
+    current.activeTab = result.assets.length ? "assets" : "storyboards";
+    current.analysisVersion = String(Date.now());
+    current.status = "ready";
+    current.error = "";
+    rawResponse.textContent = JSON.stringify(data, null, 2);
+    updateNode(current);
+    saveCanvasState();
+    showToast(`拆解完成：${result.assets.length} 个资产，${result.shots.length} 个镜头`);
+  } catch (error) {
+    const current = canvasState.nodes.find((item) => item.id === nodeId && item.type === "story-breakdown");
+    if (!current) return;
+    if (controller.signal.aborted) {
+      current.status = "idle";
+      current.error = "";
+    } else {
+      current.status = "error";
+      current.error = error.message || "剧本拆解失败";
+      showToast(current.error);
+    }
+    updateNode(current);
+    saveCanvasState({ history: false });
+  } finally {
+    if (storyAnalysisControllers.get(nodeId) === controller) storyAnalysisControllers.delete(nodeId);
+    updateCanvasMeta();
+  }
+}
+
+function stopStoryBreakdown(nodeId) {
+  const controller = storyAnalysisControllers.get(nodeId);
+  if (!controller) return;
+  controller.abort();
+  storyAnalysisControllers.delete(nodeId);
+  const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "story-breakdown");
+  if (node) {
+    node.status = "idle";
+    node.error = "";
+    updateNode(node);
+    saveCanvasState({ history: false });
+  }
+  showToast("已停止剧本拆解");
+}
+
+function createStoryImageTasks(nodeId, mode) {
+  const story = canvasState.nodes.find((item) => item.id === nodeId && item.type === "story-breakdown");
+  if (!story?.result || !["assets", "storyboards"].includes(mode)) return;
+  const items = mode === "assets" ? story.result.assets : story.result.shots;
+  const selectedIds = new Set(mode === "assets" ? story.selectedAssetIds : story.selectedStoryboardShotIds);
+  const selectedItems = items.filter((item) => selectedIds.has(item.id));
+  if (!selectedItems.length) return showToast("请先选择要输出的内容");
+
+  const lane = mode === "assets" ? 0 : 1;
+  const x = story.x + (story.width || defaultStoryBreakdownWidth) + 64 + lane * (defaultTaskWidth + 48);
+  const baseY = nextStoryOutputY(story.id, mode, story.y);
+  const created = [];
+  selectedItems.forEach((item, index) => {
+    const task = createDefaultTaskNode("create");
+    task.prompt = storyImagePrompt(story, item, mode);
+    task.model = story.imageModel;
+    const desiredSize = mode === "assets"
+      ? storySizeForRatio(story.imageModel, story.assetRatioByKind?.[item.kind] || story.aspectRatio)
+      : story.imageSize;
+    task.size = desiredSize;
+    applyTaskModelDefaults(task, { modelChanged: true, modeChanged: true });
+    if (isSizeAllowedForModel(desiredSize, task.model, "create")) task.size = desiredSize;
+    task.storyNodeId = story.id;
+    task.storyItemId = item.id;
+    task.storyOutputKind = mode;
+    task.storyAnalysisVersion = story.analysisVersion || "";
+    task.x = Math.round(x);
+    task.y = Math.round(baseY + index * 148);
+    task.z = ++canvasState.nextZ;
+    canvasState.nodes.push(task);
+    created.push(task);
+  });
+  selectStoryOutputNodes(created);
+  showToast(`已创建 ${created.length} 个${mode === "assets" ? "资产" : "分镜"}生图节点`);
+}
+
+async function createStoryVideoTasks(nodeId) {
+  const story = canvasState.nodes.find((item) => item.id === nodeId && item.type === "story-breakdown");
+  if (!story?.result) return;
+  const selectedIds = new Set(story.selectedVideoShotIds || []);
+  const shots = story.result.shots.filter((shot) => selectedIds.has(shot.id));
+  if (!shots.length) return showToast("请先选择要输出的镜头");
+
+  const x = story.x + (story.width || defaultStoryBreakdownWidth) + 64 + 2 * (defaultTaskWidth + 48);
+  const baseY = nextStoryOutputY(story.id, "videos", story.y);
+  const created = [];
+  const references = [];
+  shots.forEach((shot, index) => {
+    const task = createDefaultVideoTaskNode();
+    task.prompt = storyVideoPrompt(story, shot);
+    task.model = story.videoModel;
+    task.provider = videoTaskProvider(task.model);
+    task.baseUrl = videoTaskBaseUrl(task.model);
+    task.endpointPath = videoTaskEndpoint(task.model);
+    task.size = videoRatioOptionsForModel(task.model).some(([value]) => value === story.videoSize)
+      ? story.videoSize
+      : videoRatioOptionsForModel(task.model)[0]?.[0] || dreaminaVideoDefaultRatio;
+    task.quality = videoResolutionOptionsForModel(task.model).some(([value]) => value === story.videoQuality)
+      ? story.videoQuality
+      : videoResolutionOptionsForModel(task.model)[0]?.[0] || dreaminaVideoDefaultResolution;
+    task.n = storyShotDuration(story, shot, task.model);
+    task.storyNodeId = story.id;
+    task.storyItemId = shot.id;
+    task.storyOutputKind = "videos";
+    task.storyAnalysisVersion = story.analysisVersion || "";
+    task.x = Math.round(x);
+    task.y = Math.round(baseY + index * 148);
+    task.z = ++canvasState.nextZ;
+    canvasState.nodes.push(task);
+    created.push(task);
+    references.push([task.id, storyReferenceImageNodeIds(story, shot, task.model)]);
+  });
+
+  selectStoryOutputNodes(created, { save: false });
+  let linkedCount = 0;
+  for (const [taskId, imageIds] of references) {
+    if (!imageIds.length) continue;
+    if (await useCanvasImagesAsReference(taskId, imageIds)) linkedCount += 1;
+  }
+  selectStoryOutputNodes(created);
+  showToast(`已创建 ${created.length} 个镜头视频节点${linkedCount ? `，${linkedCount} 个已关联参考图` : ""}`);
+}
+
+function storyImagePrompt(story, item, mode) {
+  const prompt = mode === "assets" ? item.prompt || item.description : item.imagePrompt;
+  const negative = mode === "assets" && item.negativePrompt ? "避免：" + item.negativePrompt : "";
+  const ratio = mode === "assets"
+    ? story.assetRatioByKind?.[item.kind] || story.aspectRatio
+    : story.aspectRatio;
+  const compositionHint = mode === "assets" ? storyAssetCompositionHints[item.kind] || "" : "";
+  return [story.visualStyle, ratio + " 画幅", compositionHint, prompt, negative].filter(Boolean).join("，");
+}
+
+function storyVideoPrompt(story, shot) {
+  return [story.visualStyle, `${story.aspectRatio} 画幅`, shot.videoPrompt, shot.camera, shot.lighting]
+    .filter(Boolean)
+    .join("，");
+}
+
+function storyShotDuration(story, shot, model) {
+  const requested = Number(shot.durationSec) || Number(story.videoDuration) || 5;
+  if (isGrokBuildVideoModelName(model)) return requested >= 8 ? "10" : "6";
+  return normalizeVideoDurationForModel(requested, model);
+}
+
+function nextStoryOutputY(storyNodeId, kind, fallbackY) {
+  const existing = canvasState.nodes.filter(
+    (node) => node.storyNodeId === storyNodeId && node.storyOutputKind === kind && ["task", "video-task"].includes(node.type)
+  );
+  if (!existing.length) return fallbackY;
+  return Math.max(...existing.map((node) => Number(node.y) || fallbackY)) + 148;
+}
+
+function storyReferenceImageNodeIds(story, shot, videoModel) {
+  const imageNodes = canvasState.nodes.filter((node) => node.type === "image" && node.storyNodeId === story.id && node.image?.url);
+  const storyboardIds = imageNodes
+    .filter((node) => node.storyOutputKind === "storyboards" && node.storyItemId === shot.id)
+    .map((node) => node.id);
+  const assetIdSet = new Set(shot.assetIds || []);
+  const assetIds = imageNodes
+    .filter((node) => node.storyOutputKind === "assets" && assetIdSet.has(node.storyItemId))
+    .map((node) => node.id);
+  return dedupeStrings([...storyboardIds, ...assetIds]).slice(0, videoReferenceLimit(videoModel));
+}
+
+function selectStoryOutputNodes(nodes, options = {}) {
+  selectedNodeIds.clear();
+  nodes.forEach((node) => selectedNodeIds.add(node.id));
+  renderCanvas();
+  if (options.save !== false) saveCanvasState();
+  updateCanvasMeta();
 }
 
 function createArkAssetNode(node) {
@@ -9463,20 +10980,35 @@ function createImageNode(node) {
   img.decoding = "async";
   img.draggable = false;
   img.addEventListener("load", () => {
-    if (img.dataset.mediaOriginal !== "true") return;
     if (!img.naturalWidth || !img.naturalHeight) return;
-    if (node.originalWidth === img.naturalWidth && node.originalHeight === img.naturalHeight) return;
+    const isOriginal = img.dataset.mediaOriginal === "true";
+    const currentWidth = Math.max(1, Number(node.originalWidth) || width);
+    const currentHeight = Math.max(1, Number(node.originalHeight) || height);
+    const dimensions = imageDimensionsForLoadedMedia(
+      currentWidth,
+      currentHeight,
+      img.naturalWidth,
+      img.naturalHeight,
+      isOriginal
+    );
+    if (!dimensions) return;
+    const currentRatio = currentWidth / currentHeight;
+    const nextRatio = dimensions.width / dimensions.height;
+    const dimensionsChanged = isOriginal
+      ? currentWidth !== dimensions.width || currentHeight !== dimensions.height
+      : Math.abs(Math.log(nextRatio / currentRatio)) > 0.002;
+    if (!dimensionsChanged) return;
     const previousDefaultScale = defaultScaleForImageNode(node, {
-      width: node.originalWidth || width,
-      height: node.originalHeight || height
+      width: currentWidth,
+      height: currentHeight
     });
     const currentScale = Number(node.scale);
     const shouldRefreshDefaultScale =
       !Number.isFinite(currentScale) ||
       Math.abs(currentScale - defaultImageScale) < 0.0001 ||
       Math.abs(currentScale - previousDefaultScale) < 0.0001;
-    node.originalWidth = img.naturalWidth;
-    node.originalHeight = img.naturalHeight;
+    node.originalWidth = dimensions.width;
+    node.originalHeight = dimensions.height;
     if (shouldRefreshDefaultScale) {
       node.scale = defaultScaleForImageNode(node, {
         width: node.originalWidth,
@@ -10109,7 +11641,7 @@ function createVideoTaskHeader(node) {
 
   const title = document.createElement("strong");
   title.className = "video-task-title";
-  title.textContent = isArkVideoModelName(node.model) ? "火山方舟视频" : "即梦视频";
+  title.textContent = isArkVideoModelName(node.model) ? "火山方舟视频" : isGrokBuildVideoModelName(node.model) ? "Grok 官方视频" : "即梦视频";
 
   const meta = document.createElement("span");
   meta.className = "node-meta";
@@ -10122,19 +11654,23 @@ function createVideoTaskHeader(node) {
 function createVideoTaskSettings(node) {
   const settings = document.createElement("div");
   settings.className = "node-config-grid video-config-grid";
+  const durationField = isGrokBuildVideoModelName(node.model)
+    ? createSelectField("时长", node, "n", [["6", "6 秒"], ["10", "10 秒"]])
+    : createNumberField("时长（秒）", node, "n", videoDurationRangeForModel(node.model));
   settings.append(
     createSelectField("模型", node, "model", dreaminaVideoModelOptions, {
       onChange: (value) => {
-        node.provider = isArkVideoModelName(value) ? "ark" : "dreamina";
-        node.baseUrl = isArkVideoModelName(value) ? config.arkBaseUrl || arkDefaultBaseUrl : "";
-        node.endpointPath = isArkVideoModelName(value) ? arkVideoEndpoint : "dreamina-video-cli";
+        node.provider = videoTaskProvider(value);
+        node.baseUrl = videoTaskBaseUrl(value);
+        node.endpointPath = videoTaskEndpoint(value);
+        node.n = normalizeVideoDurationForModel(node.n, value);
         if (!videoResolutionOptionsForModel(value).some(([resolution]) => resolution === node.quality)) node.quality = "720p";
         if (!videoRatioOptionsForModel(value).some(([ratio]) => ratio === node.size)) node.size = dreaminaVideoDefaultRatio;
         updateNode(node);
       }
     }),
     createSelectField("比例", node, "size", videoRatioOptionsForModel(node.model)),
-    createNumberField("时长（秒）", node, "n", { min: 4, max: 15, step: 1 }),
+    durationField,
     createSelectField("清晰度", node, "quality", videoResolutionOptionsForModel(node.model))
   );
 
@@ -10197,11 +11733,12 @@ function createVideoReferenceFields(node) {
   imageInput.addEventListener("change", () => {
     let files = Array.from(imageInput.files || []);
     const stored = fileStore.get(node.id) || {};
+    const limit = videoReferenceLimit(node.model);
     const remaining = Math.max(
       0,
-      9 - (node.cachedImages?.length || 0) - (stored.images?.length || 0) - (node.arkAssetUris?.length || 0)
+      limit - (node.cachedImages?.length || 0) - (stored.images?.length || 0) - (node.arkAssetUris?.length || 0)
     );
-    if (files.length > remaining) showToast("视频节点最多使用 9 张参考图片");
+    if (files.length > remaining) showToast(`当前视频模型最多使用 ${limit} 张参考图片`);
     files = files.slice(0, remaining);
     const nextFiles = [...(stored.images || []), ...files];
     fileStore.set(node.id, { ...stored, images: nextFiles });
@@ -10231,7 +11768,7 @@ function createVideoReferenceFields(node) {
 
   referenceActions.append(useSelected, pickFromCanvas);
   const contents = [
-    createField("参考图片（最多 9 张，可选）", imageInput, "node-field-full"),
+    createField(`参考图片（最多 ${videoReferenceLimit(node.model)} 张，可选）`, imageInput, "node-field-full"),
     referenceActions,
     createVideoReferenceThumbnails(node),
     createVideoReferenceSummary(node)
@@ -10324,7 +11861,7 @@ function createVideoTaskStatusArea(node) {
     const loading = document.createElement("div");
     loading.className = "node-loading";
     const text = document.createElement("span");
-    text.textContent = isArkVideoModelName(node.model) ? "火山方舟视频生成中" : "即梦视频生成中";
+    text.textContent = isArkVideoModelName(node.model) ? "火山方舟视频生成中" : isGrokBuildVideoModelName(node.model) ? "Grok 官方视频生成中" : "即梦视频生成中";
     const progress = document.createElement("div");
     progress.className = "node-progress";
     progress.append(document.createElement("span"));
@@ -10354,6 +11891,8 @@ function createNodeIcon(name, className = "") {
 
 function nodeIconSvg(name) {
   const icons = {
+    story:
+      '<svg viewBox="0 0 24 24"><path d="M6 3.5h9l3 3V20.5H6z"/><path d="M15 3.5v4h4M9 10h6M9 13.5h6M9 17h3"/><path d="m16.5 14.5 1 2 2 .8-2 1-1 2-1-2-2-.8 2-1 1-2Z"/></svg>',
     "image-generate":
       '<svg viewBox="0 0 24 24"><path d="M4.5 6.5A2 2 0 0 1 6.5 4.5h8A2 2 0 0 1 16.5 6.5v1h1A2 2 0 0 1 19.5 9.5v8a2 2 0 0 1-2 2h-11a2 2 0 0 1-2-2v-11Z"/><path d="m6.5 16 3-3 2.2 2.2 2.1-2.1 3.7 3.9"/><path d="M18 3.8v3M16.5 5.3h3M9 8.5h.01"/></svg>',
     "image-edit":
@@ -10402,6 +11941,8 @@ function createTaskHeader(node) {
     ? "即梦生图"
     : providerForModel(node.model) === "ark"
       ? node.mode === "edit" ? "Seedream 编辑" : "Seedream 生图"
+      : providerForModel(node.model) === "grok-build"
+        ? node.mode === "edit" ? "Grok 官方编辑" : "Grok 官方生图"
       : node.mode === "edit" ? "图片编辑" : "图片生成";
   titleWrap.append(title);
 
@@ -10813,6 +12354,9 @@ function createDebugPanel(node) {
   if (!isDreaminaModelName(node.model) && node.connectionOverride) {
     advancedGrid.append(createTextField("Base URL", node, "baseUrl", "node-field-full"));
   }
+  if (node.connectionOverride) {
+    advancedGrid.append(createSecretField("API Key", node, "apiKeyOverride", "node-field-full"));
+  }
 
   const extraParams = document.createElement("textarea");
   extraParams.className = "node-extra-json";
@@ -10893,7 +12437,16 @@ function createTaskActions(node) {
     deleteNodes([node.id]);
   });
 
-  actions.append(generate, duplicate, remove);
+  actions.append(generate);
+  if (node.status === "running") {
+    const stop = document.createElement("button");
+    stop.type = "button";
+    stop.className = "node-action-danger";
+    stop.append(createNodeIcon("trash", "node-action-icon"), document.createTextNode("停止"));
+    stop.addEventListener("click", () => stopGenerationNode(node.id));
+    actions.append(stop);
+  }
+  actions.append(duplicate, remove);
   return actions;
 }
 
@@ -10943,6 +12496,10 @@ function createEditAssetFields(node) {
       const limit = seedreamReferenceLimit(node.model);
       const remaining = Math.max(0, limit - (node.cachedImages?.length || 0) - (stored.images?.length || 0));
       if (files.length > remaining) showToast(`当前 Seedream 模型最多使用 ${limit} 张参考图片`);
+      files = files.slice(0, remaining);
+    } else if (isGrokBuildImageModelName(node.model)) {
+      const remaining = Math.max(0, 7 - (node.cachedImages?.length || 0) - (stored.images?.length || 0));
+      if (files.length > remaining) showToast("Grok 官方图片编辑最多使用 7 张参考图片");
       files = files.slice(0, remaining);
     }
     const nextFiles = [...(stored.images || []), ...files];
@@ -11858,10 +13415,10 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
     .map((id) => canvasState.nodes.find((node) => node.id === id))
     .filter((node) => node?.type === "image" && node.image?.url);
 
-  if (!target || !["task", "video-task", "midjourney-task"].includes(target.type)) return;
+  if (!target || !["task", "video-task", "midjourney-task"].includes(target.type)) return false;
   if (!imageNodes.length) {
     showToast("没有可用的画布图片");
-    return;
+    return false;
   }
 
   try {
@@ -11877,9 +13434,10 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
     let availableSlots = Number.POSITIVE_INFINITY;
 
     if (target.type === "video-task") {
+      const referenceLimit = videoReferenceLimit(target.model);
       availableSlots = Math.max(
         0,
-        9 - (target.cachedImages?.length || 0) - (stored.images?.length || 0) - existingAssetUris.length
+        referenceLimit - (target.cachedImages?.length || 0) - (stored.images?.length || 0) - existingAssetUris.length
       );
       if (isArkVideoModelName(target.model)) {
         ordinaryImageNodes = [];
@@ -11903,7 +13461,14 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
 
       ordinaryImageNodes = ordinaryImageNodes.filter((imageNode) => !existingReferenceIds.has(imageNode.id));
       if (ordinaryImageNodes.length > availableSlots) {
-        showToast("视频节点最多使用 9 个参考素材，已自动截取");
+        showToast(`当前视频模型最多使用 ${referenceLimit} 个参考素材，已自动截取`);
+        ordinaryImageNodes = ordinaryImageNodes.slice(0, availableSlots);
+      }
+    } else if (target.type === "task" && isGrokBuildImageModelName(target.model)) {
+      availableSlots = Math.max(0, 7 - (target.cachedImages?.length || 0) - (stored.images?.length || 0));
+      ordinaryImageNodes = ordinaryImageNodes.filter((imageNode) => !existingReferenceIds.has(imageNode.id));
+      if (ordinaryImageNodes.length > availableSlots) {
+        showToast("Grok 官方图片编辑最多使用 7 张参考图，已自动截取");
         ordinaryImageNodes = ordinaryImageNodes.slice(0, availableSlots);
       }
     } else if (target.type === "midjourney-task") {
@@ -11926,9 +13491,11 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
       const limitMessage =
         target.type === "midjourney-task"
           ? `Midjourney 节点最多使用 ${midjourneyReferenceLimit} 张参考图`
-          : "视频节点最多使用 9 个参考素材";
+          : target.type === "task" && isGrokBuildImageModelName(target.model)
+            ? "Grok 官方图片编辑最多使用 7 张参考图"
+            : `当前视频模型最多使用 ${videoReferenceLimit(target.model)} 个参考素材`;
       showToast(availableSlots ? "这些图片已经添加为参考素材" : limitMessage);
-      return;
+      return false;
     }
 
     let usableImageNodes = ordinaryImageNodes;
@@ -11972,8 +13539,10 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
     if (files.length) parts.push(`${files.length} 张参考图`);
     if (!parts.length && newlyLinkedAssetSourceIds.length) parts.push(`${newlyLinkedAssetSourceIds.length} 个素材连接`);
     showToast(`已添加${parts.join("和")}`);
+    return true;
   } catch (error) {
     showToast(error.message || "设置参考图失败");
+    return false;
   }
 }
 
@@ -13477,6 +15046,19 @@ function createTextField(label, node, key, className = "") {
   return createField(label, input, className);
 }
 
+function createSecretField(label, node, key, className = "") {
+  const input = document.createElement("input");
+  input.type = "password";
+  input.autocomplete = "off";
+  input.value = node[key] || "";
+  input.addEventListener("pointerdown", (event) => event.stopPropagation());
+  input.addEventListener("input", () => {
+    node[key] = input.value;
+    saveCanvasState();
+  });
+  return createField(label, input, className);
+}
+
 function createNumberField(label, node, key, options = {}) {
   const input = document.createElement("input");
   input.type = "number";
@@ -13554,6 +15136,7 @@ function createContextMenu() {
     ["生图节点", () => addTaskNode("create", pendingCreatePoint)],
     ["Midjourney 节点", () => addMidjourneyNode(pendingCreatePoint)],
     ["即梦视频", () => addDreaminaVideoNode(pendingCreatePoint)],
+    ["剧本拆解", () => addStoryBreakdownNode(pendingCreatePoint)],
     ["虚拟人像入库", () => addArkAssetNode(pendingCreatePoint)],
     ["ChatGPT 节点", () => addChatGptNode(pendingCreatePoint)],
     ["文字节点", () => addNoteNode(pendingCreatePoint)],
@@ -13784,6 +15367,10 @@ function preparePastedNode(source, idMap, offset, createdAt) {
     copy.sourceTaskId = idMap.get(copy.sourceTaskId);
   }
 
+  if (copy.storyNodeId && idMap.has(copy.storyNodeId)) {
+    copy.storyNodeId = idMap.get(copy.storyNodeId);
+  }
+
   if (Array.isArray(copy.referenceImageNodeIds)) {
     copy.referenceImageNodeIds = dedupeStrings(copy.referenceImageNodeIds.map((id) => idMap.get(id) || id));
   }
@@ -13875,10 +15462,14 @@ function deleteNodes(nodeIds) {
   if (!ids.size) return;
 
   const before = canvasState.nodes.length;
-  canvasState.nodes = canvasState.nodes.filter((node) => !ids.has(node.id));
+  setCanvasNodes(canvasState.nodes.filter((node) => !ids.has(node.id)));
   if (canvasState.nodes.length === before) return;
 
   for (const id of ids) {
+    storyAnalysisControllers.get(id)?.abort();
+    storyAnalysisControllers.delete(id);
+    generationControllers.get(id)?.abort();
+    generationControllers.delete(id);
     selectedNodeIds.delete(id);
     fileStore.delete(id);
   }
@@ -13908,18 +15499,20 @@ function startNodeDrag(event, nodeId, options = {}) {
   event.stopPropagation();
   hideCreateMenu();
 
-  const node = canvasState.nodes.find((item) => item.id === nodeId);
+  const node = canvasNodeByIdGet(nodeId);
   if (!node) return;
   if (node.type === "region" && node.locked && !options.force) {
     selectOnly(node.id);
     return;
   }
 
+  let deferredSelection = false;
   if (event.shiftKey || event.ctrlKey || event.metaKey) {
     toggleSelection(nodeId);
     return;
   } else if (!selectedNodeIds.has(nodeId)) {
-    selectOnly(nodeId, { revealControls: true });
+    selectOnly(nodeId, { rerender: false });
+    deferredSelection = true;
   }
 
   if (!selectedNodeIds.has(nodeId)) return;
@@ -13927,29 +15520,49 @@ function startNodeDrag(event, nodeId, options = {}) {
   const selectedNodes = canvasState.nodes.filter((item) => selectedNodeIds.has(item.id));
   for (const item of selectedNodes) {
     item.z = item.type === "region" ? Math.min(Number(item.z) || 0, 0) : ++canvasState.nextZ;
+    const tile = canvasNodeElement(item.id);
+    if (tile) tile.style.zIndex = item.z;
   }
-  renderCanvas();
 
-  const dragElement = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === nodeId);
+  const dragElement = canvasNodeElement(nodeId);
   dragElement?.setPointerCapture?.(event.pointerId);
+  dragModelRects.clear();
+  for (const item of selectedNodes) {
+    const tile = canvasNodeElement(item.id);
+    if (!tile) continue;
+    const rect = tile.getBoundingClientRect();
+    const topLeft = getWorldPointFromClient(rect.left, rect.top);
+    const bottomRight = getWorldPointFromClient(rect.right, rect.bottom);
+    dragModelRects.set(item.id, {
+      width: Math.max(1, bottomRight.x - topLeft.x),
+      height: Math.max(1, bottomRight.y - topLeft.y)
+    });
+  }
 
   const start = {
     x: event.clientX,
     y: event.clientY,
     zoom: canvasState.viewport.zoom,
-    nodes: selectedNodes.map((item) => ({ id: item.id, x: item.x, y: item.y }))
+    nodes: selectedNodes
+      .map((item) => ({ node: item, tile: canvasNodeElement(item.id), x: item.x, y: item.y }))
+      .filter((item) => item.tile)
   };
   let isDragging = false;
+  let moveFrame = 0;
+  let pendingMoveEvent = null;
 
-  const move = (moveEvent) => {
+  const applyMove = () => {
+    moveFrame = 0;
+    const moveEvent = pendingMoveEvent;
+    pendingMoveEvent = null;
+    if (!moveEvent) return;
     const dx = (moveEvent.clientX - start.x) / start.zoom;
     const dy = (moveEvent.clientY - start.y) / start.zoom;
     if (!isDragging && Math.hypot(moveEvent.clientX - start.x, moveEvent.clientY - start.y) < 4) return;
     isDragging = true;
     for (const item of start.nodes) {
-      const target = canvasState.nodes.find((nodeItem) => nodeItem.id === item.id);
-      const tile = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === item.id);
-      if (!target || !tile) continue;
+      const target = item.node;
+      const tile = item.tile;
       target.x = Math.round(item.x + dx);
       target.y = Math.round(item.y + dy);
       tile.style.left = `${target.x}px`;
@@ -13959,27 +15572,52 @@ function startNodeDrag(event, nodeId, options = {}) {
     renderReferenceLinks();
   };
 
+  const move = (moveEvent) => {
+    pendingMoveEvent = moveEvent;
+    if (!moveFrame) moveFrame = requestAnimationFrame(applyMove);
+  };
+
   const stop = () => {
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", stop);
+    window.removeEventListener("pointercancel", stop);
+    if (moveFrame) cancelAnimationFrame(moveFrame);
+    moveFrame = 0;
+    applyMove();
     dragElement?.releasePointerCapture?.(event.pointerId);
     if (isDragging) saveCanvasState();
+    if (deferredSelection) renderCanvas();
+    dragModelRects.clear();
     syncChatGptHostSoon();
   };
 
   window.addEventListener("pointermove", move);
   window.addEventListener("pointerup", stop, { once: true });
+  window.addEventListener("pointercancel", stop, { once: true });
 }
 
 function selectOnly(nodeId, options = {}) {
+  const previousSelection = [...selectedNodeIds];
   selectedNodeIds.clear();
   selectedNodeIds.add(nodeId);
+
+  if (options.rerender === false) {
+    // Selection controls and note editing sync are intentionally deferred; the
+    // caller (startNodeDrag stop) renders after pointerup/pointercancel.
+    for (const id of previousSelection) {
+      canvasNodeElement(id)?.classList.remove("is-selected");
+    }
+    canvasNodeElement(nodeId)?.classList.add("is-selected");
+    updateSelectionToolbar();
+    updateCanvasMeta();
+    return;
+  }
 
   renderCanvas();
 
   if (options.focusSelector) {
     window.requestAnimationFrame(() => {
-      const tile = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === nodeId);
+      const tile = canvasNodeElement(nodeId);
       tile?.querySelector(options.focusSelector)?.focus();
     });
   }
@@ -14009,7 +15647,7 @@ function selectNodesInRect(worldRect, additive = false) {
 }
 
 function getNodeBounds(node) {
-  const tile = Array.from(canvasStage.children).find((child) => child.dataset.nodeId === node.id);
+  const tile = canvasNodeElement(node.id);
   const fixedChatGpt = node.type === "chatgpt" && selectedNodeIds.has(node.id);
   const fixedScale = fixedChatGpt ? 1 / Math.max(canvasState.viewport.zoom || 1, 0.001) : 1;
   const fallbackWidth =
@@ -14027,6 +15665,8 @@ function getNodeBounds(node) {
           ? defaultCameraNodeWidth
         : node.type === "ark-asset"
           ? node.width || defaultArkAssetNodeWidth
+        : node.type === "story-breakdown"
+          ? node.width || defaultStoryBreakdownWidth
         : node.type === "chatgpt"
           ? clamp(Number(node.width) || defaultChatGptWidth, minChatGptWidth, maxChatGptWidth)
         : node.type === "video-task"
@@ -14049,6 +15689,8 @@ function getNodeBounds(node) {
           ? defaultCameraNodeHeight
         : node.type === "ark-asset"
           ? defaultArkAssetNodeHeight
+        : node.type === "story-breakdown"
+          ? defaultStoryBreakdownHeight
         : node.type === "chatgpt"
           ? clamp(Number(node.height) || defaultChatGptHeight, minChatGptHeight, maxChatGptHeight)
         : node.type === "video-task"
@@ -14084,7 +15726,11 @@ function clearCanvas() {
   if (!confirmed) return;
 
   pushUndoSnapshot(createHistorySnapshot());
-  canvasState.nodes = [];
+  for (const controller of storyAnalysisControllers.values()) controller.abort();
+  storyAnalysisControllers.clear();
+  for (const controller of generationControllers.values()) controller.abort();
+  generationControllers.clear();
+  setCanvasNodes([]);
   canvasState.nextZ = 1;
   selectedNodeIds.clear();
   referencePickTargetNodeId = null;
@@ -14105,6 +15751,7 @@ function updateCanvasMeta() {
   const portraitNodes = canvasState.nodes.filter((node) => node.type === "portrait");
   const cameraNodes = canvasState.nodes.filter((node) => node.type === "camera");
   const arkAssetNodes = canvasState.nodes.filter((node) => node.type === "ark-asset");
+  const storyNodes = canvasState.nodes.filter((node) => node.type === "story-breakdown");
   const chatNodes = canvasState.nodes.filter((node) => node.type === "chatgpt");
   const regionNodes = canvasState.nodes.filter((node) => node.type === "region");
   const running = [...taskNodes, ...midjourneyTaskNodes, ...videoTaskNodes].filter((node) => node.status === "running").length;
@@ -14116,7 +15763,7 @@ function updateCanvasMeta() {
     requestMeta.textContent = "等待添加节点";
     return;
   }
-  requestMeta.textContent = `${taskNodes.length} 个生图 · ${midjourneyTaskNodes.length} 个 MJ · ${videoTaskNodes.length} 个视频任务 · ${imageNodes.length} 张图 · ${videoNodes.length} 个视频 · ${noteNodes.length} 个文字 · ${portraitNodes.length} 个肖像 · ${cameraNodes.length} 个机位 · ${arkAssetNodes.length} 个入库 · ${regionNodes.length} 个区域 · ${chatNodes.length} 个 ChatGPT`;
+  requestMeta.textContent = `${storyNodes.length} 个剧本 · ${taskNodes.length} 个生图 · ${midjourneyTaskNodes.length} 个 MJ · ${videoTaskNodes.length} 个视频任务 · ${imageNodes.length} 张图 · ${videoNodes.length} 个视频 · ${noteNodes.length} 个文字 · ${portraitNodes.length} 个肖像 · ${cameraNodes.length} 个机位 · ${arkAssetNodes.length} 个入库 · ${regionNodes.length} 个区域 · ${chatNodes.length} 个 ChatGPT`;
 }
 
 function isRunnableTask(node) {
@@ -14260,6 +15907,10 @@ function migrateNode(node) {
     return migrated;
   }
 
+  if (node.type === "story-breakdown") {
+    return migrateStoryBreakdownNode(node);
+  }
+
   if (node.type === "image") {
     const dimensions = parseImageDimensions(node.image, node.size);
     const originalWidth = Number(node.originalWidth) || dimensions.width || 512;
@@ -14323,6 +15974,64 @@ function migrateNode(node) {
     images: node.url ? [normalizeNodeImage({ url: node.url, filename: node.filename }, node)] : [],
     status: node.url ? "done" : "idle"
   });
+}
+
+function migrateStoryBreakdownNode(node) {
+  const result = normalizeStoryBreakdownResult(node.result);
+  const imageModel = normalizeImageModelName(node.imageModel || config.defaultModel || "gpt-image-2");
+  const videoModel = isSupportedVideoModelName(node.videoModel) ? node.videoModel : dreaminaVideoDefaultModel;
+  const assetIds = new Set((result?.assets || []).map((asset) => asset.id));
+  const shotIds = new Set((result?.shots || []).map((shot) => shot.id));
+  const selectedAssetIds = Array.isArray(node.selectedAssetIds)
+    ? dedupeStrings(node.selectedAssetIds).filter((id) => assetIds.has(id))
+    : [...assetIds];
+  const selectedStoryboardShotIds = Array.isArray(node.selectedStoryboardShotIds)
+    ? dedupeStrings(node.selectedStoryboardShotIds).filter((id) => shotIds.has(id))
+    : [...shotIds];
+  const selectedVideoShotIds = Array.isArray(node.selectedVideoShotIds)
+    ? dedupeStrings(node.selectedVideoShotIds).filter((id) => shotIds.has(id))
+    : [...shotIds];
+  const imageSize = isSizeAllowedForModel(node.imageSize, imageModel, "create")
+    ? node.imageSize
+    : defaultSizeForModel(imageModel, "create");
+  const videoSize = videoRatioOptionsForModel(videoModel).some(([value]) => value === node.videoSize)
+    ? node.videoSize
+    : dreaminaVideoDefaultRatio;
+  const videoQuality = videoResolutionOptionsForModel(videoModel).some(([value]) => value === node.videoQuality)
+    ? node.videoQuality
+    : dreaminaVideoDefaultResolution;
+  return {
+    ...node,
+    id: node.id || createId(),
+    type: "story-breakdown",
+    title: String(node.title || result?.title || "剧本拆解"),
+    script: String(node.script || ""),
+    scriptFileName: String(node.scriptFileName || ""),
+    instructions: String(node.instructions || ""),
+    model: String(node.model || config.assistantModel || assistantDefaultModel),
+    aspectRatio: storyAspectRatioOptions.some(([value]) => value === node.aspectRatio) ? node.aspectRatio : "16:9",
+    visualStyle: String(node.visualStyle || "电影级写实"),
+    imageModel,
+    imageSize,
+    assetRatioByKind: normalizeStoryAssetRatios(node.assetRatioByKind),
+    videoModel,
+    videoSize,
+    videoQuality,
+    videoDuration: String(node.videoDuration || dreaminaVideoDefaultDuration),
+    result,
+    activeTab: ["assets", "storyboards", "videos"].includes(node.activeTab) ? node.activeTab : "assets",
+    selectedAssetIds,
+    selectedStoryboardShotIds,
+    selectedVideoShotIds,
+    analysisVersion: String(node.analysisVersion || ""),
+    status: node.status === "running" || node.status === "loading-file" ? "idle" : node.status || "idle",
+    error: String(node.error || ""),
+    width: Math.max(Number(node.width) || defaultStoryBreakdownWidth, 600),
+    x: Number(node.x) || 0,
+    y: Number(node.y) || 0,
+    z: node.z || 1,
+    createdAt: node.createdAt || new Date().toISOString()
+  };
 }
 
 function migrateMidjourneyTaskNode(node) {
@@ -14448,7 +16157,7 @@ function migrateTaskNode(node) {
 function migrateVideoTaskNode(node) {
   const extraParams = isPlainObject(node.extraParams) ? node.extraParams : {};
   const promptNoteNodeIds = dedupeStrings(node.promptNoteNodeIds || []);
-  const model = isDreaminaVideoModelName(node.model) || isArkVideoModelName(node.model) ? node.model : dreaminaVideoDefaultModel;
+  const model = isSupportedVideoModelName(node.model) ? node.model : dreaminaVideoDefaultModel;
   const arkAssetUris = dedupeStrings([
     ...(Array.isArray(node.arkAssetUris) ? node.arkAssetUris : []),
     ...parseArkAssetUriText(node.arkAssetUrisText || "")
@@ -14457,15 +16166,15 @@ function migrateVideoTaskNode(node) {
     ...node,
     id: node.id || createId(),
     type: "video-task",
-    provider: isArkVideoModelName(model) ? "ark" : "dreamina",
+    provider: videoTaskProvider(model),
     prompt: node.prompt || "",
     model,
     n: String(node.n || dreaminaVideoDefaultDuration),
     size: videoRatioOptionsForModel(model).some(([value]) => value === node.size) ? node.size : dreaminaVideoDefaultRatio,
     quality: videoResolutionOptionsForModel(model).some(([value]) => value === node.quality) ? node.quality : dreaminaVideoDefaultResolution,
     format: "mp4",
-    baseUrl: isArkVideoModelName(model) ? config.arkBaseUrl || arkDefaultBaseUrl : "",
-    endpointPath: isArkVideoModelName(model) ? arkVideoEndpoint : "dreamina-video-cli",
+    baseUrl: videoTaskBaseUrl(model),
+    endpointPath: videoTaskEndpoint(model),
     mode: "video",
     extraParams,
     extraParamsText: node.extraParamsText || JSON.stringify(extraParams, null, 2),
@@ -14492,12 +16201,10 @@ function migrateVideoTaskNode(node) {
 }
 
 function providerForModel(model) {
-  if (isArkImageModelName(model) || isArkVideoModelName(model)) return "ark";
+  if (isArkVideoModelName(model)) return "ark";
+  if (isGrokBuildVideoModelName(model)) return "grok-build";
   if (isDreaminaVideoModelName(model)) return "dreamina";
-  if (isGrokModelName(model)) return "grok";
-  if (isGrsaiModelName(model)) return "grsai";
-  if (isDreaminaModelName(model)) return "dreamina";
-  return "";
+  return imageModelProviderName(imageModelProfileKind(model));
 }
 
 function materializeTaskImageNodes() {
@@ -14532,6 +16239,10 @@ function materializeTaskImageNodes() {
         image,
         sourceTaskId: task.id,
         sourceImageKey: key,
+        storyNodeId: task.storyNodeId || "",
+        storyItemId: task.storyItemId || "",
+        storyOutputKind: task.storyOutputKind || "",
+        storyAnalysisVersion: task.storyAnalysisVersion || "",
         originalWidth: dimensions.width || 512,
         originalHeight: dimensions.height || 512,
         scale,
@@ -14574,6 +16285,10 @@ function materializeTaskVideoNodes() {
         video,
         sourceTaskId: task.id,
         sourceVideoKey: key,
+        storyNodeId: task.storyNodeId || "",
+        storyItemId: task.storyItemId || "",
+        storyOutputKind: task.storyOutputKind || "",
+        storyAnalysisVersion: task.storyAnalysisVersion || "",
         originalWidth: dimensions.width || defaultVideoWidth,
         originalHeight: dimensions.height || defaultVideoHeight,
         scale: defaultVideoScale,
@@ -14762,10 +16477,201 @@ async function switchProject(projectId) {
   await loadProjectById(projectId);
 }
 
-function createNewProject() {
-  saveAssistantChat({ immediate: true });
-  saveCanvasState({ history: false });
-  persistDiskProject(serializeCanvasState(), currentProjectId);
+async function deleteCurrentProject() {
+  const project = projectList.find((item) => item.id === currentProjectId) || {
+    id: currentProjectId,
+    name: currentProjectName,
+    nodeCount: canvasState.nodes.length
+  };
+  const projectName = project.name || currentProjectId;
+  const confirmed = window.confirm(
+    `确定要删除画布“${projectName}”吗？\n\n该画布的工程数据、生成图片/视频缓存和助手聊天记录都会被删除，此操作无法撤销。`
+  );
+  if (!confirmed) return;
+
+  const currentDeleted = projectIds.includes(currentProjectId);
+  if (!currentDeleted) {
+    saveAssistantChat({ immediate: true });
+    saveCanvasState({ history: false });
+    await persistDiskProject(serializeCanvasState(), currentProjectId, { updateList: false });
+  }
+
+  window.clearTimeout(saveTimer);
+  saveTimer = 0;
+  if (assistantChatBackupTimer) {
+    window.clearTimeout(assistantChatBackupTimer);
+    assistantChatBackupTimer = 0;
+  }
+
+  const deletedId = currentProjectId;
+  try {
+    const response = await fetch(`/api/project?projectId=${encodeURIComponent(deletedId)}`, { method: "DELETE" });
+    const data = await readJsonResponse(response);
+    if (!response.ok) throw new Error(data.error || "画布删除失败");
+
+    localStorage.removeItem(projectStorageKey(deletedId));
+    localStorage.removeItem(assistantStorageKey(deletedId));
+    if (deletedId === "default") {
+      localStorage.removeItem(storageKey);
+      localStorage.removeItem(legacyStorageKey);
+    }
+
+    projectList = projectList.filter((item) => item.id !== deletedId);
+    const nextProject = projectList.find((item) => item.id !== deletedId) || null;
+    if (nextProject) {
+      selectedNodeIds.clear();
+      referencePickTargetNodeId = null;
+      fileStore.clear();
+      await loadProjectById(nextProject.id);
+    } else {
+      createNewProject({ announce: false, persist: true, skipSave: true });
+    }
+    renderProjectSelect();
+    showToast(`已删除画布“${projectName}”及其本地缓存`);
+  } catch (error) {
+    showToast(error.message || "画布删除失败");
+  }
+}
+
+function openBatchDeleteProjectDialog() {
+  const projects = projectList.length
+    ? projectList
+    : [{ id: currentProjectId, name: currentProjectName, nodeCount: canvasState.nodes.length }];
+  batchDeleteSelectedProjectIds = new Set();
+  renderBatchDeleteProjectList(projects);
+  if (typeof batchDeleteProjectDialog?.showModal === "function") batchDeleteProjectDialog.showModal();
+}
+
+function closeBatchDeleteProjectDialog() {
+  batchDeleteProjectDialog?.close();
+  batchDeleteSelectedProjectIds.clear();
+}
+
+function renderBatchDeleteProjectList(projects = projectList) {
+  if (!batchDeleteProjectList) return;
+  batchDeleteProjectList.replaceChildren();
+
+  if (!projects.length) {
+    const empty = document.createElement("p");
+    empty.className = "batch-delete-empty muted";
+    empty.textContent = "暂无可删除的画布";
+    batchDeleteProjectList.append(empty);
+    updateBatchDeleteSelectionState();
+    return;
+  }
+
+  for (const project of projects) {
+    const id = normalizeProjectId(project.id);
+    const label = document.createElement("label");
+    label.className = "batch-delete-project-item";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = id;
+    checkbox.checked = batchDeleteSelectedProjectIds.has(id);
+    checkbox.dataset.projectId = id;
+
+    const copy = document.createElement("span");
+    copy.className = "batch-delete-project-copy";
+    const name = document.createElement("strong");
+    name.textContent = project.name || id;
+    const meta = document.createElement("small");
+    meta.textContent = `${id}${id === currentProjectId ? " · 当前画布" : ""}${Number.isFinite(Number(project.nodeCount)) ? ` · ${project.nodeCount} 个节点` : ""}`;
+    copy.append(name, meta);
+
+    label.append(checkbox, copy);
+    batchDeleteProjectList.append(label);
+  }
+  updateBatchDeleteSelectionState();
+}
+
+function updateBatchDeleteSelectionState() {
+  const checkboxes = [...(batchDeleteProjectList?.querySelectorAll("input[data-project-id]") || [])];
+  batchDeleteSelectedProjectIds = new Set(
+    checkboxes.filter((checkbox) => checkbox.checked).map((checkbox) => normalizeProjectId(checkbox.dataset.projectId))
+  );
+  const total = checkboxes.length;
+  const selected = batchDeleteSelectedProjectIds.size;
+  if (batchDeleteSelectionCount) batchDeleteSelectionCount.textContent = `已选择 ${selected} 个`;
+  if (batchDeleteSelectAll) {
+    batchDeleteSelectAll.checked = total > 0 && selected === total;
+    batchDeleteSelectAll.indeterminate = selected > 0 && selected < total;
+  }
+  if (confirmBatchDeleteProjectButton) confirmBatchDeleteProjectButton.disabled = selected === 0;
+}
+
+function toggleAllBatchDeleteProjects() {
+  const checked = Boolean(batchDeleteSelectAll?.checked);
+  for (const checkbox of batchDeleteProjectList?.querySelectorAll("input[data-project-id]") || []) {
+    checkbox.checked = checked;
+  }
+  updateBatchDeleteSelectionState();
+}
+
+async function deleteSelectedProjects() {
+  const projectIds = [...batchDeleteSelectedProjectIds];
+  if (!projectIds.length) {
+    showToast("请先选择要删除的画布");
+    return;
+  }
+
+  const selectedProjects = projectList.filter((project) => projectIds.includes(project.id));
+  const nameList = selectedProjects.map((project) => project.name || project.id).join("、");
+  const confirmed = window.confirm(
+    `确定要删除选中的 ${projectIds.length} 个画布吗？\n\n${nameList || projectIds.join("、")}\n\n这些画布的工程数据、生成图片/视频缓存和助手聊天记录都会被删除，此操作无法撤销。`
+  );
+  if (!confirmed) return;
+
+  window.clearTimeout(saveTimer);
+  saveTimer = 0;
+  if (assistantChatBackupTimer) {
+    window.clearTimeout(assistantChatBackupTimer);
+    assistantChatBackupTimer = 0;
+  }
+
+  try {
+    const response = await fetch("/api/projects", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectIds })
+    });
+    const data = await readJsonResponse(response);
+    if (!response.ok) throw new Error(data.error || "批量删除画布失败");
+
+    for (const projectId of projectIds) {
+      localStorage.removeItem(projectStorageKey(projectId));
+      localStorage.removeItem(assistantStorageKey(projectId));
+      if (projectId === "default") {
+        localStorage.removeItem(storageKey);
+        localStorage.removeItem(legacyStorageKey);
+      }
+    }
+
+    projectList = projectList.filter((project) => !projectIds.includes(project.id));
+    closeBatchDeleteProjectDialog();
+
+    if (currentDeleted) {
+      selectedNodeIds.clear();
+      referencePickTargetNodeId = null;
+      fileStore.clear();
+      const nextProject = projectList[0];
+      if (nextProject) await loadProjectById(nextProject.id);
+      else createNewProject({ announce: false, persist: true, skipSave: true });
+    }
+    renderProjectSelect();
+    showToast(`已删除 ${projectIds.length} 个画布及其本地缓存`);
+  } catch (error) {
+    showToast(error.message || "批量删除画布失败");
+  }
+}
+
+function createNewProject(options = {}) {
+  const { announce = true, persist = true, skipSave = false } = options;
+  if (!skipSave) {
+    saveAssistantChat({ immediate: true });
+    saveCanvasState({ history: false });
+    if (persist) persistDiskProject(serializeCanvasState(), currentProjectId);
+  }
   selectedNodeIds.clear();
   referencePickTargetNodeId = null;
   fileStore.clear();
@@ -14790,7 +16696,7 @@ function createNewProject() {
   renderAssistantSkillLibrary();
   upsertProjectSummary({ id: currentProjectId, name: currentProjectName, savedAt: new Date().toISOString(), nodeCount: 0 });
   renderProjectSelect();
-  showToast("已新建画布");
+  if (announce) showToast("已新建画布");
 }
 
 function renameCurrentProject(name) {
@@ -14861,7 +16767,7 @@ function applySavedState(saved, options = {}) {
   if (!saved || typeof saved !== "object") return;
 
   if (Array.isArray(saved.nodes)) {
-    canvasState.nodes = saved.nodes.map(migrateNode);
+    setCanvasNodes(saved.nodes.map(migrateNode));
     syncAllArkAssetMarks();
   }
   if (options.materializeImages !== false) {

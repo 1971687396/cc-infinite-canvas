@@ -48,6 +48,14 @@
               <span class="topbar-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4.5h12l2 2V19.5H5z"/><path d="M8 4.5v5h8v-5M8 19.5v-6h8v6"/></svg></span>
               <span>保存</span>
             </button>
+            <button id="deleteProjectButton" type="button" class="secondary compact topbar-action project-delete-action" title="删除当前画布" aria-label="删除当前画布">
+              <span class="topbar-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 7h10M10 7V5h4v2M9 10v7M15 10v7M8 7l1 12h6l1-12"/></svg></span>
+              <span>删除</span>
+            </button>
+            <button id="batchDeleteProjectButton" type="button" class="secondary compact topbar-action project-delete-action" title="批量删除画布" aria-label="批量删除画布">
+              <span class="topbar-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 7h14M8 7V5h8v2M8 10v8M12 10v8M16 10v8M6 7l1 13h10l1-13"/><path d="M3.5 4.5h17"/></svg></span>
+              <span>批量删除</span>
+            </button>
             <button id="generateAllButton" type="button" class="secondary compact topbar-action">
               <span class="topbar-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 1.35 4.15L17.5 8.5l-4.15 1.35L12 14l-1.35-4.15L6.5 8.5l4.15-1.35L12 3Z"/><path d="m18.5 14 .75 2.25 2.25.75-2.25.75L18.5 20l-.75-2.25L15.5 17l2.25-.75.75-2.25Z"/></svg></span>
               <span>生成全部</span>
@@ -80,6 +88,12 @@
                 <svg viewBox="0 0 24 24"><path d="M5 5.5h14A1.5 1.5 0 0 1 20.5 7v10A1.5 1.5 0 0 1 19 18.5H5A1.5 1.5 0 0 1 3.5 17V7A1.5 1.5 0 0 1 5 5.5Z"/><path d="M10 9.3v5.4l4.6-2.7L10 9.3Z"/><path d="M7 5.5v13M17 5.5v13"/></svg>
               </span>
               <span class="rail-label">视频</span>
+            </button>
+            <button id="addStoryBreakdownButton" type="button" class="rail-button" title="剧本拆解" aria-label="剧本拆解">
+              <span class="rail-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M6 3.5h9l3 3V20.5H6z"/><path d="M15 3.5v4h4M9 10h6M9 13.5h6M9 17h3"/><path d="m16.5 14.5 1 2 2 .8-2 1-1 2-1-2-2-.8 2-1 1-2Z"/></svg>
+              </span>
+              <span class="rail-label">剧本</span>
             </button>
             <button id="addArkAssetButton" type="button" class="rail-button" title="虚拟人像入库" aria-label="虚拟人像入库">
               <span class="rail-icon" aria-hidden="true">
@@ -180,6 +194,22 @@
                 <select id="assistantModelSelect"></select>
               </span>
             </label>
+            <div class="assistant-behavior-options" aria-label="助手生成设置">
+              <label class="assistant-behavior-toggle" title="助手创建生图或视频节点时，自动把当前选中的画布图片添加为参考图">
+                <span>
+                  <strong>自动带入参考图</strong>
+                  <small>使用当前选中图片</small>
+                </span>
+                <input id="assistantAutoAttachReferencesToggle" type="checkbox" role="switch" checked />
+              </label>
+              <label class="assistant-behavior-toggle" title="助手返回计划后自动应用，并开始生成本次新建的生图或视频节点">
+                <span>
+                  <strong>自动生成</strong>
+                  <small>自动应用并生成</small>
+                </span>
+                <input id="assistantAutoGenerateToggle" type="checkbox" role="switch" />
+              </label>
+            </div>
             <button id="assistantAnalyzeButton" type="button" class="secondary compact">
               <span class="assistant-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12h4l2-6 3 12 2-6h3"/><path d="M4 19h16"/></svg></span>
               <span>分析选中</span>
@@ -267,6 +297,8 @@
         <nav class="settings-tabs settings-field-full" aria-label="设置分类">
           <button id="settingsGeneralTab" type="button" class="is-active" aria-selected="true">通用设置</button>
           <button id="settingsArkTab" type="button" aria-selected="false">火山方舟</button>
+          <button id="settingsGrokBuildTab" type="button" aria-selected="false">Grok 官方</button>
+          <button id="settingsDeepSeekTab" type="button" aria-selected="false">DeepSeek 官方</button>
         </nav>
 
         <label class="settings-field settings-field-full settings-general-section">
@@ -377,6 +409,73 @@
               <span>Seedance 2.0 Mini</span>
               <input data-ark-model="ark-seedance-2.0-mini" type="text" autocomplete="off" />
             </label>
+            <label class="ark-model-row">
+              <span>Seedance 2.5</span>
+              <input data-ark-model="ark-seedance-2.5" type="text" autocomplete="off" />
+            </label>
+          </div>
+        </section>
+
+        <section class="grok-build-settings settings-field-full settings-page-section" aria-label="Grok 官方账号设置" hidden>
+          <div class="dreamina-settings-head">
+            <div>
+              <strong>Grok 官方账号</strong>
+              <span id="grokBuildStatusText">检测中</span>
+            </div>
+            <div class="dreamina-settings-actions">
+              <button id="grokBuildInstallButton" type="button" class="secondary compact">安装/更新 CLI</button>
+              <button id="grokBuildLoginButton" type="button" class="secondary compact">登录 Grok</button>
+              <button id="grokBuildReloginButton" type="button" class="secondary compact">切换账号</button>
+              <button id="grokBuildLogoutButton" type="button" class="secondary compact">退出登录</button>
+              <button id="grokBuildRefreshButton" type="button" class="secondary compact">测试连接</button>
+            </div>
+          </div>
+          <div id="grokBuildAccountMeta" class="dreamina-account-meta muted"></div>
+          <div id="grokBuildActionProgress" class="dreamina-action-progress" hidden>
+            <div class="dreamina-action-track"><span id="grokBuildActionBar"></span></div>
+            <span id="grokBuildActionText">等待操作</span>
+          </div>
+          <label class="settings-field settings-field-full">
+            <span>仅 Grok 使用的代理（可选）</span>
+            <input id="settingsGrokBuildProxy" type="text" autocomplete="off" placeholder="例如 http://127.0.0.1:7890，留空则使用系统网络" />
+          </label>
+          <div class="dreamina-help">
+            <span class="dreamina-help-icon" aria-hidden="true">i</span>
+            <div>
+              <strong>使用 SuperGrok 账号</strong>
+              <p>登录凭据由 Grok Build 官方 CLI 保存在用户目录，cc无限画布不会读取或保存 OAuth Token。官方模型可用于助手、生图、图片编辑和视频生成；用量计入 Grok 账号的共享额度。</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="deepseek-settings settings-field-full settings-page-section" aria-label="DeepSeek 官方 API 设置" hidden>
+          <div class="ark-settings-head">
+            <div>
+              <strong>DeepSeek 官方 API</strong>
+              <small>配置 deepseek-v4-pro 的官方接口与专属 Key</small>
+            </div>
+            <span id="settingsDeepSeekStatus" class="connection-key-status">尚未配置 Key</span>
+          </div>
+          <div class="ark-settings-grid">
+            <label class="settings-field settings-field-full">
+              <span>DeepSeek API Key</span>
+              <input id="settingsDeepSeekApiKey" type="password" autocomplete="off" placeholder="留空则不修改" />
+            </label>
+            <label class="settings-field settings-field-full">
+              <span>Base URL</span>
+              <input id="settingsDeepSeekBaseUrl" type="url" autocomplete="off" value="https://api.deepseek.com" />
+            </label>
+            <label class="settings-field settings-field-full">
+              <span>模型名</span>
+              <input id="settingsDeepSeekModel" type="text" autocomplete="off" value="deepseek-v4-pro" />
+            </label>
+          </div>
+          <div class="dreamina-help">
+            <span class="dreamina-help-icon" aria-hidden="true">i</span>
+            <div>
+              <strong>官方 API</strong>
+              <p>该配置只写入 deepseek-v4-pro 的模型连接。助手和剧本拆解选择该模型时使用此 Key 与地址。</p>
+            </div>
           </div>
         </section>
 
@@ -413,6 +512,7 @@
                 <option value="gemini-native">Gemini generateContent</option>
                 <option value="anthropic-messages">Anthropic Messages</option>
                 <option value="grsai">Grsai 异步生图</option>
+                <option value="media-generate">通用 Media Generate</option>
                 <option value="midjourney-proxy">Midjourney Proxy Plus</option>
                 <option value="ark-images">火山方舟 Images</option>
                 <option value="ark-video">火山方舟视频任务</option>
@@ -555,6 +655,32 @@
         <div class="settings-actions">
           <span id="settingsStatus" class="muted"></span>
           <button id="saveSettingsButton" type="submit">保存设置</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="batchDeleteProjectDialog" class="settings-dialog batch-delete-dialog">
+      <form id="batchDeleteProjectForm" method="dialog">
+        <div class="settings-head">
+          <div>
+            <p class="eyebrow">Projects</p>
+            <h2>批量删除画布</h2>
+          </div>
+          <button id="closeBatchDeleteProjectButton" type="button" class="secondary compact">关闭</button>
+        </div>
+
+        <div class="batch-delete-toolbar settings-field-full">
+          <label class="batch-delete-select-all">
+            <input id="batchDeleteSelectAll" type="checkbox" />
+            <span>全选</span>
+          </label>
+          <span id="batchDeleteSelectionCount" class="muted">已选择 0 个</span>
+        </div>
+        <div id="batchDeleteProjectList" class="batch-delete-project-list settings-field-full"></div>
+
+        <div class="settings-actions">
+          <span class="muted">删除后会同时清除对应的图片、视频和助手缓存。</span>
+          <button id="confirmBatchDeleteProjectButton" type="button" class="project-delete-action">删除选中画布</button>
         </div>
       </form>
     </dialog>

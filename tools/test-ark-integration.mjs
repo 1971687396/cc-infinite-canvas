@@ -9,6 +9,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const testCache = path.join(root, "cache", "ark-smoke-test");
 const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2n0sAAAAASUVORK5CYII=";
 let lastVideoPayload = null;
+const mediaGeneratePayloads = [];
+const mediaGeneratePolls = new Map();
 const gptCreateModels = [];
 
 const mock = http.createServer((req, res) => {
@@ -106,6 +108,47 @@ const mock = http.createServer((req, res) => {
       data: [{ b64_json: pngBase64, size: payload.size, output_format: "png" }]
     }));
   }
+  if (req.method === "POST" && req.url === "/v1/media/generate") {
+    return readJson(req).then((payload) => {
+      mediaGeneratePayloads.push(payload);
+      const taskId = 900000 + mediaGeneratePayloads.length;
+      return sendJson(res, {
+        code: 200,
+        msg: "任务创建成功",
+        data: {
+          "任务ids": [taskId],
+          "成功数量": 1,
+          task_id: taskId
+        }
+      });
+    });
+  }
+  if (req.method === "GET" && requestUrl.pathname === "/v1/media/status") {
+    const taskId = requestUrl.searchParams.get("task_id");
+    const polls = (mediaGeneratePolls.get(taskId) || 0) + 1;
+    mediaGeneratePolls.set(taskId, polls);
+    if (polls === 1) {
+      return sendJson(res, {
+        task_id: taskId,
+        is_final: false,
+        state: "success",
+        progress: "50%",
+        result: { status: "still-working" }
+      });
+    }
+    const address = mock.address();
+    return sendJson(res, {
+      task_id: taskId,
+      is_final: true,
+      state: "success",
+      result_url: `http://127.0.0.1:${address.port}/media-result`
+    });
+  }
+  if (req.method === "GET" && req.url === "/media-result") {
+    res.setHeader("Content-Type", "image/png");
+    res.end(Buffer.from(pngBase64, "base64"));
+    return;
+  }
   if (req.method === "POST" && req.url === "/api/v3/contents/generations/tasks") {
     return readJson(req).then((payload) => {
       lastVideoPayload = payload;
@@ -148,6 +191,17 @@ const connections = {
     editEndpoint: "/v1/images/edits",
     chatEndpoint: "/v1/chat/completions"
   },
+  "seedream5.0pro-aggregate": {
+    preset: "custom",
+    capability: "image",
+    protocol: "ark-images",
+    authType: "bearer",
+    apiModel: "doubao-seedream-5-0-pro-260628",
+    baseUrl: `http://127.0.0.1:${mockPort}`,
+    imageEndpoint: "/v1/images/generations",
+    editEndpoint: "/v1/images/edits",
+    chatEndpoint: "/v1/chat/completions"
+  },
   "ark-seedream-5.0-pro": arkConnection("image", "mock-seedream", mockPort),
   "ark-seedance-2.0": arkConnection("video", "mock-seedance", mockPort)
 };
@@ -162,7 +216,10 @@ const child = spawn(process.execPath, ["server.js"], {
     VOLCENGINE_SECRET_ACCESS_KEY: "smoke-secret-key",
     VOLCENGINE_ARK_ASSET_GROUP_ID: "group-smoke",
     VOLCENGINE_ARK_OPEN_API_BASE_URL: `http://127.0.0.1:${mockPort}`,
+    VOLCENGINE_ARK_BASE_URL: `http://127.0.0.1:${mockPort}`,
     CC_CANVAS_ALLOW_LOCAL_ARK_ASSET_URLS: "1",
+    CC_CANVAS_MEDIA_POLL_INTERVAL_MS: "10",
+    CC_CANVAS_MEDIA_POLL_TIMEOUT_MS: "2000",
     YUNWU_MODEL_KEY_GPT_IMAGE_2: "smoke-gpt-image-key",
     CC_CANVAS_MODEL_CONNECTIONS_B64: Buffer.from(JSON.stringify(connections), "utf8").toString("base64url")
   },
@@ -173,7 +230,10 @@ try {
   const appPort = await waitForCanvasPort(child);
   const config = await getJson(`http://127.0.0.1:${appPort}/api/config`);
   assert.equal(config.hasArkApiKey, true);
-  assert.equal(config.arkModels.length, 7);
+  assert.equal(config.arkModels.length, 8);
+  assert.equal(config.modelConnections["seedream5.0pro-aggregate"].protocol, "media-generate");
+  assert.equal(config.modelConnections["seedream5.0pro-aggregate"].imageEndpoint, "/v1/media/generate");
+  assert.equal(config.modelConnections["seedream5.0pro-aggregate"].editEndpoint, "/v1/media/generate");
 
   const assetGroups = await postJson(`http://127.0.0.1:${appPort}/api/ark-assets/groups`, {
     projectName: "default",
@@ -251,6 +311,7 @@ try {
       size: "1024x1024",
       format: "png",
       connectionOverride: true,
+      apiKeyOverride: "smoke-custom-key",
       baseUrl: `http://127.0.0.1:${mockPort}`,
       endpointPath: "/v1/images/generations",
       extraParams: {}
@@ -289,6 +350,49 @@ try {
     extraParams: {}
   });
   assert.equal(migratedImage.request.payload.size, "2816x1584");
+
+  const aggregateImage = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+    projectId: "ark-smoke",
+    mode: "create",
+    prompt: "test migrated media generate endpoint",
+    model: "seedream5.0pro-aggregate",
+    n: "1",
+    size: "2816x1584",
+    format: "png",
+    connectionOverride: true,
+    apiKeyOverride: "smoke-key",
+    baseUrl: `http://127.0.0.1:${mockPort}`,
+    endpointPath: "/v1/images/generations",
+    extraParams: {}
+  });
+  assert.equal(aggregateImage.images.length, 1);
+  assert.equal(aggregateImage.request.provider, "media-generate");
+  assert.equal(aggregateImage.request.taskId, "900001");
+  assert.equal(mediaGeneratePayloads[0].model, "doubao-seedream-5-0-pro-260628");
+  assert.equal(mediaGeneratePayloads[0].prompt, "test migrated media generate endpoint");
+  assert.equal(mediaGeneratePayloads[0].params.size, "2K");
+  assert.equal(mediaGeneratePayloads[0].params.aspect_ratio, "16:9");
+  assert.equal(mediaGeneratePayloads[0].params.n, undefined);
+  assert.equal(mediaGeneratePolls.get("900001"), 2);
+
+  const aggregateEditForm = new FormData();
+  appendFields(aggregateEditForm, {
+    projectId: "ark-smoke",
+    mode: "edit",
+    prompt: "test media generate reference image",
+    model: "seedream5.0pro-aggregate",
+    n: "1",
+    size: "1K",
+    format: "png",
+    extraParams: "{}"
+  });
+  aggregateEditForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "media-reference.png");
+  const aggregateEdit = await postForm(`http://127.0.0.1:${appPort}/api/generate`, aggregateEditForm);
+  assert.equal(aggregateEdit.images.length, 1);
+  assert.equal(mediaGeneratePayloads[1].params.size, "1K");
+  assert.equal(mediaGeneratePayloads[1].params.images.length, 1);
+  assert.match(mediaGeneratePayloads[1].params.images[0], /^data:image\/png;base64,/u);
+  assert.equal(mediaGeneratePolls.get("900002"), 2);
 
   const editForm = new FormData();
   appendFields(editForm, {
@@ -331,6 +435,25 @@ try {
   assert.match(lastVideoPayload.content[2].image_url.url, /^data:image\/png;base64,/u);
   assert.match(video.videos[0].url, /^\/project-cache\/ark-smoke\/outputs\//u);
 
+  const video25Form = new FormData();
+  appendFields(video25Form, {
+    projectId: "ark-smoke",
+    mode: "video",
+    prompt: "test seedance 2.5",
+    model: "ark-seedance-2.5",
+    n: "30",
+    size: "21:9",
+    quality: "1080p",
+    format: "mp4",
+    extraParams: JSON.stringify({ generate_audio: false })
+  });
+  const video25 = await postForm(`http://127.0.0.1:${appPort}/api/generate`, video25Form);
+  assert.equal(video25.request.payload.duration, 30);
+  assert.equal(video25.request.payload.resolution, "720p");
+  assert.equal(video25.request.payload.ratio, "21:9");
+  assert.equal(lastVideoPayload.model, "doubao-seedance-2-5-260628");
+  assert.equal(lastVideoPayload.generate_audio, false);
+
   console.log(JSON.stringify({
     ok: true,
     arkModelCount: config.arkModels.length,
@@ -341,6 +464,7 @@ try {
     gptImageFallback: `${gptImage.fallback.from}->${gptImage.fallback.to}`,
     imageCount: image.images.length,
     migratedImageSize: migratedImage.request.payload.size,
+    mediaGenerateModel: mediaGeneratePayloads[0].model,
     editImageCount: edit.images.length,
     videoCount: video.videos.length,
     cachedVideo: video.videos[0].url

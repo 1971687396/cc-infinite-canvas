@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  imageDimensionsForLoadedMedia,
   imageMediaTierForScreenPixels,
   imageMediaTierRank,
   mediaUrlForTier
@@ -33,6 +34,15 @@ assert.equal(
 assert.equal(
   mediaUrlForTier("/project-cache/demo/outputs/image.png", "original", baseUrl),
   "/project-cache/demo/outputs/image.png"
+);
+
+assert.deepEqual(
+  imageDimensionsForLoadedMedia(1280, 720, 768, 1024, false),
+  { width: 960, height: 1280 }
+);
+assert.deepEqual(
+  imageDimensionsForLoadedMedia(960, 1280, 1536, 2048, true),
+  { width: 1536, height: 2048 }
 );
 
 console.log("Media virtualization tests passed.");

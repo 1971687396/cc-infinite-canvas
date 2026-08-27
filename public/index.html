@@ -281,6 +281,14 @@
       </label>
       <button id="applySelectionScaleButton" type="button">应用</button>
       <button id="reusePromptButton" type="button">复用提示词</button>
+      <div id="selectionLayerActions" class="selection-layer-actions" aria-label="图片层级" hidden>
+        <button id="selectionLayerBottomButton" type="button" title="置于所有图片底层（Shift + [）">置底</button>
+        <button id="selectionLayerBackwardButton" type="button" title="下移一层（[）">下移 [</button>
+        <button id="selectionLayerForwardButton" type="button" title="上移一层（]）">上移 ]</button>
+        <button id="selectionLayerTopButton" type="button" title="置于所有图片顶层（Shift + ]）">置顶</button>
+      </div>
+      <button id="seedreamFusionSelectionButton" type="button" class="selection-ai-action" hidden>多图融合</button>
+      <button id="seedreamLayerSelectionButton" type="button" class="selection-ai-action" hidden>智能拆图层</button>
       <button id="sendSelectionToPhotoshopButton" type="button" hidden>作为 PS 参考图</button>
     </div>
 

@@ -9,9 +9,12 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const testCache = path.join(root, "cache", "ark-smoke-test");
 const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2n0sAAAAASUVORK5CYII=";
 let lastVideoPayload = null;
+const arkImagePayloads = [];
 const mediaGeneratePayloads = [];
 const mediaGeneratePolls = new Map();
 const gptCreateModels = [];
+let openAiEditContentType = "";
+let openAiEditBody = "";
 
 const mock = http.createServer((req, res) => {
   const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
@@ -103,10 +106,50 @@ const mock = http.createServer((req, res) => {
       return sendJson(res, { data: [{ b64_json: pngBase64 }] });
     });
   }
+  if (req.method === "POST" && req.url === "/v1/images/edits") {
+    return readBuffer(req).then((body) => {
+      openAiEditContentType = String(req.headers["content-type"] || "");
+      openAiEditBody = body.toString("utf8");
+      return sendJson(res, {
+        data: [
+          { b64_json: pngBase64, z_index: 0, name: "background" },
+          { b64_json: pngBase64, z_index: 1, name: "subject" }
+        ]
+      });
+    });
+  }
   if (req.method === "POST" && req.url === "/api/v3/images/generations") {
-    return readJson(req).then((payload) => sendJson(res, {
-      data: [{ b64_json: pngBase64, size: payload.size, output_format: "png" }]
-    }));
+    return readJson(req).then((payload) => {
+      arkImagePayloads.push(payload);
+      if (payload.layer_decomposition) {
+        return sendJson(res, {
+          data: [
+            { b64_json: pngBase64, size: "2048x2048", output_format: "png", z_index: 0, name: "background" },
+            {
+              b64_json: pngBase64,
+              size: "640x900",
+              output_format: "png",
+              z_index: 1,
+              name: "main_character",
+              description: "主视觉人物",
+              bounding_box: { absolute: [120, 240, 760, 1140], normalized: [59, 117, 371, 557] }
+            },
+            {
+              b64_json: pngBase64,
+              size: "800x260",
+              output_format: "png",
+              z_index: 2,
+              name: "title",
+              description: "标题文字",
+              bounding_box: { absolute: [200, 80, 1000, 340], normalized: [98, 39, 488, 166] }
+            }
+          ]
+        });
+      }
+      return sendJson(res, {
+        data: [{ b64_json: pngBase64, size: payload.size, output_format: "png" }]
+      });
+    });
   }
   if (req.method === "POST" && req.url === "/v1/media/generate") {
     return readJson(req).then((payload) => {
@@ -202,6 +245,19 @@ const connections = {
     editEndpoint: "/v1/images/edits",
     chatEndpoint: "/v1/chat/completions"
   },
+  "seedream-v5-pro/layer-decomposition": arkConnection("image", "seedream-v5-pro/layer-decomposition", mockPort),
+  "seedream-v5-pro-zhenzhen-layer-decomposition": {
+    preset: "custom",
+    capability: "image",
+    protocol: "ark-images",
+    authType: "bearer",
+    apiModel: "seedream-v5-pro/layer-decomposition",
+    baseUrl: `http://127.0.0.1:${mockPort}`,
+    imageEndpoint: "/v1/images/generations",
+    editEndpoint: "/v1/images/edits",
+    chatEndpoint: "/v1/chat/completions"
+  },
+  "seedream5.0pro-official-route": arkConnection("image", "doubao-seedream-5-0-pro-260628", mockPort),
   "ark-seedream-5.0-pro": arkConnection("image", "mock-seedream", mockPort),
   "ark-seedance-2.0": arkConnection("video", "mock-seedance", mockPort)
 };
@@ -221,6 +277,8 @@ const child = spawn(process.execPath, ["server.js"], {
     CC_CANVAS_MEDIA_POLL_INTERVAL_MS: "10",
     CC_CANVAS_MEDIA_POLL_TIMEOUT_MS: "2000",
     YUNWU_MODEL_KEY_GPT_IMAGE_2: "smoke-gpt-image-key",
+    YUNWU_MODEL_KEY_SEEDREAM_V5_PRO_LAYER_DECOMPOSITION: "smoke-layer-key",
+    YUNWU_MODEL_KEY_SEEDREAM_V5_PRO_ZHENZHEN_LAYER_DECOMPOSITION: "smoke-zhenzhen-layer-key",
     CC_CANVAS_MODEL_CONNECTIONS_B64: Buffer.from(JSON.stringify(connections), "utf8").toString("base64url")
   },
   stdio: ["ignore", "pipe", "pipe"]
@@ -234,6 +292,8 @@ try {
   assert.equal(config.modelConnections["seedream5.0pro-aggregate"].protocol, "media-generate");
   assert.equal(config.modelConnections["seedream5.0pro-aggregate"].imageEndpoint, "/v1/media/generate");
   assert.equal(config.modelConnections["seedream5.0pro-aggregate"].editEndpoint, "/v1/media/generate");
+  assert.equal(config.modelConnections["seedream5.0pro-official-route"].protocol, "ark-images");
+  assert.equal(config.modelConnections["seedream5.0pro-official-route"].imageEndpoint, "/api/v3/images/generations");
 
   const assetGroups = await postJson(`http://127.0.0.1:${appPort}/api/ark-assets/groups`, {
     projectName: "default",
@@ -379,6 +439,7 @@ try {
   appendFields(aggregateEditForm, {
     projectId: "ark-smoke",
     mode: "edit",
+    seedreamMode: "layers",
     prompt: "test media generate reference image",
     model: "seedream5.0pro-aggregate",
     n: "1",
@@ -391,6 +452,7 @@ try {
   assert.equal(aggregateEdit.images.length, 1);
   assert.equal(mediaGeneratePayloads[1].params.size, "1K");
   assert.equal(mediaGeneratePayloads[1].params.images.length, 1);
+  assert.equal(mediaGeneratePayloads[1].params.layer_decomposition, true);
   assert.match(mediaGeneratePayloads[1].params.images[0], /^data:image\/png;base64,/u);
   assert.equal(mediaGeneratePolls.get("900002"), 2);
 
@@ -410,6 +472,114 @@ try {
   const edit = await postForm(`http://127.0.0.1:${appPort}/api/generate`, editForm);
   assert.equal(edit.images.length, 1);
   assert.equal(edit.request.payload.image, "<1 reference image(s)>");
+
+  const fusionForm = new FormData();
+  appendFields(fusionForm, {
+    projectId: "ark-smoke",
+    mode: "edit",
+    seedreamMode: "fusion",
+    prompt: "把图 1 的主体放进图 2 的场景",
+    model: "ark-seedream-5.0-pro",
+    n: "1",
+    size: "2K",
+    quality: "standard",
+    format: "png",
+    extraParams: "{}"
+  });
+  fusionForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "fusion-1.png");
+  fusionForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "fusion-2.png");
+  const fusion = await postForm(`http://127.0.0.1:${appPort}/api/generate`, fusionForm);
+  const fusionPayload = arkImagePayloads.at(-1);
+  assert.equal(fusion.images.length, 1);
+  assert.equal(Array.isArray(fusionPayload.image), true);
+  assert.equal(fusionPayload.image.length, 2);
+  assert.equal(fusionPayload.layer_decomposition, undefined);
+
+  const layerForm = new FormData();
+  appendFields(layerForm, {
+    projectId: "ark-smoke",
+    mode: "edit",
+    seedreamMode: "layers",
+    prompt: "",
+    model: "ark-seedream-5.0-pro",
+    n: "1",
+    size: "1.5K",
+    format: "png",
+    extraParams: JSON.stringify({ layer_decomposition: false })
+  });
+  layerForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "layer-source.png");
+  const layers = await postForm(`http://127.0.0.1:${appPort}/api/generate`, layerForm);
+  const layerPayload = arkImagePayloads.at(-1);
+  assert.equal(layerPayload.layer_decomposition, true);
+  assert.equal(layerPayload.size, "1.5K");
+  assert.equal(typeof layerPayload.image, "string");
+  assert.equal(layers.images.length, 3);
+  assert.deepEqual(layers.images.map((item) => item.zIndex), [0, 1, 2]);
+  assert.equal(layers.images[1].layerName, "main_character");
+  assert.deepEqual(layers.images[1].boundingBox.absolute, [120, 240, 760, 1140]);
+
+  const autoLayerForm = new FormData();
+  appendFields(autoLayerForm, {
+    projectId: "ark-smoke",
+    mode: "create",
+    seedreamMode: "standard",
+    prompt: "",
+    model: "seedream-v5-pro/layer-decomposition",
+    n: "1",
+    size: "auto",
+    format: "png",
+    extraParams: "{}"
+  });
+  autoLayerForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "auto-layer-source.png");
+  const autoLayers = await postForm(`http://127.0.0.1:${appPort}/api/generate`, autoLayerForm);
+  const autoLayerPayload = arkImagePayloads.at(-1);
+  assert.equal(autoLayerPayload.model, "seedream-v5-pro/layer-decomposition");
+  assert.equal(autoLayerPayload.layer_decomposition, true);
+  assert.equal(autoLayerPayload.size, "auto");
+  assert.equal(typeof autoLayerPayload.image, "string");
+  assert.equal(autoLayers.images.length, 3);
+
+  const openAiLayerForm = new FormData();
+  appendFields(openAiLayerForm, {
+    projectId: "ark-smoke",
+    mode: "edit",
+    seedreamMode: "layers",
+    prompt: "",
+    model: "seedream-v5-pro-zhenzhen-layer-decomposition",
+    n: "1",
+    size: "auto",
+    format: "png",
+    extraParams: "{}"
+  });
+  openAiLayerForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "zhenzhen-layer.png");
+  const openAiLayers = await postForm(`http://127.0.0.1:${appPort}/api/generate`, openAiLayerForm);
+  assert.equal(openAiLayers.images.length, 2);
+  assert.match(openAiEditContentType, /^multipart\/form-data;\s*boundary=/iu);
+  assert.match(openAiEditBody, /name="image";\s*filename="zhenzhen-layer\.png"/iu);
+  assert.match(openAiEditBody, /name="model"\r?\n\r?\nseedream-v5-pro\/layer-decomposition/iu);
+  assert.match(openAiEditBody, /name="layer_decomposition"\r?\n\r?\ntrue/iu);
+
+  const autoFusionForm = new FormData();
+  appendFields(autoFusionForm, {
+    projectId: "ark-smoke",
+    mode: "edit",
+    seedreamMode: "fusion",
+    prompt: "按画布构图融合两张图片",
+    model: "seedream-v5-pro/layer-decomposition",
+    n: "1",
+    size: "2K",
+    format: "png",
+    extraParams: "{}"
+  });
+  autoFusionForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "auto-fusion-1.png");
+  autoFusionForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "auto-fusion-2.png");
+  const autoFusion = await postForm(`http://127.0.0.1:${appPort}/api/generate`, autoFusionForm);
+  const autoFusionPayload = arkImagePayloads.at(-1);
+  assert.equal(autoFusionPayload.model, "seedream-v5-pro/layer-decomposition");
+  assert.equal(autoFusionPayload.layer_decomposition, undefined);
+  assert.equal(Array.isArray(autoFusionPayload.image), true);
+  assert.equal(autoFusionPayload.image.length, 2);
+  assert.equal(autoFusion.images.length, 1);
 
   const videoForm = new FormData();
   appendFields(videoForm, {
@@ -466,6 +636,11 @@ try {
     migratedImageSize: migratedImage.request.payload.size,
     mediaGenerateModel: mediaGeneratePayloads[0].model,
     editImageCount: edit.images.length,
+    fusionReferenceCount: fusionPayload.image.length,
+    decomposedLayerCount: layers.images.length,
+    autoDetectedLayerChannel: autoLayerPayload.layer_decomposition,
+    openAiLayerMultipart: openAiEditContentType.startsWith("multipart/form-data;"),
+    sharedChannelFusionReferences: autoFusionPayload.image.length,
     videoCount: video.videos.length,
     cachedVideo: video.videos[0].url
   }, null, 2));
@@ -504,6 +679,15 @@ function readJson(req) {
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("error", reject);
     req.on("end", () => resolve(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}")));
+  });
+}
+
+function readBuffer(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("error", reject);
+    req.on("end", () => resolve(Buffer.concat(chunks)));
   });
 }
 

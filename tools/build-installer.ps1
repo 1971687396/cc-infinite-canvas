@@ -500,7 +500,18 @@ if ($LASTEXITCODE -ne 0) {
 
 $electronDist = Join-Path $root "node_modules\electron\dist"
 if (-not (Test-Path (Join-Path $electronDist "electron.exe"))) {
-  throw "Electron runtime was not found. Run npm.cmd install before building the installer."
+  $electronInstaller = Join-Path $root "node_modules\electron\install.js"
+  $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
+  if ((Test-Path -LiteralPath $electronInstaller) -and $nodeCommand) {
+    Write-Host "Electron runtime is missing. Downloading it before building the installer..."
+    & $nodeCommand.Source $electronInstaller
+    if ($LASTEXITCODE -ne 0) {
+      throw "Electron runtime installation failed with exit code $LASTEXITCODE."
+    }
+  }
+}
+if (-not (Test-Path (Join-Path $electronDist "electron.exe"))) {
+  throw "Electron runtime was not found. Run npx.cmd install-electron --no before building the installer."
 }
 New-Item -ItemType Directory -Path (Join-Path $payloadRoot "runtime") -Force | Out-Null
 Copy-Item -LiteralPath $electronDist -Destination (Join-Path $payloadRoot "runtime\electron") -Recurse -Force

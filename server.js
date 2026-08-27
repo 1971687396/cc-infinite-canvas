@@ -36,7 +36,14 @@ import {
   runGrokBuildImage,
   runGrokBuildVideo
 } from "./grok-build-bridge.js";
-import { seedreamImageProfile, seedreamImageProfiles } from "./public/model-profiles.js";
+import {
+  effectiveImageProtocol,
+  normalizeSeedreamProMode,
+  seedreamImageProfile,
+  seedreamImageProfiles,
+  seedreamProFeatureChannel,
+  seedreamProModes
+} from "./public/model-profiles.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -45,6 +52,7 @@ const TosClient = TosSdk.default || TosSdk.TosClient;
 const electronNativeImage = loadElectronNativeImage();
 const packageInfo = JSON.parse(readFileSync(path.join(__dirname, "package.json"), "utf8"));
 const publicDir = path.join(__dirname, "public");
+const opencvVendorFile = path.join(__dirname, "node_modules", "@techstark", "opencv-js", "dist", "opencv.js");
 const skillsDir = path.join(__dirname, "skills");
 const outputDir = path.join(__dirname, "outputs");
 const cacheDir = path.join(__dirname, "cache");
@@ -79,7 +87,7 @@ const allowLocalArkAssetUrls = process.env.CC_CANVAS_ALLOW_LOCAL_ARK_ASSET_URLS 
 const arkImageEndpoint = "/api/v3/images/generations";
 const arkVideoEndpoint = "/api/v3/contents/generations/tasks";
 const arkImageModels = [
-  { model: "ark-seedream-5.0-pro", label: "Seedream 5.0 Pro", apiModel: "doubao-seedream-5-0-260128" },
+  { model: "ark-seedream-5.0-pro", label: "Seedream 5.0 Pro", apiModel: "doubao-seedream-5-0-pro-260628" },
   { model: "ark-seedream-5.0-lite", label: "Seedream 5.0 Lite", apiModel: "doubao-seedream-5-0-lite-260128" },
   { model: "ark-seedream-4.5", label: "Seedream 4.5", apiModel: "doubao-seedream-4-5-251128" },
   { model: "ark-seedream-4.0", label: "Seedream 4.0", apiModel: "doubao-seedream-4-0-250828" }
@@ -364,6 +372,10 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname.startsWith("/api/photoshop/")) {
       return await handlePhotoshopBridgeRequest(req, res, url);
+    }
+
+    if (req.method === "GET" && url.pathname === "/vendor/opencv.js") {
+      return await serveFile(res, opencvVendorFile);
     }
 
     if (req.method === "GET" && url.pathname.startsWith("/outputs/")) {
@@ -791,10 +803,13 @@ function normalizeModelConnection(model, value) {
       ? midjourneyDefaultRoutePrefix
       : submittedEditEndpoint;
   const submittedProtocol = protocols.has(input.protocol) ? input.protocol : fallback.protocol;
+  const migratedToMediaGenerate = [imageEndpoint, editEndpoint].every(
+    (endpoint) => sanitizeOptionalText(endpoint).replace(/\/+$/u, "") === mediaGenerateImageEndpoint
+  );
   return {
     preset,
     capability,
-    protocol: mediaGenerateModel && capability === "image" && ["openai-images", "ark-images"].includes(submittedProtocol)
+    protocol: mediaGenerateModel && migratedToMediaGenerate && capability === "image" && ["openai-images", "ark-images"].includes(submittedProtocol)
       ? "media-generate"
       : submittedProtocol,
     authType: authTypes.has(input.authType) ? input.authType : fallback.authType,
@@ -865,8 +880,12 @@ function resolvedConnection(model, body = {}, mode = "chat") {
   const endpointPath = String(endpoint || "").replaceAll("{model}", encodeURIComponent(connection.apiModel || normalized));
   const apiUrl = buildApiUrl(connection.baseUrl, endpointPath);
   const overrideCanUseStoredKey = sameApiHost(originalBaseUrl, apiUrl);
+  const protocol = ["create", "edit"].includes(mode)
+    ? effectiveImageProtocol(connection.protocol, endpointPath)
+    : connection.protocol;
   return {
     ...connection,
+    protocol,
     model: normalized,
     endpointPath,
     apiUrl,
@@ -2187,8 +2206,11 @@ async function handleGenerate(req, res) {
   const body = isMultipart ? await readMultipartBody(req, contentType) : await readJsonBody(req);
   body.model = normalizeModelAlias(body.model || config.defaultModel);
   const prompt = String(body.prompt || "").trim();
+  const seedreamMode = seedreamProModeForRequest(body);
+  body.seedreamMode = seedreamMode;
+  if (seedreamMode !== seedreamProModes.STANDARD) body.mode = "edit";
 
-  if (!prompt) {
+  if (!prompt && seedreamMode !== seedreamProModes.LAYERS) {
     return sendJson(res, 400, { error: "Prompt is required." });
   }
 
@@ -5135,13 +5157,22 @@ async function handleArkImageGenerate(res, body, prompt, imageFiles = [], suppli
   const count = Math.min(15, Math.max(1, Number.parseInt(body.n, 10) || 1));
   const seedreamProfile = seedreamImageProfile(modelName, connection.apiModel) || modelName;
   const proModel = seedreamProfile === seedreamImageProfiles.PRO_5;
+  const seedreamMode = seedreamProModeForRequest(body, connection);
+  const layerDecomposition = seedreamMode === seedreamProModes.LAYERS;
   const supportsSequential = !proModel;
-  const optimizeMode = normalizeArkOptimizeMode(body.quality, seedreamProfile);
+  const optimizeMode = layerDecomposition ? "" : normalizeArkOptimizeMode(body.quality, seedreamProfile);
+  const selectedImages = imageFiles.slice(0, layerDecomposition ? 1 : arkImageReferenceLimit(seedreamProfile));
   const payload = pruneEmpty({
     model: connection.apiModel,
     prompt,
-    image: imageFiles.length ? imageFiles.slice(0, arkImageReferenceLimit(seedreamProfile)).map(fileToDataUrl) : undefined,
-    size: normalizeArkImageSize(body.size, seedreamProfile),
+    image: selectedImages.length
+      ? layerDecomposition
+        ? fileToDataUrl(selectedImages[0])
+        : selectedImages.map(fileToDataUrl)
+      : undefined,
+    size: layerDecomposition
+      ? normalizeSeedreamLayerSize(body.size)
+      : normalizeArkImageSize(body.size, seedreamProfile),
     response_format: "url",
     watermark: false,
     optimize_prompt_options: optimizeMode ? { mode: optimizeMode } : undefined,
@@ -5152,6 +5183,14 @@ async function handleArkImageGenerate(res, body, prompt, imageFiles = [], suppli
     sequential_image_generation_options: supportsSequential && count > 1 ? { max_images: count } : undefined,
     ...extraParams
   });
+  if (layerDecomposition) {
+    payload.image = fileToDataUrl(selectedImages[0]);
+    payload.size = normalizeSeedreamLayerSize(body.size);
+    payload.layer_decomposition = true;
+  } else {
+    delete payload.layer_decomposition;
+    if (seedreamMode === seedreamProModes.FUSION) payload.image = selectedImages.map(fileToDataUrl);
+  }
   const startedAt = Date.now();
 
   const upstream = await fetch(connection.apiUrl, {
@@ -5183,7 +5222,7 @@ async function handleArkImageGenerate(res, body, prompt, imageFiles = [], suppli
     request: {
       provider: "volcengine-ark",
       apiUrl: connection.apiUrl,
-      payload: { ...payload, image: imageFiles.length ? `<${imageFiles.length} reference image(s)>` : undefined }
+      payload: { ...payload, image: selectedImages.length ? `<${selectedImages.length} reference image(s)>` : undefined }
     },
     images,
     raw: upstreamData
@@ -5202,8 +5241,12 @@ async function handleMediaGenerateImage(res, body, prompt, imageFiles = [], supp
   const nestedParams = isPlainObject(extraParams.params) ? extraParams.params : {};
   const topLevelParams = { ...extraParams };
   delete topLevelParams.params;
-  const sizing = normalizeMediaGenerateSizing(body.size);
-  const references = imageFiles.slice(0, 10).map(fileToDataUrl);
+  const seedreamMode = seedreamProModeForRequest(body, connection);
+  const layerDecomposition = seedreamMode === seedreamProModes.LAYERS;
+  const sizing = layerDecomposition
+    ? { size: normalizeSeedreamLayerSize(body.size), aspectRatio: "" }
+    : normalizeMediaGenerateSizing(body.size);
+  const references = imageFiles.slice(0, layerDecomposition ? 1 : 10).map(fileToDataUrl);
   const payload = pruneEmpty({
     ...topLevelParams,
     model: connection.apiModel,
@@ -5215,6 +5258,13 @@ async function handleMediaGenerateImage(res, body, prompt, imageFiles = [], supp
       ...nestedParams
     })
   });
+  if (layerDecomposition) {
+    payload.params.images = references;
+    payload.params.layer_decomposition = true;
+  } else {
+    delete payload.params.layer_decomposition;
+    if (seedreamMode === seedreamProModes.FUSION) payload.params.images = references;
+  }
   const startedAt = Date.now();
   const abortController = new AbortController();
   const abortOnClose = () => {
@@ -5409,6 +5459,34 @@ function closestMediaGenerateAspectRatio(requestedRatio) {
 
 function arkImageReferenceLimit(model) {
   return seedreamImageProfile(model) === seedreamImageProfiles.PRO_5 ? 10 : 14;
+}
+
+function seedreamProModeForRequest(body, suppliedConnection = null) {
+  const requestedMode = normalizeSeedreamProMode(body?.seedreamMode);
+  const modelName = normalizeModelAlias(body?.model || config.defaultModel);
+  const connection = suppliedConnection || resolvedConnection(modelName, body || {}, "edit");
+  const definition = connectionDefinition(modelName);
+  const identityValues = [
+    modelName,
+    connection?.apiModel,
+    definition?.label,
+    connection?.imageEndpoint,
+    connection?.editEndpoint,
+    connection?.endpointPath
+  ];
+  const featureChannel = seedreamProFeatureChannel(identityValues);
+  const effectiveMode = featureChannel && requestedMode === seedreamProModes.STANDARD
+    ? seedreamProModes.LAYERS
+    : requestedMode;
+  return seedreamImageProfile(identityValues) === seedreamImageProfiles.PRO_5
+    ? effectiveMode
+    : seedreamProModes.STANDARD;
+}
+
+function normalizeSeedreamLayerSize(value) {
+  const requested = String(value || "").trim().toUpperCase();
+  if (requested === "AUTO") return "auto";
+  return ["1K", "1.5K", "2K"].includes(requested) ? requested : "2K";
 }
 
 function normalizeArkOptimizeMode(value, model) {
@@ -5611,11 +5689,19 @@ async function handleEdit(res, body) {
   const cachedMask = (await loadCachedAssets(parseCachedAssetRefs(body.cachedMask), projectId)).at(0);
   const images = [...uploadedImages, ...cachedImages];
   const modelName = body.model || config.defaultModel;
-  const requestImages = isGrokImageModel(modelName) && !isGrokBuildImageModel(modelName) ? images.slice(0, 1) : images;
+  const connection = resolvedConnection(modelName, body, "edit");
+  const seedreamMode = seedreamProModeForRequest(body, connection);
+  let requestImages = images;
+  if (seedreamMode === seedreamProModes.LAYERS) requestImages = images.slice(0, 1);
+  else if (seedreamMode === seedreamProModes.FUSION) requestImages = images.slice(0, 10);
+  else if (isGrokImageModel(modelName) && !isGrokBuildImageModel(modelName)) requestImages = images.slice(0, 1);
   const mask = uploadedMask || cachedMask;
 
   if (!requestImages.length) {
     return sendJson(res, 400, { error: "At least one image file is required for edit mode." });
+  }
+  if (seedreamMode === seedreamProModes.FUSION && requestImages.length < 2) {
+    return sendJson(res, 400, { error: "Seedream 5.0 Pro 多图融合至少需要 2 张参考图片。" });
   }
 
   if (isGrokBuildImageModel(modelName)) {
@@ -5626,7 +5712,6 @@ async function handleEdit(res, body) {
     return await handleDreaminaGenerate(res, body, body.prompt, requestImages.slice(0, 10));
   }
 
-  const connection = resolvedConnection(modelName, body, "edit");
   if (connection.protocol === "media-generate") return await handleMediaGenerateImage(res, body, body.prompt, requestImages, connection);
   if (connection.protocol === "ark-images") return await handleArkImageGenerate(res, body, body.prompt, requestImages, connection);
   if (connection.protocol === "gemini-native") return await handleGeminiNativeGenerate(res, body, body.prompt, requestImages, connection);
@@ -5655,6 +5740,8 @@ async function handleEdit(res, body) {
     moderation: body.moderation,
     ...extraParams
   });
+  if (seedreamMode === seedreamProModes.LAYERS) fields.layer_decomposition = true;
+  else delete fields.layer_decomposition;
   applyModelRequestDefaults(fields, "edit");
 
   for (const [key, value] of Object.entries(fields)) {
@@ -7040,11 +7127,12 @@ async function serveProjectCacheFile(res, pathname, options = {}) {
 async function serveFile(res, filePath, options = {}) {
   const resolved = path.resolve(filePath);
   const allowedPublic = isPathInside(resolved, publicDir);
+  const allowedOpenCvVendor = resolved === path.resolve(opencvVendorFile);
   const allowedOutputs = isPathInside(resolved, outputDir);
   const allowedAssets = isPathInside(resolved, assetCacheDir);
   const allowedProjectCache = isPathInside(resolved, config.cacheDir);
 
-  if (!allowedPublic && !allowedOutputs && !allowedAssets && !allowedProjectCache) {
+  if (!allowedPublic && !allowedOpenCvVendor && !allowedOutputs && !allowedAssets && !allowedProjectCache) {
     return sendText(res, 403, "Forbidden");
   }
 
@@ -7213,19 +7301,44 @@ function readUpstreamError(data, fallback) {
 }
 
 async function normalizeAndPersistImages(data, preferredFormat, projectId = "default") {
-  const candidates = [];
   const roots = Array.isArray(data?.data) ? data.data : Array.isArray(data?.images) ? data.images : [data];
+  const layerRoots = roots.filter(isLayerImageResponseItem);
 
+  if (layerRoots.length) {
+    const layerImages = [];
+    for (const [index, item] of roots.entries()) {
+      const candidates = [];
+      collectImageCandidates(item, candidates);
+      const metadata = isLayerImageResponseItem(item)
+        ? normalizeLayerImageMetadata(item)
+        : { layerDecomposition: true, zIndex: index === 0 ? 0 : index };
+      for (const candidate of dedupeImageCandidates(candidates)) {
+        const image = await persistImageCandidate(candidate, preferredFormat, projectId);
+        if (image) layerImages.push({ ...image, ...metadata });
+      }
+    }
+    if (layerImages.length) return layerImages;
+  }
+
+  const candidates = [];
   for (const item of roots) {
     collectImageCandidates(item, candidates);
   }
 
   const images = [];
   for (const candidate of dedupeImageCandidates(candidates)) {
-    if (candidate.type === "url") {
-      const saved = await saveUrlImage(candidate.value, preferredFormat, projectId);
-      if (saved) {
-        images.push({
+    const image = await persistImageCandidate(candidate, preferredFormat, projectId);
+    if (image) images.push(image);
+  }
+
+  return images;
+}
+
+async function persistImageCandidate(candidate, preferredFormat, projectId) {
+  if (candidate.type === "url") {
+    const saved = await saveUrlImage(candidate.value, preferredFormat, projectId);
+    return saved
+      ? {
           type: "file",
           url: saved.publicPath,
           filename: saved.filename,
@@ -7233,25 +7346,53 @@ async function normalizeAndPersistImages(data, preferredFormat, projectId = "def
           contentHash: saved.contentHash,
           width: saved.width,
           height: saved.height
-        });
-      } else {
-        images.push({ type: "url", url: candidate.value });
-      }
-      continue;
-    }
-
-    const saved = await saveBase64Image(candidate.value, preferredFormat, projectId);
-    images.push({
-      type: "file",
-      url: saved.publicPath,
-      filename: saved.filename,
-      contentHash: saved.contentHash,
-      width: saved.width,
-      height: saved.height
-    });
+        }
+      : { type: "url", url: candidate.value };
   }
 
-  return images;
+  const saved = await saveBase64Image(candidate.value, preferredFormat, projectId);
+  return {
+    type: "file",
+    url: saved.publicPath,
+    filename: saved.filename,
+    contentHash: saved.contentHash,
+    width: saved.width,
+    height: saved.height
+  };
+}
+
+function isLayerImageResponseItem(value) {
+  if (!isPlainObject(value)) return false;
+  return Number.isFinite(Number(value.z_index ?? value.zIndex))
+    || isPlainObject(value.bounding_box ?? value.boundingBox);
+}
+
+function normalizeLayerImageMetadata(value) {
+  const zIndex = Number(value.z_index ?? value.zIndex);
+  const boundingBox = normalizeLayerBoundingBox(value.bounding_box ?? value.boundingBox);
+  return pruneEmpty({
+    layerDecomposition: true,
+    zIndex: Number.isFinite(zIndex) ? zIndex : 0,
+    layerName: sanitizeOptionalText(value.name ?? value.layer_name ?? value.layerName),
+    layerDescription: sanitizeOptionalText(value.description ?? value.layer_description ?? value.layerDescription),
+    boundingBox,
+    outputFormat: sanitizeOptionalText(value.output_format ?? value.outputFormat),
+    size: sanitizeOptionalText(value.size)
+  });
+}
+
+function normalizeLayerBoundingBox(value) {
+  if (!isPlainObject(value)) return undefined;
+  const absolute = normalizeLayerBoundingBoxValues(value.absolute);
+  const normalized = normalizeLayerBoundingBoxValues(value.normalized);
+  if (!absolute && !normalized) return undefined;
+  return pruneEmpty({ absolute, normalized });
+}
+
+function normalizeLayerBoundingBoxValues(value) {
+  if (!Array.isArray(value) || value.length < 4) return undefined;
+  const numbers = value.slice(0, 4).map(Number);
+  return numbers.every(Number.isFinite) ? numbers : undefined;
 }
 
 function dedupeImageCandidates(candidates) {
@@ -7418,6 +7559,7 @@ function mimeFromFormat(format) {
 }
 
 function extensionFromMime(mime) {
+  if (mime === "image/png") return "png";
   if (mime === "image/jpeg") return "jpg";
   if (mime === "image/webp") return "webp";
   if (mime === "image/gif") return "gif";

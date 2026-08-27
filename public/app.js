@@ -1,10 +1,28 @@
-import { seedreamImageProfile, seedreamImageProfiles } from "./model-profiles.js";
+import {
+  bananaImageProfile,
+  bananaImageProfiles,
+  normalizeBananaImageParameters,
+  normalizeSeedreamProMode,
+  seedreamImageProfile,
+  seedreamImageProfiles,
+  seedreamProFeatureChannel,
+  seedreamProModes
+} from "./model-profiles.js";
 import {
   imageDimensionsForLoadedMedia,
   imageMediaTierForScreenPixels,
   imageMediaTierRank,
   mediaUrlForTier
 } from "./media-virtualization.js";
+import {
+  normalizeDecomposedLayerImages,
+  normalizeLayerBoundingBox,
+  reorderLayerItemsByZ,
+  resolveSeedreamLayerAnchor,
+  resolveSeedreamLayerPlacement,
+  restoreNodesPreservingActiveGenerations,
+  seedreamLayerLayoutVersion
+} from "./canvas-runtime.js";
 
 const storageKeyPrefix = "cc-infinite-canvas-project-v1";
 const currentProjectStorageKey = "cc-infinite-canvas-current-project";
@@ -196,6 +214,13 @@ const selectionMeta = document.querySelector("#selectionMeta");
 const selectionScaleInput = document.querySelector("#selectionScaleInput");
 const applySelectionScaleButton = document.querySelector("#applySelectionScaleButton");
 const reusePromptButton = document.querySelector("#reusePromptButton");
+const selectionLayerActions = document.querySelector("#selectionLayerActions");
+const selectionLayerBottomButton = document.querySelector("#selectionLayerBottomButton");
+const selectionLayerBackwardButton = document.querySelector("#selectionLayerBackwardButton");
+const selectionLayerForwardButton = document.querySelector("#selectionLayerForwardButton");
+const selectionLayerTopButton = document.querySelector("#selectionLayerTopButton");
+const seedreamFusionSelectionButton = document.querySelector("#seedreamFusionSelectionButton");
+const seedreamLayerSelectionButton = document.querySelector("#seedreamLayerSelectionButton");
 const sendSelectionToPhotoshopButton = document.querySelector("#sendSelectionToPhotoshopButton");
 const settingsDialog = document.querySelector("#settingsDialog");
 const settingsForm = document.querySelector("#settingsForm");
@@ -408,7 +433,7 @@ const arkImageModelOptions = [
   ["ark-seedream-4.0", "Seedream 4.0"]
 ];
 const arkDefaultApiModels = {
-  "ark-seedream-5.0-pro": "doubao-seedream-5-0-260128",
+  "ark-seedream-5.0-pro": "doubao-seedream-5-0-pro-260628",
   "ark-seedream-5.0-lite": "doubao-seedream-5-0-lite-260128",
   "ark-seedream-4.5": "doubao-seedream-4-5-251128",
   "ark-seedream-4.0": "doubao-seedream-4-0-250828",
@@ -554,6 +579,12 @@ const arkSeedreamSizes = {
   "ark-seedream-4.5": buildArkImageSizeOptions(["2K", "4K"], ["2K", "4K"]),
   "ark-seedream-4.0": buildArkImageSizeOptions(["1K", "2K", "4K"], ["1K", "2K", "4K"], "seedream4")
 };
+const seedreamLayerSizeOptions = [
+  ["auto", "自动"],
+  ["1K", "1K"],
+  ["1.5K", "1.5K"],
+  ["2K", "2K"]
+];
 const baseTaskModelOptions = [
   ["gpt-image-2", "gpt-image-2"],
   [grokBuildImageModel, "Grok Imagine（官方账号）"],
@@ -587,6 +618,7 @@ let selectionBox = null;
 let minimapBounds = { x: -400, y: -300, width: 1200, height: 900 };
 let referencePickTargetNodeId = null;
 let referenceConnectState = null;
+let seedreamSelectionActionBusy = "";
 let editingNoteId = null;
 let latestUpdateInfo = null;
 let suppressChatGptHost = false;
@@ -623,6 +655,7 @@ let settingsConnectionClearKeys = new Set();
 let activeSettingsConnectionModel = "";
 const midjourneyPolls = new Map();
 const generationControllers = new Map();
+let layerAlignmentCvPromise = null;
 const canvasNodeElements = new Map();
 const canvasNodeById = new Map();
 const dragModelRects = new Map();
@@ -744,6 +777,10 @@ settingsCustomConnectionModel?.addEventListener("keydown", (event) => {
 });
 settingsConnectionPreset?.addEventListener("change", () => applySettingsConnectionPreset(settingsConnectionPreset.value));
 settingsConnectionCapability?.addEventListener("change", () => {
+  if (settingsConnectionCapability.value === "video") {
+    settingsConnectionProtocol.value = "ark-video";
+    if (!settingsConnectionVideoEndpoint.value.trim()) settingsConnectionVideoEndpoint.value = arkVideoEndpoint;
+  }
   captureSettingsConnectionDraft();
   updateSettingsConnectionVisibility();
 });
@@ -914,6 +951,12 @@ function noteDisplayColor(node) {
 settingsForm.addEventListener("submit", saveSettings);
 applySelectionScaleButton.addEventListener("click", applySelectionScale);
 reusePromptButton.addEventListener("click", reusePromptFromSelection);
+selectionLayerBottomButton?.addEventListener("click", () => moveSelectedImageLayers("back"));
+selectionLayerBackwardButton?.addEventListener("click", () => moveSelectedImageLayers("backward"));
+selectionLayerForwardButton?.addEventListener("click", () => moveSelectedImageLayers("forward"));
+selectionLayerTopButton?.addEventListener("click", () => moveSelectedImageLayers("front"));
+seedreamFusionSelectionButton?.addEventListener("click", createSeedreamFusionFromSelection);
+seedreamLayerSelectionButton?.addEventListener("click", createSeedreamLayerTaskFromSelection);
 sendSelectionToPhotoshopButton?.addEventListener("click", completePhotoshopReferenceSelection);
 selectionScaleInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
@@ -1258,8 +1301,9 @@ function imageModelProfileKind(model) {
   if (isDreaminaModelName(normalized)) return "dreamina";
   if (isArkImageModelName(normalized)) return "ark";
   if (seedreamImageProfileForModel(normalized)) return "seedream";
-  if (isGeminiNativeImageModelName(normalized)) return "gemini";
-  if (isGrsaiModelName(normalized)) return "grsai";
+  const bananaProfile = bananaImageProfileForModel(normalized);
+  if (bananaProfile === bananaImageProfiles.GEMINI_NATIVE) return "gemini";
+  if (bananaProfile === bananaImageProfiles.GRSAI) return "grsai";
   if (isGrokBuildImageModelName(normalized)) return "grok-build";
   if (isGrokModelName(normalized)) return "grok";
   return "openai";
@@ -1303,12 +1347,17 @@ const imageModelDefaultProfiles = {
   ark: {
     apply(node, options, context) {
     const seedreamProfile = context.seedreamProfile;
-    node.size = compatibleArkImageSize(node.size, node.model);
+    const layerMode = normalizeSeedreamProMode(node.seedreamMode) === seedreamProModes.LAYERS;
+    node.size = layerMode
+      ? seedreamLayerSizeOptions.some(([value]) => value === node.size) ? node.size : "2K"
+      : compatibleArkImageSize(node.size, node.model);
     if (seedreamProfile === seedreamImageProfiles.PRO_5) node.n = "1";
-    node.quality = arkOptimizeOptionsForModel(node.model).some(([value]) => value === node.quality)
+    node.quality = !layerMode && arkOptimizeOptionsForModel(node.model).some(([value]) => value === node.quality)
       ? node.quality
-      : "standard";
-    node.format = seedreamProfile === seedreamImageProfiles.PRO_5 && ["png", "jpeg"].includes(node.format) ? node.format : "png";
+      : layerMode ? "" : "standard";
+    node.format = layerMode
+      ? "png"
+      : seedreamProfile === seedreamImageProfiles.PRO_5 && ["png", "jpeg"].includes(node.format) ? node.format : "png";
     node.background = "";
     node.moderation = "";
     node.baseUrl = config.arkBaseUrl || arkDefaultBaseUrl;
@@ -1321,10 +1370,13 @@ const imageModelDefaultProfiles = {
   seedream: {
     apply(node, options, context) {
     const seedreamProfile = context.seedreamProfile;
-    node.size = compatibleArkImageSize(node.size, node.model);
+    const layerMode = normalizeSeedreamProMode(node.seedreamMode) === seedreamProModes.LAYERS;
+    node.size = layerMode
+      ? seedreamLayerSizeOptions.some(([value]) => value === node.size) ? node.size : "2K"
+      : compatibleArkImageSize(node.size, node.model);
     if (seedreamProfile === seedreamImageProfiles.PRO_5) node.n = "1";
     node.quality = "";
-    node.format = node.format || "png";
+    node.format = layerMode ? "png" : node.format || "png";
     node.background = "";
     node.moderation = "";
     node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
@@ -1352,9 +1404,11 @@ const imageModelDefaultProfiles = {
     }
   },
   gemini: {
-    apply(node, options) {
-    node.baseUrl = config.baseUrl || "https://yunwu.ai";
-    node.endpointPath = geminiNativeEndpointForModel(node.model);
+    apply(node, options, context) {
+    const connection = context.connection;
+    node.baseUrl = connection?.baseUrl || config.baseUrl || "https://yunwu.ai";
+    node.endpointPath = (node.mode === "edit" ? connection?.editEndpoint : connection?.imageEndpoint)
+      || geminiNativeEndpointForModel(connection?.apiModel || node.model);
     const parsedSize = parseGeminiNativeSizeValue(node.size, node.quality);
     node.size = geminiNativeRatioOptions.some(([value]) => value === parsedSize.aspectRatio)
       ? parsedSize.aspectRatio
@@ -1362,6 +1416,7 @@ const imageModelDefaultProfiles = {
     node.quality = geminiNativeImageSizeOptions.some(([value]) => value === parsedSize.imageSize)
       ? parsedSize.imageSize
       : geminiNativeDefaultImageSize;
+    node.n = "1";
     node.format = "png";
     node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
     delete node.extraParams.response_format;
@@ -1424,11 +1479,20 @@ const imageModelDefaultProfiles = {
 
 function applyTaskModelDefaults(node, options = {}) {
   node.model = normalizeImageModelName(node.model || config.defaultModel || "gpt-image-2");
+  const seedreamProfile = seedreamImageProfileForModel(node.model);
+  const featureChannel = seedreamProFeatureChannelForModel(node.model);
+  const requestedSeedreamMode = normalizeSeedreamProMode(node.seedreamMode);
+  node.seedreamMode = seedreamProfile === seedreamImageProfiles.PRO_5
+    ? featureChannel && requestedSeedreamMode === seedreamProModes.STANDARD
+      ? seedreamProModes.LAYERS
+      : requestedSeedreamMode
+    : seedreamProModes.STANDARD;
+  if (node.seedreamMode !== seedreamProModes.STANDARD) node.mode = "edit";
   const kind = imageModelProfileKind(node.model);
   const previousProvider = node.provider || "";
-  const seedreamProfile = seedreamImageProfileForModel(node.model);
+  const connection = imageModelConnectionForModel(node.model);
   node.provider = imageModelProviderName(kind);
-  imageModelDefaultProfiles[kind].apply(node, options, { previousProvider, seedreamProfile });
+  imageModelDefaultProfiles[kind].apply(node, options, { previousProvider, seedreamProfile, connection });
 
   node.extraParamsText = JSON.stringify(node.extraParams, null, 2);
 }
@@ -1452,9 +1516,37 @@ function normalizeImageModelName(model) {
   return value;
 }
 
-function isGeminiNativeImageModelName(model) {
+function imageModelConnectionForModel(model) {
   const normalized = normalizeImageModelName(model).toLowerCase();
-  return normalized === geminiBananaImageModel || normalized.startsWith(`${geminiBananaImageModel}:`);
+  if (!normalized) return null;
+  return config.modelConnections?.[normalized]
+    || Object.entries(config.modelConnections || {}).find(
+      ([candidate]) => normalizeImageModelName(candidate).toLowerCase() === normalized
+    )?.[1]
+    || null;
+}
+
+function imageModelDefinitionForModel(model) {
+  const normalized = normalizeImageModelName(model).toLowerCase();
+  return (config.connectionModels || []).find(
+    (item) => normalizeImageModelName(item.model).toLowerCase() === normalized
+  ) || null;
+}
+
+function bananaImageProfileForModel(model) {
+  const normalized = normalizeImageModelName(model);
+  const connection = imageModelConnectionForModel(normalized);
+  const definition = imageModelDefinitionForModel(normalized);
+  return bananaImageProfile(
+    connection?.protocol,
+    normalized,
+    connection?.apiModel,
+    definition?.label
+  );
+}
+
+function usesBananaImageParameters(model) {
+  return bananaImageProfileForModel(model) === bananaImageProfiles.GEMINI_NATIVE;
 }
 
 function geminiNativeEndpointForModel(model) {
@@ -1463,17 +1555,10 @@ function geminiNativeEndpointForModel(model) {
 }
 
 function parseGeminiNativeSizeValue(size, imageSize = "") {
-  const rawSize = String(size || "").trim();
-  const rawImageSize = String(imageSize || "").trim().toUpperCase();
-  const [ratioPart, imageSizePart = ""] = rawSize.split(/[|@]/);
-  return {
-    aspectRatio: /^\d+:\d+$/.test(ratioPart) ? ratioPart : geminiNativeDefaultRatio,
-    imageSize: ["1K", "2K", "4K"].includes(rawImageSize)
-      ? rawImageSize
-      : ["1K", "2K", "4K"].includes(imageSizePart.toUpperCase())
-        ? imageSizePart.toUpperCase()
-        : geminiNativeDefaultImageSize
-  };
+  return normalizeBananaImageParameters(size, imageSize, {
+    ratio: geminiNativeDefaultRatio,
+    imageSize: geminiNativeDefaultImageSize
+  });
 }
 
 function taskModelLabel(model) {
@@ -1489,7 +1574,7 @@ function taskModelSettingsValue(model) {
 
 function taskMetaParts(model, size, format, quality = "") {
   const normalized = normalizeImageModelName(model);
-  if (isGeminiNativeImageModelName(normalized)) {
+  if (usesBananaImageParameters(normalized)) {
     return [taskModelLabel(normalized), size || geminiNativeDefaultRatio, quality || geminiNativeDefaultImageSize, format];
   }
   return [taskModelLabel(normalized), size, format];
@@ -1508,18 +1593,67 @@ function isDreaminaVideoModelName(model) {
   return String(model || "").trim().toLowerCase().startsWith("dreamina-video-");
 }
 
+function normalizeVideoModelName(model) {
+  return String(model || "").trim().toLowerCase();
+}
+
+function videoModelConnectionForModel(model) {
+  const normalized = normalizeVideoModelName(model);
+  if (!normalized) return null;
+  return config.modelConnections?.[normalized]
+    || Object.entries(config.modelConnections || {}).find(
+      ([candidate]) => normalizeVideoModelName(candidate) === normalized
+    )?.[1]
+    || null;
+}
+
+function videoModelDefinitionForModel(model) {
+  const normalized = normalizeVideoModelName(model);
+  if (!normalized) return null;
+  return (config.connectionModels || []).find(
+    (item) => normalizeVideoModelName(item.model) === normalized
+  ) || null;
+}
+
+function videoModelOptions(currentModel = "") {
+  const options = [...dreaminaVideoModelOptions];
+  const known = new Set(options.map(([model]) => normalizeVideoModelName(model)));
+  for (const definition of config.connectionModels || []) {
+    const model = String(definition.model || "").trim();
+    const normalized = normalizeVideoModelName(model);
+    if (definition.capability !== "video" || !normalized || known.has(normalized)) continue;
+    options.push([model, definition.label || model]);
+    known.add(normalized);
+  }
+  const current = String(currentModel || "").trim();
+  if (current && !known.has(normalizeVideoModelName(current))) options.push([current, current]);
+  return options;
+}
+
 function isArkImageModelName(model) {
   const normalized = normalizeImageModelName(model).toLowerCase();
   return arkImageModelOptions.some(([value]) => value === normalized);
 }
 
 function seedreamImageProfileForModel(model) {
-  const normalized = normalizeImageModelName(model).toLowerCase();
-  const connection = config.modelConnections?.[normalized];
-  const definition = (config.connectionModels || []).find(
-    (item) => normalizeImageModelName(item.model).toLowerCase() === normalized
-  );
-  return seedreamImageProfile(normalized, connection?.apiModel, definition?.label);
+  return seedreamImageProfile(seedreamModelIdentityValues(model));
+}
+
+function seedreamProFeatureChannelForModel(model) {
+  return seedreamProFeatureChannel(seedreamModelIdentityValues(model));
+}
+
+function seedreamModelIdentityValues(model) {
+  const normalized = normalizeImageModelName(model);
+  const connection = imageModelConnectionForModel(normalized);
+  const definition = imageModelDefinitionForModel(normalized);
+  return [
+    normalized,
+    connection?.apiModel,
+    definition?.label,
+    connection?.imageEndpoint,
+    connection?.editEndpoint
+  ];
 }
 
 function isSeedreamImageModelName(model) {
@@ -1530,9 +1664,32 @@ function seedreamReferenceLimit(model) {
   return seedreamImageProfileForModel(model) === seedreamImageProfiles.PRO_5 ? 10 : 14;
 }
 
+function seedreamModeForNode(node) {
+  return seedreamImageProfileForModel(node?.model) === seedreamImageProfiles.PRO_5
+    ? normalizeSeedreamProMode(node?.seedreamMode)
+    : seedreamProModes.STANDARD;
+}
+
+function seedreamReferenceLimitForNode(node) {
+  return seedreamModeForNode(node) === seedreamProModes.LAYERS ? 1 : seedreamReferenceLimit(node?.model);
+}
+
+function referenceImageCountForNode(node) {
+  const cached = node?.cachedImages?.length || 0;
+  const stored = fileStore.get(node?.id)?.images?.length || 0;
+  return cached + stored || node?.sessionFiles?.length || 0;
+}
+
+function sizeOptionsForTaskNode(node) {
+  return seedreamModeForNode(node) === seedreamProModes.LAYERS
+    ? seedreamLayerSizeOptions
+    : sizeOptionsForModel(node.model, node.mode);
+}
+
 function isArkVideoModelName(model) {
-  const normalized = String(model || "").trim().toLowerCase();
-  return arkVideoModelOptions.some(([value]) => value === normalized);
+  const normalized = normalizeVideoModelName(model);
+  return arkVideoModelOptions.some(([value]) => value === normalized)
+    || videoModelConnectionForModel(normalized)?.protocol === "ark-video";
 }
 
 function dreaminaModelVersion(model) {
@@ -1548,7 +1705,7 @@ function sizeOptionsForModel(model, mode = "create") {
   if (isDreaminaModelName(model)) return dreaminaSizeOptionsForModel(model, mode);
   const seedreamProfile = seedreamImageProfileForModel(model);
   if (seedreamProfile) return arkSeedreamSizes[seedreamProfile] || [["2K", "2K"]];
-  if (isGeminiNativeImageModelName(model)) return geminiNativeRatioOptions;
+  if (usesBananaImageParameters(model)) return geminiNativeRatioOptions;
   if (isGrsaiModelName(model)) return grsaiSizeOptions;
   return isGrokModelName(model) ? grokSizeOptions : gptSizeOptions;
 }
@@ -1564,7 +1721,7 @@ function defaultSizeForModel(model, mode = "create") {
   if (isGrokBuildImageModelName(model)) return "1:1";
   if (isDreaminaModelName(model)) return dreaminaDefaultSize;
   if (isSeedreamImageModelName(model)) return "2K";
-  if (isGeminiNativeImageModelName(model)) return geminiNativeDefaultRatio;
+  if (usesBananaImageParameters(model)) return geminiNativeDefaultRatio;
   if (isGrsaiModelName(model)) return grsaiDefaultSize;
   if (isGrokModelName(model)) return mode === "create" ? grokDefaultSize : "";
   return "auto";
@@ -1685,7 +1842,10 @@ function normalizeVideoDurationForModel(value, model) {
 }
 
 function isSupportedVideoModelName(model) {
-  return isDreaminaVideoModelName(model) || isArkVideoModelName(model) || isGrokBuildVideoModelName(model);
+  return isDreaminaVideoModelName(model)
+    || isArkVideoModelName(model)
+    || isGrokBuildVideoModelName(model)
+    || videoModelDefinitionForModel(model)?.capability === "video";
 }
 
 function videoTaskProvider(model) {
@@ -1695,13 +1855,15 @@ function videoTaskProvider(model) {
 }
 
 function videoTaskEndpoint(model) {
-  if (isArkVideoModelName(model)) return arkVideoEndpoint;
+  if (isArkVideoModelName(model)) return videoModelConnectionForModel(model)?.videoEndpoint || arkVideoEndpoint;
   if (isGrokBuildVideoModelName(model)) return "grok-build-cli";
   return "dreamina-video-cli";
 }
 
 function videoTaskBaseUrl(model) {
-  return isArkVideoModelName(model) ? config.arkBaseUrl || arkDefaultBaseUrl : "";
+  return isArkVideoModelName(model)
+    ? videoModelConnectionForModel(model)?.baseUrl || config.arkBaseUrl || arkDefaultBaseUrl
+    : "";
 }
 
 function videoReferenceLimit(model) {
@@ -1725,6 +1887,7 @@ function createDefaultTaskNode(mode = "create") {
     connectionOverride: false,
     apiKeyOverride: "",
     mode: normalizedMode,
+    seedreamMode: seedreamProModes.STANDARD,
     background: "",
     moderation: "",
     extraParams: {},
@@ -2080,8 +2243,19 @@ async function generateNode(nodeId) {
   if (node.type === "video-task") return await generateVideoNode(nodeId);
   if (node.type !== "task") return;
 
-  if (!effectivePromptForNode(node)) {
+  const seedreamMode = seedreamModeForNode(node);
+  if (!effectivePromptForNode(node) && seedreamMode !== seedreamProModes.LAYERS) {
     showToast("节点提示词不能为空");
+    return;
+  }
+
+  const referenceCount = referenceImageCountForNode(node);
+  if (seedreamMode === seedreamProModes.LAYERS && referenceCount < 1) {
+    showToast("智能拆图层需要 1 张输入图片");
+    return;
+  }
+  if (seedreamMode === seedreamProModes.FUSION && referenceCount < 2) {
+    showToast("多图融合至少需要 2 张参考图片");
     return;
   }
 
@@ -2119,7 +2293,12 @@ async function generateNode(nodeId) {
       showToast(`云雾文生图已自动切换兼容通道：${data.fallback.to}`);
     }
 
-    const incoming = dedupeNodeImages((data.images || []).map((image) => normalizeNodeImage(image, node)));
+    const normalizedIncoming = (data.images || []).map((image) => normalizeNodeImage(image, node));
+    const incoming = dedupeNodeImages(
+      seedreamMode === seedreamProModes.LAYERS
+        ? normalizeDecomposedLayerImages(normalizedIncoming)
+        : normalizedIncoming
+    );
     if (!incoming.length) {
       throw new Error("接口已返回，但没有识别到图片字段");
     }
@@ -2128,7 +2307,10 @@ async function generateNode(nodeId) {
     const previousKeys = new Set(previousImages.map(getImageKey).filter(Boolean));
     const newImages = incoming.filter((image) => !previousKeys.has(getImageKey(image)));
     node.images = dedupeNodeImages([...previousImages, ...incoming]);
-    createImageNodesForTask(node, newImages);
+    if (seedreamMode === seedreamProModes.LAYERS) {
+      await createLayerImageNodesForTask(node, newImages, { signal: controller.signal });
+    }
+    else createImageNodesForTask(node, newImages);
     node.status = "done";
     node.durationMs = data.durationMs;
     node.error = "";
@@ -2682,6 +2864,7 @@ function buildNodePayload(node) {
   return {
     projectId: currentProjectId,
     mode: node.mode,
+    seedreamMode: seedreamModeForNode(node),
     prompt: requestPromptForNode(node),
     model: node.model,
     n: node.n,
@@ -2704,6 +2887,7 @@ function buildNodePayload(node) {
 function appendNodeFields(formData, node, options = {}) {
   formData.append("projectId", currentProjectId);
   formData.append("mode", node.mode);
+  formData.append("seedreamMode", seedreamModeForNode(node));
   formData.append("prompt", requestPromptForNode(node));
   formData.append("model", node.model);
   formData.append("n", node.n);
@@ -2742,6 +2926,13 @@ function normalizeNodeImage(image, node) {
     quality: node.quality || "",
     width: Number(image.width) || undefined,
     height: Number(image.height) || undefined,
+    size: image.size || node.size || "",
+    outputFormat: image.outputFormat || "",
+    layerDecomposition: Boolean(image.layerDecomposition),
+    zIndex: Number.isFinite(Number(image.zIndex)) ? Number(image.zIndex) : undefined,
+    layerName: image.layerName || "",
+    layerDescription: image.layerDescription || "",
+    boundingBox: isPlainObject(image.boundingBox) ? clonePlainValue(image.boundingBox) : undefined,
     format: node.format || "",
     generation,
     createdAt: new Date().toISOString()
@@ -2751,6 +2942,7 @@ function normalizeNodeImage(image, node) {
 function buildGenerationSnapshot(node) {
   return {
     mode: node.mode === "edit" ? "edit" : "create",
+    seedreamMode: seedreamModeForNode(node),
     prompt: effectivePromptForNode(node),
     model: node.model || config.defaultModel || "gpt-image-2",
     n: String(node.n || "1"),
@@ -2784,7 +2976,8 @@ function dedupeNodeImages(images) {
 }
 
 function getImageKey(image) {
-  return image?.contentHash || image?.sourceUrl || image?.url || image?.filename || "";
+  const key = image?.contentHash || image?.sourceUrl || image?.url || image?.filename || "";
+  return image?.layerDecomposition ? `${key}:layer:${Number(image.zIndex) || 0}` : key;
 }
 
 function normalizeNodeVideo(video, node) {
@@ -2863,6 +3056,552 @@ function createImageNodesForTask(taskNode, images) {
     existingKeys.add(key);
     cursorY += node.originalHeight * node.scale + 32;
   }
+}
+
+async function createLayerImageNodesForTask(taskNode, images, options = {}) {
+  if (!images.length) return;
+  const ordered = normalizeDecomposedLayerImages(images)
+    .sort((left, right) => (Number(left.zIndex) || 0) - (Number(right.zIndex) || 0));
+  const baseImage = ordered.find((image) => Number(image.zIndex) === 0) || ordered[0];
+  const baseDimensions = parseImageDimensions(baseImage, taskNode.size);
+  const baseWidth = baseDimensions.width || 512;
+  const baseHeight = baseDimensions.height || 512;
+  const fallbackScale = defaultScaleForImageDimensions(baseWidth, baseHeight, baseImage?.size || taskNode.size);
+  const sourceNode = seedreamLayerSourceImageNode(taskNode);
+  const anchor = resolveSeedreamLayerAnchor({
+    sourceNode,
+    baseWidth,
+    baseHeight,
+    fallbackX: taskNode.x,
+    fallbackY: taskNode.y,
+    fallbackScale
+  });
+  const groupId = `seedream-layer-${taskNode.id}`;
+  const existingKeys = new Set(
+    canvasState.nodes
+      .filter((node) => node.type === "image")
+      .map((node) => node.sourceImageKey)
+      .filter(Boolean)
+  );
+  const createdNodes = [];
+
+  for (const image of ordered) {
+    const key = getImageKey(image);
+    if (key && existingKeys.has(key)) continue;
+    const dimensions = parseImageDimensions(image, taskNode.size);
+    const layerWidth = dimensions.width || baseWidth;
+    const layerHeight = dimensions.height || baseHeight;
+    const normalizedBox = normalizeLayerBoundingBox(image.boundingBox?.normalized);
+    const absoluteBox = normalizeLayerBoundingBox(image.boundingBox?.absolute)
+      || (normalizedBox
+        ? [
+            (normalizedBox[0] / 1000) * baseWidth,
+            (normalizedBox[1] / 1000) * baseHeight,
+            (normalizedBox[2] / 1000) * baseWidth,
+            (normalizedBox[3] / 1000) * baseHeight
+          ]
+        : null);
+    const placement = resolveSeedreamLayerPlacement({
+      anchor,
+      baseWidth,
+      baseHeight,
+      layerWidth,
+      layerHeight,
+      boundingBox: absoluteBox
+    });
+    const layerZIndex = Number.isFinite(Number(image.zIndex)) ? Number(image.zIndex) : 0;
+    const isFullCanvasLayer = Math.abs(layerWidth - baseWidth) <= 2 && Math.abs(layerHeight - baseHeight) <= 2;
+
+    const layerNode = {
+      id: createId(),
+      type: "image",
+      image,
+      sourceTaskId: taskNode.id,
+      sourceImageKey: key,
+      layerGroupId: groupId,
+      layerZIndex,
+      layerName: image.layerName || (layerZIndex === 0 ? "底图" : `图层 ${layerZIndex}`),
+      layerDescription: image.layerDescription || "",
+      layerIsBase: layerZIndex === 0,
+      layerPotentialBase: isFullCanvasLayer,
+      layerLayoutVersion: placement.positioned ? seedreamLayerLayoutVersion : 0,
+      layerAlignmentStatus: placement.positioned ? "metadata" : "pending",
+      layerNeedsAutoAlignment: !placement.positioned,
+      originalWidth: layerWidth,
+      originalHeight: layerHeight,
+      scale: placement.scale,
+      x: placement.x,
+      y: placement.y,
+      z: ++canvasState.nextZ,
+      createdAt: new Date().toISOString()
+    };
+    createdNodes.push(layerNode);
+    canvasState.nodes.push(layerNode);
+    existingKeys.add(key);
+  }
+
+  try {
+    await autoAlignSeedreamLayerNodes(createdNodes, {
+      sourceNode,
+      anchor,
+      baseWidth,
+      baseHeight,
+      signal: options.signal
+    });
+    reorderSeedreamLayerStack(createdNodes);
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      const createdIds = new Set(createdNodes.map((node) => node.id));
+      setCanvasNodes(canvasState.nodes.filter((node) => !createdIds.has(node.id)));
+      throw error;
+    }
+    console.warn("Seedream layer auto-alignment failed", error);
+  } finally {
+    for (const node of createdNodes) {
+      delete node.layerNeedsAutoAlignment;
+      delete node.layerPotentialBase;
+      if (node.layerLayoutVersion !== seedreamLayerLayoutVersion) {
+        node.layerLayoutVersion = seedreamLayerLayoutVersion;
+        node.layerAlignmentStatus = node.layerAlignmentStatus === "aligned" ? "aligned" : "centered";
+      }
+    }
+  }
+}
+
+function seedreamLayerSourceImageNode(taskNode) {
+  const generation = taskNode?.image?.generation || {};
+  const sourceIds = dedupeStrings([
+    ...referenceSourceNodeIdsForTask(taskNode || {}),
+    ...(Array.isArray(generation.referenceImageNodeIds) ? generation.referenceImageNodeIds : []),
+    ...(Array.isArray(generation.cachedImages)
+      ? generation.cachedImages.map((image) => image?.sourceImageNodeId || "")
+      : [])
+  ]);
+  return sourceIds
+    .map((id) => canvasState.nodes.find((node) => node.id === id && node.type === "image"))
+    .find(Boolean) || null;
+}
+
+function seedreamLayerAbsoluteBoundingBox(image, baseWidth, baseHeight) {
+  const absolute = normalizeLayerBoundingBox(image?.boundingBox?.absolute);
+  if (absolute) return absolute;
+  const normalized = normalizeLayerBoundingBox(image?.boundingBox?.normalized);
+  if (!normalized) return null;
+  return [
+    (normalized[0] / 1000) * baseWidth,
+    (normalized[1] / 1000) * baseHeight,
+    (normalized[2] / 1000) * baseWidth,
+    (normalized[3] / 1000) * baseHeight
+  ];
+}
+
+async function autoAlignSeedreamLayerNodes(nodes, options = {}) {
+  await classifySeedreamLayerBaseNodes(nodes, options.signal);
+  const candidates = nodes.filter((node) => node?.layerNeedsAutoAlignment);
+  if (!candidates.length || !options.sourceNode?.image?.url) return 0;
+  throwIfLayerAlignmentAborted(options.signal);
+
+  const [cv, sourceImage] = await Promise.all([
+    ensureLayerAlignmentOpenCv(),
+    loadLayerAlignmentImage(options.sourceNode.image.url, options.signal)
+  ]);
+  throwIfLayerAlignmentAborted(options.signal);
+
+  const reference = createLayerAlignmentReference(cv, sourceImage, options.baseWidth, options.baseHeight);
+  let alignedCount = 0;
+  try {
+    for (const node of candidates) {
+      throwIfLayerAlignmentAborted(options.signal);
+      try {
+        const layerImage = await loadLayerAlignmentImage(node.image?.url, options.signal);
+        const match = findSeedreamLayerMatch(cv, reference, layerImage);
+        if (!match || !Number.isFinite(match.score) || match.score > 0.3) {
+          node.layerAlignmentStatus = "centered";
+          continue;
+        }
+        node.x = options.anchor.x + (match.x / reference.sampleScale) * options.anchor.scale;
+        node.y = options.anchor.y + (match.y / reference.sampleScale) * options.anchor.scale;
+        node.scale = options.anchor.scale * match.scaleMultiplier;
+        node.layerAlignmentScore = Number(match.score.toFixed(6));
+        node.layerAlignmentHeuristic = match.heuristic || "";
+        node.layerAlignmentStatus = "aligned";
+        node.layerLayoutVersion = seedreamLayerLayoutVersion;
+        alignedCount += 1;
+      } catch (error) {
+        if (error?.name === "AbortError") throw error;
+        node.layerAlignmentStatus = "centered";
+        console.warn(`Layer alignment skipped for ${node.image?.filename || node.id}`, error);
+      }
+    }
+  } finally {
+    reference.mat.delete();
+  }
+  return alignedCount;
+}
+
+async function classifySeedreamLayerBaseNodes(nodes, signal) {
+  for (const node of nodes) {
+    if (Number(node.layerZIndex) === 0) {
+      node.layerIsBase = true;
+      continue;
+    }
+    if (!node.layerPotentialBase || !node.image?.url) {
+      node.layerIsBase = false;
+      continue;
+    }
+    throwIfLayerAlignmentAborted(signal);
+    try {
+      const image = await loadLayerAlignmentImage(node.image.url, signal);
+      node.layerIsBase = !layerImageContainsTransparency(image);
+    } catch (error) {
+      if (error?.name === "AbortError") throw error;
+      node.layerIsBase = false;
+    }
+  }
+}
+
+function layerImageContainsTransparency(image) {
+  const longSide = Math.max(1, image.naturalWidth || image.width || 1, image.naturalHeight || image.height || 1);
+  const scale = Math.min(1, 96 / longSide);
+  const width = Math.max(1, Math.round((image.naturalWidth || image.width || 1) * scale));
+  const height = Math.max(1, Math.round((image.naturalHeight || image.height || 1) * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  context.clearRect(0, 0, width, height);
+  context.drawImage(image, 0, 0, width, height);
+  const pixels = context.getImageData(0, 0, width, height).data;
+  for (let index = 3; index < pixels.length; index += 4) {
+    if (pixels[index] < 250) return true;
+  }
+  return false;
+}
+
+function reorderSeedreamLayerStack(nodes) {
+  const ordered = [...nodes].sort(
+    (left, right) => (Number(left.layerZIndex) || 0) - (Number(right.layerZIndex) || 0)
+  );
+  const baseNodes = ordered.filter((node) => node.layerIsBase);
+  const elementNodes = ordered.filter((node) => !node.layerIsBase);
+  baseNodes.forEach((node, index) => {
+    node.layerBaseIndex = index;
+    if (index > 0 && /^图层\s+\d+$/u.test(node.layerName || "")) node.layerName = `底图 ${index + 1}`;
+    node.z = ++canvasState.nextZ;
+  });
+  for (const node of elementNodes) {
+    delete node.layerBaseIndex;
+    node.z = ++canvasState.nextZ;
+  }
+}
+
+function createLayerAlignmentReference(cv, image, baseWidth, baseHeight) {
+  const longSide = Math.max(1, Number(baseWidth) || 512, Number(baseHeight) || 512);
+  const sampleScale = Math.min(1, 320 / longSide);
+  const width = Math.max(2, Math.round((Number(baseWidth) || 512) * sampleScale));
+  const height = Math.max(2, Math.round((Number(baseHeight) || 512) * sampleScale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  context.clearRect(0, 0, width, height);
+  context.drawImage(image, 0, 0, width, height);
+  const rgba = cv.imread(canvas);
+  const rgb = new cv.Mat();
+  try {
+    cv.cvtColor(rgba, rgb, cv.COLOR_RGBA2RGB);
+  } finally {
+    rgba.delete();
+  }
+  return { mat: rgb, sampleScale, width, height };
+}
+
+function findSeedreamLayerMatch(cv, reference, image) {
+  const rgba = cv.imread(image);
+  const results = [];
+  try {
+    const alphaProfile = seedreamLayerAlphaProfile(cv, rgba);
+    for (let scale = 0.15; scale <= 1.051; scale += 0.05) {
+      const candidate = scoreSeedreamLayerScale(cv, reference, rgba, scale);
+      if (candidate) results.push(candidate);
+    }
+    if (!results.length) return null;
+    results.sort((left, right) => left.score - right.score || right.scaleMultiplier - left.scaleMultiplier);
+
+    const fineScales = new Set();
+    for (const candidate of results.slice(0, 3)) {
+      for (let offset = -0.04; offset <= 0.041; offset += 0.01) {
+        const scale = Math.max(0.1, Math.min(1.1, candidate.scaleMultiplier + offset));
+        fineScales.add(scale.toFixed(3));
+      }
+    }
+    for (const value of fineScales) {
+      const candidate = scoreSeedreamLayerScale(cv, reference, rgba, Number(value));
+      if (candidate) results.push(candidate);
+    }
+    results.sort((left, right) => left.score - right.score || right.scaleMultiplier - left.scaleMultiplier);
+    const best = results[0] || null;
+    if (!best) return null;
+
+    const baseWidth = reference.width / reference.sampleScale;
+    const baseHeight = reference.height / reference.sampleScale;
+    const intrinsicHeightRatio = rgba.rows / baseHeight;
+    if (
+      best.scaleMultiplier < 0.3
+      && alphaProfile.aspectRatio >= 0.42
+      && alphaProfile.aspectRatio <= 0.82
+      && alphaProfile.coverage >= 0.3
+      && intrinsicHeightRatio >= 0.62
+    ) {
+      const scaleMultiplier = Math.min(
+        (baseWidth * 0.55) / rgba.cols,
+        (baseHeight * 0.68) / rgba.rows
+      );
+      return {
+        ...best,
+        scaleMultiplier,
+        x: ((baseWidth - rgba.cols * scaleMultiplier) / 2) * reference.sampleScale,
+        y: baseHeight * 0.07 * reference.sampleScale,
+        heuristic: "centered-tall-layer"
+      };
+    }
+    return best;
+  } finally {
+    rgba.delete();
+  }
+}
+
+function seedreamLayerAlphaProfile(cv, rgba) {
+  const channels = new cv.MatVector();
+  let alpha = null;
+  const mask = new cv.Mat();
+  try {
+    cv.split(rgba, channels);
+    alpha = channels.get(3);
+    cv.threshold(alpha, mask, 160, 255, cv.THRESH_BINARY);
+    const bounds = cv.boundingRect(mask);
+    const boundsArea = Math.max(1, bounds.width * bounds.height);
+    return {
+      aspectRatio: bounds.height ? bounds.width / bounds.height : 1,
+      coverage: cv.countNonZero(mask) / boundsArea
+    };
+  } finally {
+    mask.delete();
+    alpha?.delete();
+    channels.delete();
+  }
+}
+
+function scoreSeedreamLayerScale(cv, reference, sourceRgba, scaleMultiplier) {
+  const width = Math.max(2, Math.round(sourceRgba.cols * reference.sampleScale * scaleMultiplier));
+  const height = Math.max(2, Math.round(sourceRgba.rows * reference.sampleScale * scaleMultiplier));
+  const resized = new cv.Mat();
+  const channels = new cv.MatVector();
+  let alpha = null;
+  const mask = new cv.Mat();
+  let maskCrop = null;
+  const rgb = new cv.Mat();
+  let rgbCrop = null;
+  const result = new cv.Mat();
+  try {
+    cv.resize(sourceRgba, resized, new cv.Size(width, height), 0, 0, cv.INTER_AREA);
+    cv.split(resized, channels);
+    alpha = channels.get(3);
+    cv.threshold(alpha, mask, 160, 255, cv.THRESH_BINARY);
+    const bounds = cv.boundingRect(mask);
+    if (!bounds.width || !bounds.height || bounds.width > reference.width || bounds.height > reference.height) return null;
+
+    const rect = new cv.Rect(bounds.x, bounds.y, bounds.width, bounds.height);
+    maskCrop = mask.roi(rect);
+    cv.cvtColor(resized, rgb, cv.COLOR_RGBA2RGB);
+    rgbCrop = rgb.roi(rect);
+    cv.matchTemplate(reference.mat, rgbCrop, result, cv.TM_SQDIFF_NORMED, maskCrop);
+    const extrema = cv.minMaxLoc(result);
+    if (!Number.isFinite(extrema.minVal)) return null;
+    return {
+      score: extrema.minVal,
+      scaleMultiplier,
+      x: extrema.minLoc.x - bounds.x,
+      y: extrema.minLoc.y - bounds.y
+    };
+  } finally {
+    result.delete();
+    rgbCrop?.delete();
+    rgb.delete();
+    maskCrop?.delete();
+    mask.delete();
+    alpha?.delete();
+    channels.delete();
+    resized.delete();
+  }
+}
+
+function ensureLayerAlignmentOpenCv() {
+  const current = globalThis.cv;
+  if (current?.Mat) return Promise.resolve(current);
+  if (layerAlignmentCvPromise) return layerAlignmentCvPromise;
+
+  layerAlignmentCvPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    const timeout = window.setTimeout(() => reject(new Error("OpenCV 初始化超时")), 20000);
+    script.src = "/vendor/opencv.js";
+    script.async = true;
+    script.addEventListener("error", () => {
+      window.clearTimeout(timeout);
+      reject(new Error("OpenCV 加载失败"));
+    }, { once: true });
+    script.addEventListener("load", async () => {
+      try {
+        const loaded = await Promise.resolve(globalThis.cv);
+        if (!loaded?.Mat) throw new Error("OpenCV 初始化失败");
+        window.clearTimeout(timeout);
+        resolve(loaded);
+      } catch (error) {
+        window.clearTimeout(timeout);
+        reject(error);
+      }
+    }, { once: true });
+    document.head.append(script);
+  }).catch((error) => {
+    layerAlignmentCvPromise = null;
+    throw error;
+  });
+  return layerAlignmentCvPromise;
+}
+
+function loadLayerAlignmentImage(url, signal) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    let settled = false;
+    const cleanup = () => signal?.removeEventListener("abort", abort);
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback(value);
+    };
+    const abort = () => {
+      const error = new Error("生成已停止");
+      error.name = "AbortError";
+      image.src = "";
+      finish(reject, error);
+    };
+    image.decoding = "async";
+    image.addEventListener("load", () => finish(resolve, image), { once: true });
+    image.addEventListener("error", () => finish(reject, new Error("图层图片读取失败")), { once: true });
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    else image.src = url;
+  });
+}
+
+function throwIfLayerAlignmentAborted(signal) {
+  if (!signal?.aborted) return;
+  const error = new Error("生成已停止");
+  error.name = "AbortError";
+  throw error;
+}
+
+async function repairExistingSeedreamLayerLayouts() {
+  const groups = new Map();
+  for (const node of canvasState.nodes) {
+    if (node.type !== "image" || !node.layerGroupId) continue;
+    if (!groups.has(node.layerGroupId)) groups.set(node.layerGroupId, []);
+    groups.get(node.layerGroupId).push(node);
+  }
+
+  let repairedGroups = 0;
+  for (const groupNodes of groups.values()) {
+    if (!groupNodes.some((node) => Number(node.layerLayoutVersion) !== seedreamLayerLayoutVersion)) continue;
+    const orderedByCreation = [...groupNodes].sort((left, right) => {
+      const leftTime = Date.parse(left.image?.createdAt || left.createdAt || "") || 0;
+      const rightTime = Date.parse(right.image?.createdAt || right.createdAt || "") || 0;
+      return leftTime - rightTime;
+    });
+    const normalizedImages = normalizeDecomposedLayerImages(orderedByCreation.map((node) => node.image || {}));
+    for (let index = 0; index < orderedByCreation.length; index += 1) {
+      const node = orderedByCreation[index];
+      const image = normalizedImages[index];
+      node.image = image;
+      node.layerZIndex = image.zIndex;
+      node.layerName = image.layerName || (image.zIndex === 0 ? "底图" : `图层 ${image.zIndex}`);
+    }
+
+    const ordered = [...orderedByCreation].sort(
+      (left, right) => (Number(left.layerZIndex) || 0) - (Number(right.layerZIndex) || 0)
+    );
+    const baseNode = ordered.find((node) => Number(node.layerZIndex) === 0) || ordered[0];
+    if (!baseNode) continue;
+    const baseDimensions = parseImageDimensions(baseNode.image, baseNode.image?.size);
+    const baseWidth = baseDimensions.width || baseNode.originalWidth || 512;
+    const baseHeight = baseDimensions.height || baseNode.originalHeight || 512;
+    const generation = baseNode.image?.generation || {};
+    const pseudoTask = {
+      id: baseNode.sourceTaskId || "",
+      x: baseNode.x,
+      y: baseNode.y,
+      size: baseNode.image?.size || generation.size || "",
+      image: { generation },
+      cachedImages: generation.cachedImages || [],
+      referenceImageNodeIds: generation.referenceImageNodeIds || []
+    };
+    const sourceNode = seedreamLayerSourceImageNode(pseudoTask);
+    const fallbackScale = defaultScaleForImageDimensions(baseWidth, baseHeight, baseNode.image?.size || "");
+    const anchor = resolveSeedreamLayerAnchor({
+      sourceNode,
+      baseWidth,
+      baseHeight,
+      fallbackX: baseNode.x,
+      fallbackY: baseNode.y,
+      fallbackScale
+    });
+
+    for (const node of ordered) {
+      const dimensions = parseImageDimensions(node.image, baseNode.image?.size);
+      const layerWidth = dimensions.width || node.originalWidth || baseWidth;
+      const layerHeight = dimensions.height || node.originalHeight || baseHeight;
+      const placement = resolveSeedreamLayerPlacement({
+        anchor,
+        baseWidth,
+        baseHeight,
+        layerWidth,
+        layerHeight,
+        boundingBox: seedreamLayerAbsoluteBoundingBox(node.image, baseWidth, baseHeight)
+      });
+      node.originalWidth = layerWidth;
+      node.originalHeight = layerHeight;
+      node.x = placement.x;
+      node.y = placement.y;
+      node.scale = placement.scale;
+      node.z = ++canvasState.nextZ;
+      node.layerNeedsAutoAlignment = !placement.positioned;
+      node.layerPotentialBase = Math.abs(layerWidth - baseWidth) <= 2 && Math.abs(layerHeight - baseHeight) <= 2;
+      node.layerIsBase = Number(node.layerZIndex) === 0;
+      node.layerAlignmentStatus = placement.positioned ? "metadata" : "pending";
+      node.layerLayoutVersion = placement.positioned ? seedreamLayerLayoutVersion : 0;
+    }
+
+    try {
+      await autoAlignSeedreamLayerNodes(ordered, {
+        sourceNode,
+        anchor,
+        baseWidth,
+        baseHeight
+      });
+      reorderSeedreamLayerStack(ordered);
+    } catch (error) {
+      console.warn("Existing Seedream layers could not be auto-aligned", error);
+    } finally {
+      for (const node of ordered) {
+        delete node.layerNeedsAutoAlignment;
+        delete node.layerPotentialBase;
+        node.layerLayoutVersion = seedreamLayerLayoutVersion;
+        if (node.layerAlignmentStatus === "pending") node.layerAlignmentStatus = "centered";
+      }
+    }
+    repairedGroups += 1;
+  }
+  return repairedGroups;
 }
 
 function createVideoNodesForTask(taskNode, videos) {
@@ -3019,7 +3758,11 @@ async function cacheEditFiles(nodeId) {
   formData.append("projectId", currentProjectId);
   (storedFiles.images || []).forEach((file) => formData.append("image", file));
   if (storedFiles.mask) formData.append("mask", storedFiles.mask);
-  const imageSourceNodeIds = (storedFiles.images || []).map((file) => file.sourceImageNodeId || "");
+  const imageReferenceMetadata = (storedFiles.images || []).map((file) => ({
+    sourceImageNodeId: file.sourceImageNodeId || "",
+    canvasComposition: Boolean(file.seedreamCanvasComposition),
+    canvasSourceNodeIds: dedupeStrings(file.seedreamCanvasSourceNodeIds || [])
+  }));
 
   try {
     const response = await fetch("/api/cache-assets", {
@@ -3032,8 +3775,12 @@ async function cacheEditFiles(nodeId) {
     const assets = data.assets || [];
     const imageAssets = assets.filter((asset) => asset.field === "image");
     imageAssets.forEach((asset, index) => {
-      const sourceImageNodeId = imageSourceNodeIds[index];
-      if (sourceImageNodeId) asset.sourceImageNodeId = sourceImageNodeId;
+      const metadata = imageReferenceMetadata[index] || {};
+      if (metadata.sourceImageNodeId) asset.sourceImageNodeId = metadata.sourceImageNodeId;
+      if (metadata.canvasComposition) {
+        asset.canvasComposition = true;
+        asset.canvasSourceNodeIds = metadata.canvasSourceNodeIds;
+      }
     });
     if (imageAssets.length) node.cachedImages = dedupeAssetRefs([...(node.cachedImages || []), ...imageAssets]);
     const maskAsset = assets.find((asset) => asset.field === "mask");
@@ -7310,6 +8057,7 @@ function reusePromptFromVideo(videoNodeId) {
 
 function applyGenerationToTask(task, generation) {
   task.mode = generation.mode === "edit" ? "edit" : "create";
+  task.seedreamMode = normalizeSeedreamProMode(generation.seedreamMode);
   task.model = generation.model || config.defaultModel || "gpt-image-2";
   task.baseUrl = generation.baseUrl || config.baseUrl || "https://yunwu.ai";
   task.endpointPath = generation.endpointPath || defaultEndpointForMode(task.mode);
@@ -7363,6 +8111,44 @@ function updateSelectionToolbar() {
   selectionScaleInput.disabled = !canScaleImages;
   applySelectionScaleButton.disabled = !canScaleImages;
   reusePromptButton.disabled = !canReusePrompt;
+  if (selectionLayerActions) {
+    const selectedImageIds = new Set(selectedImages.map((node) => node.id));
+    const allImages = canvasState.nodes.filter((node) => node.type === "image");
+    selectionLayerActions.hidden = !selectedImages.length;
+    if (selectionLayerBottomButton) {
+      selectionLayerBottomButton.disabled = !reorderLayerItemsByZ(allImages, selectedImageIds, "back").changed;
+    }
+    if (selectionLayerBackwardButton) {
+      selectionLayerBackwardButton.disabled = !reorderLayerItemsByZ(allImages, selectedImageIds, "backward").changed;
+    }
+    if (selectionLayerForwardButton) {
+      selectionLayerForwardButton.disabled = !reorderLayerItemsByZ(allImages, selectedImageIds, "forward").changed;
+    }
+    if (selectionLayerTopButton) {
+      selectionLayerTopButton.disabled = !reorderLayerItemsByZ(allImages, selectedImageIds, "front").changed;
+    }
+  }
+  if (seedreamFusionSelectionButton) {
+    const fusionCountAllowed = selectedImages.length >= 2 && selectedImages.length <= 10;
+    seedreamFusionSelectionButton.hidden = selectedImages.length < 2;
+    seedreamFusionSelectionButton.disabled = !fusionCountAllowed || Boolean(seedreamSelectionActionBusy);
+    seedreamFusionSelectionButton.textContent = seedreamSelectionActionBusy === seedreamProModes.FUSION
+      ? "正在制作构图稿..."
+      : selectedImages.length > 10
+        ? "多图融合（最多 10 张）"
+        : `多图融合 (${selectedImages.length})`;
+    seedreamFusionSelectionButton.title = selectedImages.length > 10
+      ? "Seedream 5.0 Pro 最多接收 10 张参考图，请减少选择"
+      : "按画布中的位置、大小和遮挡层级制作构图稿，并创建多图融合任务";
+  }
+  if (seedreamLayerSelectionButton) {
+    seedreamLayerSelectionButton.hidden = selectedImages.length !== 1;
+    seedreamLayerSelectionButton.disabled = selectedImages.length !== 1 || Boolean(seedreamSelectionActionBusy);
+    seedreamLayerSelectionButton.textContent = seedreamSelectionActionBusy === seedreamProModes.LAYERS
+      ? "正在准备拆层..."
+      : "智能拆图层";
+    seedreamLayerSelectionButton.title = "用当前图片创建 Seedream 5.0 Pro 智能拆图层任务";
+  }
   if (sendSelectionToPhotoshopButton) {
     sendSelectionToPhotoshopButton.hidden = !config.photoshopBridgeEnabled || !photoshopReferenceSelectionRequest;
     sendSelectionToPhotoshopButton.disabled = !selectedImages.length || photoshopReferenceSelectionBusy;
@@ -7376,6 +8162,347 @@ function updateSelectionToolbar() {
       scalableNodes.reduce((sum, node) => sum + (Number(node.scale) || (node.type === "video" ? defaultVideoScale : defaultImageScale)), 0) /
       scalableNodes.length;
     selectionScaleInput.value = String(Math.round(averageScale * 100));
+  }
+}
+
+function selectedCanvasImageNodes() {
+  return canvasState.nodes.filter(
+    (node) => selectedNodeIds.has(node.id) && node.type === "image" && node.image?.url
+  );
+}
+
+function orderedCanvasImageNodes(nodes) {
+  const canvasOrder = new Map(canvasState.nodes.map((node, index) => [node.id, index]));
+  return [...nodes].sort((left, right) => {
+    const zDelta = (Number(left.z) || 0) - (Number(right.z) || 0);
+    return zDelta || (canvasOrder.get(left.id) || 0) - (canvasOrder.get(right.id) || 0);
+  });
+}
+
+function imageLayerActionLabel(action) {
+  return {
+    back: "置底",
+    backward: "下移一层",
+    forward: "上移一层",
+    front: "置顶"
+  }[action] || "调整层级";
+}
+
+function moveSelectedImageLayers(action) {
+  const selectedImages = canvasState.nodes.filter(
+    (node) => node.type === "image" && selectedNodeIds.has(node.id)
+  );
+  if (!selectedImages.length) return false;
+
+  const allImages = canvasState.nodes.filter((node) => node.type === "image");
+  const currentOrder = orderedCanvasImageNodes(allImages);
+  const result = reorderLayerItemsByZ(
+    currentOrder,
+    new Set(selectedImages.map((node) => node.id)),
+    action
+  );
+  if (!result.changed) {
+    showToast(`所选图片已经无法继续${imageLayerActionLabel(action)}`);
+    return false;
+  }
+
+  let previousZ = Number.NEGATIVE_INFINITY;
+  const zSlots = currentOrder.map((node, index) => {
+    const rawZ = Number(node.z);
+    let slot = Number.isFinite(rawZ) ? Math.trunc(rawZ) : index + 1;
+    if (slot <= previousZ) slot = previousZ + 1;
+    previousZ = slot;
+    return slot;
+  });
+  result.items.forEach((node, index) => {
+    node.z = zSlots[index];
+    const tile = canvasNodeElement(node.id);
+    if (tile) tile.style.zIndex = String(node.z);
+  });
+  canvasState.nextZ = Math.max(canvasState.nextZ, ...zSlots);
+  updateSelectionToolbar();
+  updateMinimap();
+  renderReferenceLinks();
+  saveCanvasState();
+  showToast(`已将 ${selectedImages.length} 张图片${imageLayerActionLabel(action)}`);
+  return true;
+}
+
+function canvasImageSelectionBounds(nodes) {
+  const bounds = nodes.map(mediaNodeWorldBounds);
+  if (!bounds.length) return null;
+  const minX = Math.min(...bounds.map((rect) => rect.x));
+  const minY = Math.min(...bounds.map((rect) => rect.y));
+  const maxX = Math.max(...bounds.map((rect) => rect.x + rect.width));
+  const maxY = Math.max(...bounds.map((rect) => rect.y + rect.height));
+  return {
+    x: minX,
+    y: minY,
+    width: Math.max(1, maxX - minX),
+    height: Math.max(1, maxY - minY)
+  };
+}
+
+function hasConfiguredImageModelKey(model) {
+  const connection = imageModelConnectionForModel(model);
+  if (typeof connection?.hasKey === "boolean") return connection.hasKey;
+  return normalizeImageModelName(model).toLowerCase() === seedreamImageProfiles.PRO_5
+    ? Boolean(config.hasArkApiKey)
+    : false;
+}
+
+function isAvailableSeedreamProModel(model) {
+  const normalized = normalizeImageModelName(model);
+  if (!normalized || seedreamImageProfileForModel(normalized) !== seedreamImageProfiles.PRO_5) return false;
+  return Boolean(
+    imageModelConnectionForModel(normalized)
+    || imageModelDefinitionForModel(normalized)
+    || taskModelOptions.some(([value]) => normalizeImageModelName(value).toLowerCase() === normalized.toLowerCase())
+  );
+}
+
+function preferredSeedreamProModel(imageNodes = []) {
+  const candidates = [];
+  const addCandidate = (model) => {
+    const normalized = normalizeImageModelName(model);
+    if (!isAvailableSeedreamProModel(normalized)) return;
+    if (!candidates.some((candidate) => candidate.toLowerCase() === normalized.toLowerCase())) candidates.push(normalized);
+  };
+
+  for (const imageNode of imageNodes) {
+    addCandidate(imageNode.image?.generation?.model);
+    addCandidate(imageNode.image?.model);
+  }
+  [...canvasState.nodes]
+    .reverse()
+    .filter((node) => node.type === "task")
+    .forEach((node) => addCandidate(node.model));
+  addCandidate(config.defaultModel);
+  (config.connectionModels || [])
+    .filter((definition) => definition.capability === "image")
+    .forEach((definition) => addCandidate(definition.model));
+  addCandidate(seedreamImageProfiles.PRO_5);
+
+  const featureChannels = candidates.filter(seedreamProFeatureChannelForModel);
+  return featureChannels.find(hasConfiguredImageModelKey)
+    || candidates.find(hasConfiguredImageModelKey)
+    || featureChannels[0]
+    || candidates[0]
+    || seedreamImageProfiles.PRO_5;
+}
+
+function createSeedreamTaskForCanvasSelection(seedreamMode, imageNodes, options = {}) {
+  const bounds = canvasImageSelectionBounds(imageNodes) || {
+    ...getViewportCenterWorld(),
+    width: 0,
+    height: 0
+  };
+  const task = createDefaultTaskNode("edit");
+  task.model = preferredSeedreamProModel(imageNodes);
+  task.mode = "edit";
+  task.seedreamMode = seedreamMode;
+  task.prompt = options.prompt || "";
+  task.endpointPath = defaultEndpointForMode("edit");
+  task.debugOpen = true;
+  task.x = Math.round(bounds.x + bounds.width + 56);
+  task.y = Math.round(bounds.y);
+  task.z = ++canvasState.nextZ;
+  if (options.composition) task.canvasComposition = clonePlainValue(options.composition);
+  applyTaskModelDefaults(task, { force: true, modeChanged: true, modelChanged: true });
+
+  canvasState.nodes.push(task);
+  selectOnly(task.id, { revealControls: true });
+  saveCanvasState();
+  updateCanvasMeta();
+  return task;
+}
+
+function setFileProperty(file, property, value) {
+  if (!file) return file;
+  try {
+    Object.defineProperty(file, property, {
+      configurable: true,
+      enumerable: false,
+      value
+    });
+  } catch {
+    file[property] = value;
+  }
+  return file;
+}
+
+async function createDrawableForCanvasComposition(blob) {
+  if (typeof createImageBitmap === "function") {
+    try {
+      const bitmap = await createImageBitmap(blob);
+      return { drawable: bitmap, release: () => bitmap.close?.() };
+    } catch {
+      // SVG and a few uncommon encodings are supported by <img> even when ImageBitmap rejects them.
+    }
+  }
+
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const image = new Image();
+    image.decoding = "async";
+    await new Promise((resolve, reject) => {
+      image.addEventListener("load", resolve, { once: true });
+      image.addEventListener("error", () => reject(new Error("画布图片解码失败")), { once: true });
+      image.src = objectUrl;
+    });
+    return { drawable: image, release: () => URL.revokeObjectURL(objectUrl) };
+  } catch (error) {
+    URL.revokeObjectURL(objectUrl);
+    throw error;
+  }
+}
+
+async function createCanvasCompositionFile(imageNodes, sourceFiles) {
+  const bounds = canvasImageSelectionBounds(imageNodes);
+  if (!bounds) throw new Error("没有可用于构图的图片");
+
+  const maxSide = 2048;
+  const maxPixels = 4_194_304;
+  const fitScale = Math.min(
+    1,
+    maxSide / Math.max(bounds.width, bounds.height),
+    Math.sqrt(maxPixels / Math.max(1, bounds.width * bounds.height))
+  );
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bounds.width * fitScale));
+  canvas.height = Math.max(1, Math.round(bounds.height * fitScale));
+  const context = canvas.getContext("2d", { alpha: true });
+  if (!context) throw new Error("无法创建画布构图稿");
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+
+  const drawables = [];
+  try {
+    for (const file of sourceFiles) {
+      drawables.push(await createDrawableForCanvasComposition(file));
+    }
+    imageNodes.forEach((node, index) => {
+      const rect = mediaNodeWorldBounds(node);
+      context.drawImage(
+        drawables[index].drawable,
+        (rect.x - bounds.x) * fitScale,
+        (rect.y - bounds.y) * fitScale,
+        rect.width * fitScale,
+        rect.height * fitScale
+      );
+    });
+  } finally {
+    drawables.forEach((entry) => entry.release());
+  }
+
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  if (!blob) throw new Error("构图稿导出失败");
+  const file = new File([blob], `canvas-composition-${Date.now()}.png`, { type: "image/png" });
+  setFileProperty(file, "seedreamCanvasComposition", true);
+  setFileProperty(file, "seedreamCanvasSourceNodeIds", imageNodes.map((node) => node.id));
+  return {
+    file,
+    bounds,
+    width: canvas.width,
+    height: canvas.height
+  };
+}
+
+async function attachPreparedImageReferences(task, files, sourceImageNodeIds = []) {
+  if (!task || !files.length) throw new Error("没有可用的参考图片");
+  const stored = fileStore.get(task.id) || {};
+  fileStore.set(task.id, { ...stored, images: [...(stored.images || []), ...files] });
+  task.referenceImageNodeIds = dedupeStrings([
+    ...(task.referenceImageNodeIds || []),
+    ...sourceImageNodeIds
+  ]);
+  task.sessionFiles = [...(task.sessionFiles || []), ...files.map((file) => file.name)];
+  task.cacheStatus = "caching";
+  task.debugOpen = true;
+  updateNode(task);
+  saveCanvasState();
+  await cacheEditFiles(task.id);
+  renderCanvas();
+}
+
+function markSeedreamPreparationError(task, error) {
+  if (!task || !canvasState.nodes.some((node) => node.id === task.id)) return;
+  task.status = "error";
+  task.error = error.message || "Seedream 任务准备失败";
+  updateNode(task);
+  saveCanvasState({ history: false });
+}
+
+async function createSeedreamFusionFromSelection() {
+  if (seedreamSelectionActionBusy) return;
+  const selectedImages = selectedCanvasImageNodes();
+  if (selectedImages.length < 2) {
+    showToast("请至少选中 2 张画布图片");
+    return;
+  }
+  if (selectedImages.length > 10) {
+    showToast("多图融合一次最多选择 10 张图片");
+    return;
+  }
+
+  const orderedImages = orderedCanvasImageNodes(selectedImages);
+  seedreamSelectionActionBusy = seedreamProModes.FUSION;
+  updateSelectionToolbar();
+  let task = null;
+  try {
+    const sourceFiles = await Promise.all(orderedImages.map(imageNodeToFile));
+    const composition = await createCanvasCompositionFile(orderedImages, sourceFiles);
+    const detailStart = Math.max(0, sourceFiles.length - 9);
+    const detailFiles = sourceFiles.slice(detailStart);
+    task = createSeedreamTaskForCanvasSelection(seedreamProModes.FUSION, orderedImages, {
+      prompt: "请严格以图 1（画布构图稿）为整体构图基准，保持各元素在画面中的位置、大小比例和前后遮挡关系。图 2 起为对应元素的原始细节参考。将拼贴自然融合成一张完整画面，统一光线、透视、色彩、阴影和材质，消除白边、硬切边与拼贴痕迹；除非另有说明，不要增删主要元素。",
+      composition: {
+        sourceNodeIds: orderedImages.map((node) => node.id),
+        bounds: composition.bounds,
+        previewWidth: composition.width,
+        previewHeight: composition.height,
+        createdAt: new Date().toISOString()
+      }
+    });
+    await attachPreparedImageReferences(
+      task,
+      [composition.file, ...detailFiles],
+      orderedImages.map((node) => node.id)
+    );
+    showToast(sourceFiles.length === 10
+      ? "已生成画布构图稿，并保留 9 张前景细节参考；确认提示词后点击生成"
+      : "已按画布位置创建多图融合任务；确认提示词后点击生成");
+  } catch (error) {
+    markSeedreamPreparationError(task, error);
+    showToast(error.message || "多图融合任务准备失败");
+  } finally {
+    seedreamSelectionActionBusy = "";
+    updateSelectionToolbar();
+  }
+}
+
+async function createSeedreamLayerTaskFromSelection() {
+  if (seedreamSelectionActionBusy) return;
+  const selectedImages = selectedCanvasImageNodes();
+  if (selectedImages.length !== 1) {
+    showToast("请选择 1 张需要拆分图层的图片");
+    return;
+  }
+
+  seedreamSelectionActionBusy = seedreamProModes.LAYERS;
+  updateSelectionToolbar();
+  let task = null;
+  try {
+    const sourceFile = await imageNodeToFile(selectedImages[0]);
+    task = createSeedreamTaskForCanvasSelection(seedreamProModes.LAYERS, selectedImages);
+    await attachPreparedImageReferences(task, [sourceFile], [selectedImages[0].id]);
+    showToast("智能拆图层任务已准备好，直接点击生成即可");
+  } catch (error) {
+    markSeedreamPreparationError(task, error);
+    showToast(error.message || "智能拆图层任务准备失败");
+  } finally {
+    seedreamSelectionActionBusy = "";
+    updateSelectionToolbar();
   }
 }
 
@@ -7453,6 +8580,23 @@ function handleCanvasShortcut(event) {
   }
 
   if (isInteractiveElement(event.target)) return false;
+
+  const isBracketLeft = event.code === "BracketLeft" || event.key === "[" || event.key === "【";
+  const isBracketRight = event.code === "BracketRight" || event.key === "]" || event.key === "】";
+  if (!event.ctrlKey && !event.metaKey && !event.altKey && (isBracketLeft || isBracketRight)) {
+    const hasSelectedImage = canvasState.nodes.some(
+      (node) => node.type === "image" && selectedNodeIds.has(node.id)
+    );
+    if (hasSelectedImage) {
+      event.preventDefault();
+      moveSelectedImageLayers(
+        isBracketRight
+          ? event.shiftKey ? "front" : "forward"
+          : event.shiftKey ? "back" : "backward"
+      );
+      return true;
+    }
+  }
 
   if ((event.key === "Delete" || event.key === "Backspace") && selectedNodeIds.size) {
     event.preventDefault();
@@ -9188,7 +10332,7 @@ function createStoryVideoOutputControls(node) {
   const controls = document.createElement("div");
   controls.className = "story-output-controls story-video-output-controls";
   controls.append(
-    createStorySelectControl("视频模型", node.videoModel, dreaminaVideoModelOptions, (value) => {
+    createStorySelectControl("视频模型", node.videoModel, videoModelOptions(node.videoModel), (value) => {
       node.videoModel = value;
       node.videoSize = videoRatioOptionsForModel(value).some(([ratio]) => ratio === node.aspectRatio)
         ? node.aspectRatio
@@ -10965,7 +12109,13 @@ function createImageNode(node) {
   const scale = Number(node.scale) || defaultScaleForImageNode(node, { width, height });
 
   const tile = document.createElement("article");
-  tile.className = ["canvas-node", "image-node", selected ? "is-selected" : ""].filter(Boolean).join(" ");
+  tile.className = [
+    "canvas-node",
+    "image-node",
+    node.layerGroupId ? "is-seedream-layer" : "",
+    node.layerGroupId && (node.layerIsBase || Number(node.layerZIndex) === 0) ? "is-layer-base" : "",
+    selected ? "is-selected" : ""
+  ].filter(Boolean).join(" ");
   tile.dataset.nodeId = node.id;
   tile.style.left = `${node.x}px`;
   tile.style.top = `${node.y}px`;
@@ -11029,6 +12179,8 @@ function createImageNode(node) {
   tile.append(img, createReferenceConnectHandle(node));
   const arkAssetBadge = createImageArkAssetBadge(node);
   if (arkAssetBadge) tile.append(arkAssetBadge);
+  const layerBadge = createImageLayerBadge(node);
+  if (layerBadge) tile.append(layerBadge);
 
   if (selected) {
     tile.append(createImageToolbar(node));
@@ -11049,6 +12201,18 @@ function createImageNode(node) {
     startNodeDrag(event, node.id);
   });
   return tile;
+}
+
+function createImageLayerBadge(node) {
+  if (!node?.layerGroupId) return null;
+  const zIndex = Number(node.layerZIndex) || 0;
+  const badge = document.createElement("span");
+  badge.className = "image-layer-badge";
+  badge.textContent = node.layerIsBase || zIndex === 0
+    ? `${Number(node.layerBaseIndex) > 0 ? `底图 ${Number(node.layerBaseIndex) + 1}` : "底图"} · ${node.layerName || "Background"}`
+    : `图层 ${zIndex} · ${node.layerName || "未命名"}`;
+  badge.title = node.layerDescription || `Seedream 拆图层组：${node.layerGroupId}`;
+  return badge;
 }
 
 function createImageArkAssetBadge(node) {
@@ -11658,7 +12822,7 @@ function createVideoTaskSettings(node) {
     ? createSelectField("时长", node, "n", [["6", "6 秒"], ["10", "10 秒"]])
     : createNumberField("时长（秒）", node, "n", videoDurationRangeForModel(node.model));
   settings.append(
-    createSelectField("模型", node, "model", dreaminaVideoModelOptions, {
+    createSelectField("模型", node, "model", videoModelOptions(node.model), {
       onChange: (value) => {
         node.provider = videoTaskProvider(value);
         node.baseUrl = videoTaskBaseUrl(value);
@@ -11878,7 +13042,9 @@ function createVideoTaskStatusArea(node) {
 }
 
 function videoModelLabel(model) {
-  return dreaminaVideoModelOptions.find(([value]) => value === model)?.[1] || String(model || "").replace(/^dreamina-video-/u, "");
+  const normalized = normalizeVideoModelName(model);
+  return videoModelOptions(model).find(([value]) => normalizeVideoModelName(value) === normalized)?.[1]
+    || String(model || "").replace(/^dreamina-video-/u, "");
 }
 
 function createNodeIcon(name, className = "") {
@@ -11926,6 +13092,9 @@ function nodeIconSvg(name) {
 function createTaskHeader(node) {
   const header = document.createElement("div");
   header.className = "task-header";
+  if (seedreamImageProfileForModel(node.model) === seedreamImageProfiles.PRO_5) {
+    header.classList.add("is-seedream-pro");
+  }
 
   const status = document.createElement("span");
   status.className = "task-status";
@@ -11933,11 +13102,21 @@ function createTaskHeader(node) {
 
   const titleWrap = document.createElement("div");
   titleWrap.className = "task-title-wrap";
-  titleWrap.append(createNodeIcon(node.mode === "edit" ? "image-edit" : "image-generate", "task-title-icon"));
+  const seedreamMode = seedreamModeForNode(node);
+  const titleIcon = seedreamMode === seedreamProModes.FUSION
+    ? "shuffle"
+    : seedreamMode === seedreamProModes.LAYERS
+      ? "object"
+      : node.mode === "edit" ? "image-edit" : "image-generate";
+  titleWrap.append(createNodeIcon(titleIcon, "task-title-icon"));
 
   const title = document.createElement("strong");
   title.className = "task-title";
-  title.textContent = providerForModel(node.model) === "dreamina"
+  title.textContent = seedreamMode === seedreamProModes.FUSION
+    ? "Seedream 多图融合"
+    : seedreamMode === seedreamProModes.LAYERS
+      ? "Seedream 智能拆图层"
+      : providerForModel(node.model) === "dreamina"
     ? "即梦生图"
     : providerForModel(node.model) === "ark"
       ? node.mode === "edit" ? "Seedream 编辑" : "Seedream 生图"
@@ -11949,6 +13128,12 @@ function createTaskHeader(node) {
   const modeTabs = document.createElement("div");
   modeTabs.className = "node-mode-tabs";
   modeTabs.append(createModeButton(node, "create", "创建"), createModeButton(node, "edit", "编辑"));
+  if (seedreamImageProfileForModel(node.model) === seedreamImageProfiles.PRO_5) {
+    modeTabs.append(
+      createSeedreamModeButton(node, seedreamProModes.FUSION, "多图融合", "shuffle"),
+      createSeedreamModeButton(node, seedreamProModes.LAYERS, "拆图层", "object")
+    );
+  }
 
   const meta = document.createElement("span");
   meta.className = "node-meta";
@@ -11963,7 +13148,13 @@ function createPromptField(node) {
   prompt.className = "node-prompt";
   prompt.rows = 4;
   prompt.value = node.prompt || "";
-  prompt.placeholder = node.type === "video-task" ? "输入视频提示词，输入 @ 精确引用已添加素材" : "输入这个节点的提示词";
+  prompt.placeholder = node.type === "video-task"
+    ? "输入视频提示词，输入 @ 精确引用已添加素材"
+    : seedreamModeForNode(node) === seedreamProModes.LAYERS
+      ? "可选：描述希望分离的主体、文字或装饰元素；留空则自动拆分"
+      : seedreamModeForNode(node) === seedreamProModes.FUSION
+        ? "描述图 1、图 2 等参考图要如何融合"
+        : "输入这个节点的提示词";
   prompt.addEventListener("pointerdown", (event) => {
     event.stopPropagation();
     if (!selectedNodeIds.has(node.id)) {
@@ -12308,24 +13499,28 @@ function createDebugPanel(node) {
     settings.append(modelField, createSelectField("尺寸", node, "size", sizeOptionsForModel(node.model, node.mode)));
   } else if (isArkImageModelName(node.model)) {
     const seedreamProfile = seedreamImageProfileForModel(node.model);
-    settings.append(
-      modelField,
-      createSelectField("尺寸", node, "size", sizeOptionsForModel(node.model, node.mode)),
-      createNumberField("数量", node, "n", { min: 1, max: seedreamProfile === seedreamImageProfiles.PRO_5 ? 1 : 15 }),
-      createSelectField("提示词优化", node, "quality", arkOptimizeOptionsForModel(node.model))
-    );
-    if (seedreamProfile === seedreamImageProfiles.PRO_5) advancedGrid.append(createSelectField("格式", node, "format", [["png", "png"], ["jpeg", "jpeg"]]));
+    const layerMode = seedreamModeForNode(node) === seedreamProModes.LAYERS;
+    settings.append(modelField, createSelectField("尺寸", node, "size", sizeOptionsForTaskNode(node)));
+    if (!layerMode) {
+      settings.append(
+        createNumberField("数量", node, "n", { min: 1, max: seedreamProfile === seedreamImageProfiles.PRO_5 ? 1 : 15 }),
+        createSelectField("提示词优化", node, "quality", arkOptimizeOptionsForModel(node.model))
+      );
+    }
+    if (seedreamProfile === seedreamImageProfiles.PRO_5 && !layerMode) {
+      advancedGrid.append(createSelectField("格式", node, "format", [["png", "png"], ["jpeg", "jpeg"]]));
+    }
     if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
   } else if (isSeedreamImageModelName(node.model)) {
     const seedreamProfile = seedreamImageProfileForModel(node.model);
-    settings.append(
-      modelField,
-      createSelectField("尺寸", node, "size", sizeOptionsForModel(node.model, node.mode)),
-      createNumberField("数量", node, "n", { min: 1, max: seedreamProfile === seedreamImageProfiles.PRO_5 ? 1 : 15 })
-    );
-    advancedGrid.append(createSelectField("格式", node, "format", formatOptions));
+    const layerMode = seedreamModeForNode(node) === seedreamProModes.LAYERS;
+    settings.append(modelField, createSelectField("尺寸", node, "size", sizeOptionsForTaskNode(node)));
+    if (!layerMode) {
+      settings.append(createNumberField("数量", node, "n", { min: 1, max: seedreamProfile === seedreamImageProfiles.PRO_5 ? 1 : 15 }));
+      advancedGrid.append(createSelectField("格式", node, "format", formatOptions));
+    }
     if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
-  } else if (isGeminiNativeImageModelName(node.model)) {
+  } else if (usesBananaImageParameters(node.model)) {
     settings.append(
       modelField,
       createSelectField("比例", node, "size", geminiNativeRatioOptions),
@@ -12344,7 +13539,7 @@ function createDebugPanel(node) {
     if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
   }
 
-  if (node.mode === "edit" && !isDreaminaModelName(node.model) && !isGeminiNativeImageModelName(node.model) && !isSeedreamImageModelName(node.model)) {
+  if (node.mode === "edit" && !isDreaminaModelName(node.model) && !usesBananaImageParameters(node.model) && !isSeedreamImageModelName(node.model)) {
     advancedGrid.append(
       createSelectField("背景", node, "background", backgroundOptions),
       createSelectField("审核", node, "moderation", moderationOptions)
@@ -12460,15 +13655,40 @@ function createErrorLine(node) {
 function createModeButton(node, mode, label) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = node.mode === mode ? "active" : "";
+  button.className = seedreamModeForNode(node) === seedreamProModes.STANDARD && node.mode === mode ? "active" : "";
   button.append(createNodeIcon(mode === "edit" ? "pencil" : "create", "node-mode-icon"), document.createTextNode(label));
+  if (seedreamProFeatureChannelForModel(node.model)) {
+    button.disabled = true;
+    button.title = "当前模型已识别为拆图／融图增强渠道，不用于普通生图";
+  }
   button.addEventListener("click", () => {
-    if (node.mode === mode) return;
+    if (node.mode === mode && seedreamModeForNode(node) === seedreamProModes.STANDARD) return;
+    node.seedreamMode = seedreamProModes.STANDARD;
     node.mode = mode;
     node.endpointPath = defaultEndpointForMode(mode);
     applyTaskModelDefaults(node, { modeChanged: true });
     node.cacheStatus = mode === "edit" ? (node.cachedImages?.length ? "ready" : "pending") : "none";
     node.debugOpen = mode === "edit";
+    updateNode(node);
+    saveCanvasState();
+    updateCanvasMeta();
+  });
+  return button;
+}
+
+function createSeedreamModeButton(node, seedreamMode, label, icon) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = seedreamModeForNode(node) === seedreamMode ? "active" : "";
+  button.append(createNodeIcon(icon, "node-mode-icon"), document.createTextNode(label));
+  button.addEventListener("click", () => {
+    if (seedreamModeForNode(node) === seedreamMode) return;
+    node.seedreamMode = seedreamMode;
+    node.mode = "edit";
+    node.endpointPath = defaultEndpointForMode("edit");
+    applyTaskModelDefaults(node, { modeChanged: true });
+    node.cacheStatus = node.cachedImages?.length ? "ready" : "pending";
+    node.debugOpen = true;
     updateNode(node);
     saveCanvasState();
     updateCanvasMeta();
@@ -12483,7 +13703,7 @@ function createEditAssetFields(node) {
   const imageInput = document.createElement("input");
   imageInput.type = "file";
   imageInput.accept = "image/png,image/jpeg,image/webp";
-  imageInput.multiple = true;
+  imageInput.multiple = seedreamModeForNode(node) !== seedreamProModes.LAYERS;
   imageInput.addEventListener("pointerdown", (event) => event.stopPropagation());
   imageInput.addEventListener("change", () => {
     let files = Array.from(imageInput.files || []);
@@ -12493,9 +13713,13 @@ function createEditAssetFields(node) {
       if (files.length > remaining) showToast("即梦图生图最多使用 10 张参考图片");
       files = files.slice(0, remaining);
     } else if (isSeedreamImageModelName(node.model)) {
-      const limit = seedreamReferenceLimit(node.model);
+      const limit = seedreamReferenceLimitForNode(node);
       const remaining = Math.max(0, limit - (node.cachedImages?.length || 0) - (stored.images?.length || 0));
-      if (files.length > remaining) showToast(`当前 Seedream 模型最多使用 ${limit} 张参考图片`);
+      if (files.length > remaining) {
+        showToast(seedreamModeForNode(node) === seedreamProModes.LAYERS
+          ? "智能拆图层只能使用 1 张输入图片"
+          : `当前 Seedream 模型最多使用 ${limit} 张参考图片`);
+      }
       files = files.slice(0, remaining);
     } else if (isGrokBuildImageModelName(node.model)) {
       const remaining = Math.max(0, 7 - (node.cachedImages?.length || 0) - (stored.images?.length || 0));
@@ -12545,9 +13769,26 @@ function createEditAssetFields(node) {
   summary.className = "asset-summary";
   summary.textContent = assetSummaryText(node);
 
-  panel.append(referenceActions, thumbnails, summary);
+  const hint = createSeedreamAssetHint(node);
+  panel.append(...[hint, referenceActions, thumbnails, summary].filter(Boolean));
 
   return panel;
+}
+
+function createSeedreamAssetHint(node) {
+  const mode = seedreamModeForNode(node);
+  if (mode === seedreamProModes.STANDARD) return null;
+  const autoDetected = seedreamProFeatureChannelForModel(node.model)
+    ? "已根据模型或接口关键词识别为拆图／融图增强渠道。"
+    : "";
+  const hint = document.createElement("p");
+  hint.className = `seedream-mode-hint mode-${mode}`;
+  hint.textContent = mode === seedreamProModes.FUSION
+    ? node.cachedImages?.[0]?.canvasComposition
+      ? `${autoDetected}画布多图融合：图 1 是按当前位置、大小与遮挡层级生成的构图稿，后续图片用于补充原图细节。中转站是否支持由其上游决定。`
+      : `${autoDetected}多图融合：按“图 1、图 2…”顺序使用 2–10 张参考图，输出一张融合结果。中转站是否支持由其上游决定。`
+    : `${autoDetected}智能拆图层：只发送第 1 张图片并启用 layer_decomposition，结果会按坐标和层级还原为可独立编辑的透明 PNG 图层。`;
+  return hint;
 }
 
 function pendingReferenceImageCount(node) {
@@ -12575,7 +13816,9 @@ function createReferenceThumbnails(node, options = {}) {
     button.type = "button";
     button.className = "reference-thumb-preview";
     if (options.editable !== false) {
-      button.title = "放大标注局部重绘区域";
+      button.title = image.canvasComposition
+        ? "画布构图稿：记录所选图片的位置、大小和遮挡关系"
+        : "放大标注局部重绘区域";
       button.addEventListener("click", () => openReferenceMaskEditor(node.id, index));
     } else {
       button.tabIndex = -1;
@@ -12586,6 +13829,12 @@ function createReferenceThumbnails(node, options = {}) {
     img.src = image.url || `/${image.path}`;
     img.alt = image.originalName || image.filename || `参考图 ${index + 1}`;
     button.append(img);
+    if (seedreamModeForNode(node) !== seedreamProModes.STANDARD) {
+      const order = document.createElement("span");
+      order.className = "reference-thumb-index";
+      order.textContent = image.canvasComposition ? "构图稿 · 图 1" : `图 ${index + 1}`;
+      button.append(order);
+    }
     const annotationOverlay = createReferenceAnnotationOverlay(image.maskAnnotation);
     if (annotationOverlay) button.append(annotationOverlay);
 
@@ -13411,9 +14660,11 @@ function useCanvasPromptSource(targetNodeId, sourceNodeId) {
 
 async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
   const target = canvasState.nodes.find((node) => node.id === targetNodeId);
-  const imageNodes = dedupeStrings(imageNodeIds)
-    .map((id) => canvasState.nodes.find((node) => node.id === id))
-    .filter((node) => node?.type === "image" && node.image?.url);
+  const imageNodes = orderedCanvasImageNodes(
+    dedupeStrings(imageNodeIds)
+      .map((id) => canvasState.nodes.find((node) => node.id === id))
+      .filter((node) => node?.type === "image" && node.image?.url)
+  );
 
   if (!target || !["task", "video-task", "midjourney-task"].includes(target.type)) return false;
   if (!imageNodes.length) {
@@ -13464,6 +14715,16 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
         showToast(`当前视频模型最多使用 ${referenceLimit} 个参考素材，已自动截取`);
         ordinaryImageNodes = ordinaryImageNodes.slice(0, availableSlots);
       }
+    } else if (target.type === "task" && isSeedreamImageModelName(target.model)) {
+      const referenceLimit = seedreamReferenceLimitForNode(target);
+      availableSlots = Math.max(0, referenceLimit - (target.cachedImages?.length || 0) - (stored.images?.length || 0));
+      ordinaryImageNodes = ordinaryImageNodes.filter((imageNode) => !existingReferenceIds.has(imageNode.id));
+      if (ordinaryImageNodes.length > availableSlots) {
+        showToast(seedreamModeForNode(target) === seedreamProModes.LAYERS
+          ? "智能拆图层只能使用 1 张输入图片，已自动截取"
+          : `当前 Seedream 模型最多使用 ${referenceLimit} 张参考图，已自动截取`);
+        ordinaryImageNodes = ordinaryImageNodes.slice(0, availableSlots);
+      }
     } else if (target.type === "task" && isGrokBuildImageModelName(target.model)) {
       availableSlots = Math.max(0, 7 - (target.cachedImages?.length || 0) - (stored.images?.length || 0));
       ordinaryImageNodes = ordinaryImageNodes.filter((imageNode) => !existingReferenceIds.has(imageNode.id));
@@ -13491,6 +14752,10 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
       const limitMessage =
         target.type === "midjourney-task"
           ? `Midjourney 节点最多使用 ${midjourneyReferenceLimit} 张参考图`
+          : target.type === "task" && isSeedreamImageModelName(target.model)
+            ? seedreamModeForNode(target) === seedreamProModes.LAYERS
+              ? "智能拆图层只能使用 1 张输入图片"
+              : `当前 Seedream 模型最多使用 ${seedreamReferenceLimitForNode(target)} 张参考图`
           : target.type === "task" && isGrokBuildImageModelName(target.model)
             ? "Grok 官方图片编辑最多使用 7 张参考图"
             : `当前视频模型最多使用 ${videoReferenceLimit(target.model)} 个参考素材`;
@@ -15220,6 +16485,19 @@ function cacheStatusText(node) {
 
 function assetSummaryText(node) {
   if (node.cacheStatus === "caching") return "素材缓存中";
+  const seedreamMode = seedreamModeForNode(node);
+  const referenceCount = referenceImageCountForNode(node);
+  if (seedreamMode === seedreamProModes.LAYERS) {
+    if (!referenceCount) return "请添加 1 张需要拆分的图片";
+    return referenceCount > 1
+      ? `已添加 ${referenceCount} 张图片；请求时只会使用图 1`
+      : "图 1 已就绪，将自动拆成底图和独立透明图层";
+  }
+  if (seedreamMode === seedreamProModes.FUSION) {
+    return referenceCount >= 2
+      ? `${referenceCount} 张参考图已就绪，将按图号顺序融合`
+      : `已添加 ${referenceCount} 张参考图；至少还需要 ${2 - referenceCount} 张`;
+  }
   if (node.cachedImages?.length) {
     const mask = node.cachedMask ? "，含蒙版" : "";
     return `${node.cachedImages.length} 张参考图已缓存${mask}`;
@@ -15519,7 +16797,8 @@ function startNodeDrag(event, nodeId, options = {}) {
 
   const selectedNodes = canvasState.nodes.filter((item) => selectedNodeIds.has(item.id));
   for (const item of selectedNodes) {
-    item.z = item.type === "region" ? Math.min(Number(item.z) || 0, 0) : ++canvasState.nextZ;
+    if (item.type === "region") item.z = Math.min(Number(item.z) || 0, 0);
+    else if (item.type !== "image") item.z = ++canvasState.nextZ;
     const tile = canvasNodeElement(item.id);
     if (tile) tile.style.zIndex = item.z;
   }
@@ -16127,6 +17406,7 @@ function migrateTaskNode(node) {
     endpointPath: node.endpointPath || defaultEndpointForMode(mode),
     connectionOverride: Boolean(node.connectionOverride),
     mode,
+    seedreamMode: normalizeSeedreamProMode(node.seedreamMode),
     background: node.background || "",
     moderation: node.moderation || "",
     extraParams,
@@ -16454,6 +17734,12 @@ async function loadProjectById(projectId, options = {}) {
   applySavedState({ ...state, id: currentProjectId, name: currentProjectName });
 
   renderCanvas();
+  const repairedLayerGroups = await repairExistingSeedreamLayerLayouts();
+  if (repairedLayerGroups) {
+    renderCanvas();
+    saveCanvasState({ history: false });
+    showToast(`已按原图位置恢复 ${repairedLayerGroups} 组透明图层`);
+  }
   applyViewport();
   await loadAssistantChat();
   primeUndoHistory();
@@ -16767,7 +18053,15 @@ function applySavedState(saved, options = {}) {
   if (!saved || typeof saved !== "object") return;
 
   if (Array.isArray(saved.nodes)) {
-    setCanvasNodes(saved.nodes.map(migrateNode));
+    const restoredNodes = saved.nodes.map(migrateNode);
+    const nextNodes = options.preserveActiveGenerations
+      ? restoreNodesPreservingActiveGenerations(
+          restoredNodes,
+          canvasState.nodes,
+          new Set(generationControllers.keys())
+        )
+      : restoredNodes;
+    setCanvasNodes(nextNodes);
     syncAllArkAssetMarks();
   }
   if (options.materializeImages !== false) {
@@ -16805,7 +18099,10 @@ function undoCanvasChange() {
     referencePickTargetNodeId = null;
     currentProjectName = previous.name || currentProjectName || "未命名画布";
     projectNameInput.value = currentProjectName;
-    applySavedState(previous, { materializeImages: false });
+    applySavedState(previous, {
+      materializeImages: false,
+      preserveActiveGenerations: true
+    });
     renderCanvas();
     applyViewport();
     rawResponse.textContent = "{}";

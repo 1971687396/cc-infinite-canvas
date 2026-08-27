@@ -1,6 +1,6 @@
 {
   "name": "yunwu-image-canvas",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "private": true,
   "type": "module",
   "main": "electron-main.cjs",
@@ -8,6 +8,7 @@
     "start": "node server.js",
     "desktop": "electron .",
     "test:ark": "node tools/test-ark-integration.mjs",
+    "test:canvas-runtime": "node tools/test-canvas-runtime.mjs",
     "test:media-virtualization": "node tools/test-media-virtualization.mjs",
     "test:model-profiles": "node tools/test-model-profiles.mjs",
     "test:assistant-behavior": "node tools/test-assistant-behavior.mjs",
@@ -22,6 +23,7 @@
     "electron": "^42.4.1"
   },
   "dependencies": {
+    "@techstark/opencv-js": "^5.0.0-release.1",
     "@volcengine/tos-sdk": "^2.9.1"
   },
   "overrides": {

@@ -149,6 +149,7 @@ try {
   assert.equal(task.task.status, "SUCCESS");
   assert.equal(task.task.buttons[0].label, "U1");
   assert.match(task.images[0].url, /^\/project-cache\/midjourney-test\/outputs\//u);
+  assert.match(task.images[0].filename, /\.png$/u);
 
   const action = await postJson(`${canvasBaseUrl}/api/midjourney/action`, {
     taskId: submitted.taskId,

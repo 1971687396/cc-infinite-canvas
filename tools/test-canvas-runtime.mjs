@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import {
+  convertedImageFilename,
+  normalizeCanvasImageFormat,
   normalizeDecomposedLayerImages,
   reorderLayerItemsByZ,
   resolveSeedreamLayerAnchor,
@@ -9,6 +11,15 @@ import {
 } from "../public/canvas-runtime.js";
 
 assert.equal(seedreamLayerLayoutVersion, 3);
+
+assert.equal(normalizeCanvasImageFormat("image/jpeg"), "jpeg");
+assert.equal(normalizeCanvasImageFormat("image/webp; charset=binary"), "webp");
+assert.equal(normalizeCanvasImageFormat(".JPG"), "jpeg");
+assert.equal(normalizeCanvasImageFormat("webp"), "webp");
+assert.equal(normalizeCanvasImageFormat("gif"), "");
+assert.equal(convertedImageFilename("character.final.png", "webp"), "character.final.webp");
+assert.equal(convertedImageFilename("C:\\art\\角色.jpeg?cache=1", "png"), "角色.png");
+assert.equal(convertedImageFilename("", "jpeg"), "canvas-image.jpg");
 
 const normalizedLayers = normalizeDecomposedLayerImages([
   { url: "base.png" },

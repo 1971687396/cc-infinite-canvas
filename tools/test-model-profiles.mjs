@@ -2,13 +2,36 @@ import assert from "node:assert/strict";
 import {
   bananaImageProfile,
   bananaImageProfiles,
+  canonicalDreaminaModelVersion,
+  canonicalDreaminaVideoModelVersion,
+  compareDreaminaModelVersions,
+  compareDreaminaVideoModelVersions,
+  dreaminaImageResolutionTypes,
+  dreaminaSupportsImageEdit,
+  dreaminaVideoDurationRange,
+  dreaminaVideoImageReferenceLimit,
+  dreaminaVideoResolutionTypes,
   effectiveImageProtocol,
+  extractDreaminaModelVersions,
+  extractDreaminaVideoModelVersions,
+  gptImage25Profile,
+  gptImage25Profiles,
+  isGptImage25Size,
+  isTtImage25Model,
   normalizeBananaImageParameters,
+  normalizeGptImage25Quality,
+  normalizeGptImage25Size,
   normalizeSeedreamProMode,
+  normalizeTtImage25AspectRatio,
+  normalizeTtImage25Background,
+  normalizeTtImage25Resolution,
+  normalizeTtImage25Sizing,
+  normalizeTtImage25Version,
   seedreamImageProfile,
   seedreamImageProfiles,
   seedreamProFeatureChannel,
-  seedreamProModes
+  seedreamProModes,
+  ttImage25PixelSize
 } from "../public/model-profiles.js";
 
 const cases = [
@@ -47,6 +70,48 @@ assert.equal(seedreamProFeatureChannel("Seedream 5 Pro 多图融合"), true);
 assert.equal(seedreamProFeatureChannel("generic-diffusion-model"), false);
 assert.equal(seedreamProFeatureChannel("seedream-v5-pro"), false);
 
+const gptImage25Cases = [
+  ["gpt-image-2.5-sunburst", gptImage25Profiles.SUNBURST],
+  ["openai/gpt-image-2.5-sunburst-2026-09-08", gptImage25Profiles.SUNBURST],
+  ["GPT_IMAGE_2_5_FLARE", gptImage25Profiles.FLARE],
+  ["gptimage2.5", gptImage25Profiles.GENERIC],
+  ["tt-image-2.5", gptImage25Profiles.TT],
+  ["TT Image 2.5 官转", gptImage25Profiles.TT],
+  [["聚合生图", "tt-image-2.5-token"], gptImage25Profiles.TT],
+  [["自定义生图", "GPT Image 2.5 Flare 快速渠道"], gptImage25Profiles.FLARE],
+  [["relay-image", "gpt-image-2.5"], gptImage25Profiles.GENERIC]
+];
+
+for (const [values, expected] of gptImage25Cases) {
+  assert.equal(gptImage25Profile(values), expected, Array.isArray(values) ? values.join(" / ") : values);
+}
+assert.equal(gptImage25Profile("gpt-image-2"), "");
+assert.equal(gptImage25Profile("image-2.5-flare"), "");
+assert.equal(normalizeGptImage25Quality("XHIGH"), "xhigh");
+assert.equal(normalizeGptImage25Quality("MAX"), "max");
+assert.equal(normalizeGptImage25Quality("ultra"), "auto");
+assert.equal(isGptImage25Size("1536x1024"), true);
+assert.equal(isGptImage25Size("3840x2160"), true);
+assert.equal(isGptImage25Size("4608x1792"), false);
+assert.equal(isGptImage25Size("4096x2048"), false);
+assert.equal(isGptImage25Size("1024x4000"), false);
+assert.equal(isGptImage25Size("1000x1000"), false);
+assert.equal(normalizeGptImage25Size(" 1024 X 1536 "), "1024x1536");
+assert.equal(normalizeGptImage25Size("1920x1080"), "auto");
+assert.equal(isTtImage25Model("ttimage2.5"), true);
+assert.equal(isTtImage25Model("gpt-image-2.5-sunburst"), false);
+assert.equal(normalizeTtImage25Version("SUNBURST"), "sunburst");
+assert.equal(normalizeTtImage25Version("unknown"), "flare");
+assert.equal(normalizeTtImage25AspectRatio("21:9"), "21:9");
+assert.equal(normalizeTtImage25AspectRatio("3:1"), "auto");
+assert.equal(normalizeTtImage25Resolution("4k"), "4K");
+assert.equal(normalizeTtImage25Background("TRANSPARENT"), "transparent");
+assert.deepEqual(normalizeTtImage25Sizing("16:9", "2k"), { aspectRatio: "16:9", resolution: "2K" });
+assert.deepEqual(normalizeTtImage25Sizing("auto", "4K"), { aspectRatio: "auto", resolution: "auto" });
+assert.equal(ttImage25PixelSize("16:9", "2K"), "2560x1440");
+assert.equal(ttImage25PixelSize("4:5", "4K"), "2560x3200");
+assert.equal(ttImage25PixelSize("auto", "2K"), "auto");
+
 const bananaCases = [
   [["gemini-3.1-flash-image-preview"], bananaImageProfiles.GEMINI_NATIVE],
   [["gemini-2.5-flash-image-preview"], bananaImageProfiles.GEMINI_NATIVE],
@@ -79,4 +144,39 @@ assert.equal(effectiveImageProtocol("ark-images", "/v1/images/generations"), "ar
 assert.equal(effectiveImageProtocol("ark-images", "/api/v3/images/generations"), "ark-images");
 assert.equal(effectiveImageProtocol("openai-images", "/v1/images/edits"), "openai-images");
 
-console.log(`Image model profile tests passed (${cases.length + bananaCases.length + 25} cases).`);
+const dreaminaHelp = "model_version: 3.0, 4.7, 5.0, 5.0Pro\nresolution_type: 1.5k, 2k, 4k";
+assert.equal(canonicalDreaminaModelVersion("dreamina-5.0pro"), "5.0Pro");
+assert.equal(canonicalDreaminaModelVersion("5.0"), "5.0");
+assert.equal(canonicalDreaminaModelVersion("seedream-pro"), "");
+assert.deepEqual(extractDreaminaModelVersions(dreaminaHelp), ["5.0Pro", "5.0", "4.7", "3.0"]);
+assert.deepEqual(["4.7", "5.0", "5.0Pro"].sort(compareDreaminaModelVersions), ["5.0Pro", "5.0", "4.7"]);
+assert.equal(dreaminaSupportsImageEdit("5.0Pro"), true);
+assert.equal(dreaminaSupportsImageEdit("3.1"), false);
+assert.deepEqual(dreaminaImageResolutionTypes("5.0Pro", "create"), ["1.5k", "2k", "4k"]);
+assert.deepEqual(dreaminaImageResolutionTypes("5.0", "edit"), ["2k", "4k"]);
+
+const dreaminaVideoHelp = "model_version: seedance2.0, seedance2.0fast, seedance2.0_vip, seedance2.0mini, seedance2.5\n";
+const dreaminaMultimodalHelp = "flag values: seedance2.0, seedance2.0fast, seedance2.0_vip, seedance2.5).\ndefault model_version: seedance2.0_vip\n";
+assert.equal(canonicalDreaminaVideoModelVersion("dreamina-video-seedance2.5"), "seedance2.5");
+assert.deepEqual(extractDreaminaVideoModelVersions(dreaminaVideoHelp), [
+  "seedance2.5",
+  "seedance2.0fast",
+  "seedance2.0",
+  "seedance2.0mini",
+  "seedance2.0_vip"
+]);
+assert.deepEqual(extractDreaminaVideoModelVersions(dreaminaMultimodalHelp), [
+  "seedance2.5",
+  "seedance2.0fast",
+  "seedance2.0",
+  "seedance2.0_vip"
+]);
+assert.deepEqual(["seedance2.0", "seedance2.5"].sort(compareDreaminaVideoModelVersions), ["seedance2.5", "seedance2.0"]);
+assert.deepEqual(dreaminaVideoDurationRange("seedance2.5"), { min: 4, max: 30 });
+assert.deepEqual(dreaminaVideoResolutionTypes("seedance2.5"), ["480p", "720p", "1080p"]);
+assert.deepEqual(dreaminaVideoResolutionTypes("seedance2.0_vip"), ["720p", "1080p", "4k"]);
+assert.deepEqual(dreaminaVideoResolutionTypes("seedance2.0fast_vip"), ["720p"]);
+assert.equal(dreaminaVideoImageReferenceLimit("seedance2.5"), 30);
+assert.equal(dreaminaVideoImageReferenceLimit("seedance2.0fast"), 9);
+
+console.log(`Image model profile tests passed (${cases.length + bananaCases.length + gptImage25Cases.length + 56} cases).`);

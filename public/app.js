@@ -1,12 +1,34 @@
 import {
   bananaImageProfile,
   bananaImageProfiles,
+  canonicalDreaminaModelVersion,
+  canonicalDreaminaVideoModelVersion,
+  compareDreaminaModelVersions,
+  compareDreaminaVideoModelVersions,
+  dreaminaImageModelVersions,
+  dreaminaImageResolutionTypes,
+  dreaminaSupportsImageEdit,
+  dreaminaVideoDurationRange,
+  dreaminaVideoImageReferenceLimit,
+  dreaminaVideoModelVersions as fallbackDreaminaVideoModelVersions,
+  dreaminaVideoResolutionTypes,
+  gptImage25Profile,
+  gptImage25Profiles,
+  isGptImage25Size,
   normalizeBananaImageParameters,
   normalizeSeedreamProMode,
+  normalizeTtImage25AspectRatio,
+  normalizeTtImage25Background,
+  normalizeTtImage25Resolution,
+  normalizeTtImage25Sizing,
+  normalizeTtImage25Version,
   seedreamImageProfile,
   seedreamImageProfiles,
   seedreamProFeatureChannel,
-  seedreamProModes
+  seedreamProModes,
+  ttImage25AspectRatios,
+  ttImage25Resolutions,
+  ttImage25Versions
 } from "./model-profiles.js";
 import {
   imageDimensionsForLoadedMedia,
@@ -15,6 +37,8 @@ import {
   mediaUrlForTier
 } from "./media-virtualization.js";
 import {
+  convertedImageFilename,
+  normalizeCanvasImageFormat,
   normalizeDecomposedLayerImages,
   normalizeLayerBoundingBox,
   reorderLayerItemsByZ,
@@ -23,6 +47,15 @@ import {
   restoreNodesPreservingActiveGenerations,
   seedreamLayerLayoutVersion
 } from "./canvas-runtime.js";
+import {
+  mergeStoryAssetMemory,
+  normalizeStoryAssetMemory,
+  normalizeStoryAssetReuseMode,
+  splitStoryIntoEpisodes,
+  storyAssetMemoryForPrompt,
+  storyAssetReuseModes,
+  storyScriptSignature
+} from "./story-runtime.js";
 
 const storageKeyPrefix = "cc-infinite-canvas-project-v1";
 const currentProjectStorageKey = "cc-infinite-canvas-current-project";
@@ -370,6 +403,37 @@ const gptSizeOptions = [
   ["1648x3840", "1648x3840 (9:21, 4K)"]
 ];
 
+const gptImage25SizeOptions = [
+  ["auto", "自动（auto）"],
+  ["1024x1024", "1024x1024 (1:1，官方推荐)"],
+  ["1536x1024", "1536x1024 (3:2，官方推荐横图)"],
+  ["1024x1536", "1024x1536 (2:3，官方推荐竖图)"],
+  ["2048x2048", "2048x2048 (1:1, 2K)"],
+  ["2880x2880", "2880x2880 (1:1, 4K)"],
+  ["2304x1536", "2304x1536 (3:2, 2K)"],
+  ["3520x2352", "3520x2352 (3:2, 4K)"],
+  ["1536x2304", "1536x2304 (2:3, 2K)"],
+  ["2352x3520", "2352x3520 (2:3, 4K)"],
+  ["1280x720", "1280x720 (16:9, 1K)"],
+  ["2048x1152", "2048x1152 (16:9, 2K)"],
+  ["3840x2160", "3840x2160 (16:9, 4K)"],
+  ["720x1280", "720x1280 (9:16, 1K)"],
+  ["1152x2048", "1152x2048 (9:16, 2K)"],
+  ["2160x3840", "2160x3840 (9:16, 4K)"],
+  ["1152x864", "1152x864 (4:3, 1K)"],
+  ["2304x1728", "2304x1728 (4:3, 2K)"],
+  ["3264x2448", "3264x2448 (4:3, 4K)"],
+  ["864x1152", "864x1152 (3:4, 1K)"],
+  ["1728x2304", "1728x2304 (3:4, 2K)"],
+  ["2448x3264", "2448x3264 (3:4, 4K)"],
+  ["1456x624", "1456x624 (21:9, 1K)"],
+  ["2912x1248", "2912x1248 (21:9, 2K)"],
+  ["3840x1648", "3840x1648 (21:9, 4K)"],
+  ["624x1456", "624x1456 (9:21, 1K)"],
+  ["1248x2912", "1248x2912 (9:21, 2K)"],
+  ["1648x3840", "1648x3840 (9:21, 4K)"]
+];
+
 const grokSizeOptions = [
   ["960x960", "960x960 (1:1)"],
   ["720x1280", "720x1280 (9:16)"],
@@ -386,6 +450,30 @@ const qualityOptions = [
   ["high", "high"]
 ];
 
+const gptImage25QualityOptions = [
+  ["auto", "auto（自动）"],
+  ["low", "low"],
+  ["medium", "medium"],
+  ["high", "high"],
+  ["xhigh", "xhigh"],
+  ["max", "max（最高）"]
+];
+
+const ttImage25VersionOptions = ttImage25Versions.map((version) => [
+  version,
+  version === "sunburst" ? "sunburst（增强版）" : "flare（标准版）"
+]);
+
+const ttImage25AspectRatioOptions = ttImage25AspectRatios.map((ratio) => [
+  ratio,
+  ratio === "auto" ? "自动（auto）" : ratio
+]);
+
+const ttImage25ResolutionOptions = ttImage25Resolutions.map((resolution) => [
+  resolution,
+  resolution === "auto" ? "自动（auto）" : resolution
+]);
+
 const formatOptions = [
   ["png", "png"],
   ["jpeg", "jpeg"],
@@ -398,6 +486,12 @@ const backgroundOptions = [
   ["auto", "auto"],
   ["opaque", "opaque"],
   ["transparent", "transparent"]
+];
+
+const ttImage25BackgroundOptions = [
+  ["opaque", "opaque（不透明）"],
+  ["transparent", "transparent（透明 PNG）"],
+  ["auto", "auto（自动）"]
 ];
 
 const moderationOptions = [
@@ -423,6 +517,7 @@ const grsaiDefaultModel = "nano-banana-2";
 const grsaiDefaultBaseUrl = "https://grsaiapi.com";
 const grsaiGenerateEndpoint = "/v1/api/generate";
 const grsaiDefaultSize = "1:1|1K";
+const ttImage25ReferenceLimit = 16;
 const arkDefaultBaseUrl = "https://ark.cn-beijing.volces.com";
 const arkImageEndpoint = "/api/v3/images/generations";
 const arkVideoEndpoint = "/api/v3/contents/generations/tasks";
@@ -548,26 +643,20 @@ const geminiNativeImageSizeOptions = [
   ["2K", "2K"],
   ["4K", "4K"]
 ];
-const fallbackDreaminaModelVersions = ["5.0", "4.7", "4.6", "4.5", "4.1", "4.0", "3.1", "3.0"];
+const fallbackDreaminaModelVersions = [...dreaminaImageModelVersions];
 let dreaminaTextModelVersions = [...fallbackDreaminaModelVersions];
-let dreaminaEditModelVersions = fallbackDreaminaModelVersions.filter((version) => Number(version) >= 4);
+let dreaminaEditModelVersions = fallbackDreaminaModelVersions.filter(dreaminaSupportsImageEdit);
 const dreaminaRatios = ["21:9", "16:9", "3:2", "4:3", "1:1", "3:4", "2:3", "9:16"];
-const dreaminaVideoModelOptions = [
+const baseVideoModelOptions = [
   ...arkVideoModelOptions,
-  [grokBuildVideoModel, "Grok Imagine Video（官方账号）"],
-  ["dreamina-video-seedance2.0fast", "Seedance 2.0 Fast"],
-  ["dreamina-video-seedance2.0", "Seedance 2.0"],
-  ["dreamina-video-seedance2.0mini", "Seedance 2.0 Mini"],
-  ["dreamina-video-seedance2.0_vip", "Seedance 2.0 VIP"],
-  ["dreamina-video-seedance2.0fast_vip", "Seedance 2.0 Fast VIP"]
+  [grokBuildVideoModel, "Grok Imagine Video（官方账号）"]
 ];
+let dreaminaVideoModelVersions = [...fallbackDreaminaVideoModelVersions];
+const dreaminaVideoModelOptions = [...baseVideoModelOptions, ...dreaminaVideoModelOptionsForVersions(dreaminaVideoModelVersions)];
 const dreaminaVideoRatioOptions = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"].map((ratio) => [ratio, ratio]);
 const arkVideoRatioOptions = [["adaptive", "自适应"], ...dreaminaVideoRatioOptions];
 const grokBuildVideoRatioOptions = ["16:9", "9:16", "1:1", "3:2", "2:3"].map((ratio) => [ratio, ratio]);
-const dreaminaVideoResolutionOptions = [
-  ["720p", "720p"],
-  ["1080p", "1080p（VIP）"]
-];
+const customVideoResolutionOptions = [["720p", "720p"], ["1080p", "1080p（VIP）"]];
 const arkVideoFullResolutionOptions = [["480p", "480p"], ["720p", "720p"], ["1080p", "1080p"], ["4k", "4K（10bit H.265）"]];
 const arkVideoCompactResolutionOptions = [["480p", "480p"], ["720p", "720p"]];
 const grokBuildVideoResolutionOptions = [["480p", "480p"], ["720p", "720p"]];
@@ -586,6 +675,9 @@ const seedreamLayerSizeOptions = [
   ["2K", "2K"]
 ];
 const baseTaskModelOptions = [
+  [gptImage25Profiles.SUNBURST, "GPT Image 2.5 Sunburst"],
+  [gptImage25Profiles.FLARE, "GPT Image 2.5 Flare"],
+  [gptImage25Profiles.TT, "TT Image 2.5（玲珂 AI）"],
   ["gpt-image-2", "gpt-image-2"],
   [grokBuildImageModel, "Grok Imagine（官方账号）"],
   [geminiBananaImageModel, geminiBananaImageAlias],
@@ -655,6 +747,7 @@ let settingsConnectionClearKeys = new Set();
 let activeSettingsConnectionModel = "";
 const midjourneyPolls = new Map();
 const generationControllers = new Map();
+const imageFormatConversions = new Set();
 let layerAlignmentCvPromise = null;
 const canvasNodeElements = new Map();
 const canvasNodeById = new Map();
@@ -1464,6 +1557,10 @@ const imageModelDefaultProfiles = {
     if (!isSizeAllowedForModel(node.size, node.model, node.mode)) {
       node.size = defaultSizeForModel(node.model, node.mode);
     }
+    const supportedQualities = qualityOptionsForModel(node.model);
+    if (!supportedQualities.some(([value]) => value === node.quality)) {
+      node.quality = usesGptImage25Parameters(node.model) ? "auto" : "";
+    }
     if (["grok", "grok-build", "grsai", "dreamina", "ark"].includes(context.previousProvider) || options.modelChanged) {
       node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
       delete node.extraParams.response_format;
@@ -1494,7 +1591,18 @@ function applyTaskModelDefaults(node, options = {}) {
   node.provider = imageModelProviderName(kind);
   imageModelDefaultProfiles[kind].apply(node, options, { previousProvider, seedreamProfile, connection });
 
+  if (usesTtImage25Parameters(node.model)) applyTtImage25NodeDefaults(node);
+
   node.extraParamsText = JSON.stringify(node.extraParams, null, 2);
+}
+
+function applyTtImage25NodeDefaults(node) {
+  node.ttImageVersion = normalizeTtImage25Version(node.ttImageVersion);
+  const sizing = normalizeTtImage25Sizing(node.ttImageAspectRatio, node.ttImageResolution);
+  node.ttImageAspectRatio = sizing.aspectRatio;
+  node.ttImageResolution = sizing.resolution;
+  node.background = normalizeTtImage25Background(node.background);
+  if (node.background === "transparent") node.format = "png";
 }
 
 function isGrokModelName(model) {
@@ -1545,6 +1653,32 @@ function bananaImageProfileForModel(model) {
   );
 }
 
+function gptImage25ProfileForModel(model) {
+  const normalized = normalizeImageModelName(model);
+  const connection = imageModelConnectionForModel(normalized);
+  const definition = imageModelDefinitionForModel(normalized);
+  return gptImage25Profile(
+    normalized,
+    connection?.apiModel,
+    definition?.model,
+    definition?.label,
+    connection?.imageEndpoint,
+    connection?.editEndpoint
+  );
+}
+
+function usesGptImage25Parameters(model) {
+  return Boolean(gptImage25ProfileForModel(model));
+}
+
+function usesTtImage25Parameters(model) {
+  return gptImage25ProfileForModel(model) === gptImage25Profiles.TT;
+}
+
+function usesTtImage25MediaProtocol(model) {
+  return usesTtImage25Parameters(model) && imageModelConnectionForModel(model)?.protocol === "media-generate";
+}
+
 function usesBananaImageParameters(model) {
   return bananaImageProfileForModel(model) === bananaImageProfiles.GEMINI_NATIVE;
 }
@@ -1572,10 +1706,18 @@ function taskModelSettingsValue(model) {
   return normalized;
 }
 
-function taskMetaParts(model, size, format, quality = "") {
+function taskMetaParts(model, size, format, quality = "", ttImageVersion = "") {
   const normalized = normalizeImageModelName(model);
   if (usesBananaImageParameters(normalized)) {
     return [taskModelLabel(normalized), size || geminiNativeDefaultRatio, quality || geminiNativeDefaultImageSize, format];
+  }
+  if (usesTtImage25Parameters(normalized)) {
+    const version = normalizeTtImage25Version(ttImageVersion);
+    const versionLabel = version === "sunburst" ? "sunburst（增强版）" : "flare（标准版）";
+    return [taskModelLabel(normalized), versionLabel, size || "auto", quality || "auto", format];
+  }
+  if (usesGptImage25Parameters(normalized)) {
+    return [taskModelLabel(normalized), size || "auto", quality || "auto", format];
   }
   return [taskModelLabel(normalized), size, format];
 }
@@ -1693,7 +1835,8 @@ function isArkVideoModelName(model) {
 }
 
 function dreaminaModelVersion(model) {
-  return String(model || "").trim().toLowerCase().replace(/^dreamina-/, "");
+  const rawVersion = String(model || "").trim().replace(/^dreamina-/iu, "");
+  return canonicalDreaminaModelVersion(rawVersion) || rawVersion;
 }
 
 function isGrsaiBaseUrl(value) {
@@ -1707,11 +1850,16 @@ function sizeOptionsForModel(model, mode = "create") {
   if (seedreamProfile) return arkSeedreamSizes[seedreamProfile] || [["2K", "2K"]];
   if (usesBananaImageParameters(model)) return geminiNativeRatioOptions;
   if (isGrsaiModelName(model)) return grsaiSizeOptions;
+  if (usesGptImage25Parameters(model)) return gptImage25SizeOptions;
   return isGrokModelName(model) ? grokSizeOptions : gptSizeOptions;
 }
 
+function qualityOptionsForModel(model) {
+  return usesGptImage25Parameters(model) ? gptImage25QualityOptions : qualityOptions;
+}
+
 function dreaminaSizeOptionsForModel(model, mode = "create") {
-  const resolutions = mode === "edit" || Number(dreaminaModelVersion(model)) >= 4 ? ["2k", "4k"] : ["1k", "2k"];
+  const resolutions = dreaminaImageResolutionTypes(dreaminaModelVersion(model), mode);
   return dreaminaRatios.flatMap((ratio) =>
     resolutions.map((resolution) => [`${ratio}|${resolution}`, `${ratio} (${resolution.toUpperCase()})`])
   );
@@ -1729,6 +1877,7 @@ function defaultSizeForModel(model, mode = "create") {
 
 function isSizeAllowedForModel(size, model, mode = "create") {
   if (!size) return true;
+  if (usesGptImage25Parameters(model)) return isGptImage25Size(size);
   return sizeOptionsForModel(model, mode).some(([value]) => value === size);
 }
 
@@ -1818,7 +1967,13 @@ function videoRatioOptionsForModel(model) {
 
 function videoResolutionOptionsForModel(model) {
   if (isGrokBuildVideoModelName(model)) return grokBuildVideoResolutionOptions;
-  if (!isArkVideoModelName(model)) return dreaminaVideoResolutionOptions;
+  if (isDreaminaVideoModelName(model)) {
+    return dreaminaVideoResolutionTypes(canonicalDreaminaVideoModelVersion(model)).map((resolution) => [
+      resolution,
+      resolution === "4k" ? "4K（VIP）" : resolution
+    ]);
+  }
+  if (!isArkVideoModelName(model)) return customVideoResolutionOptions;
   return String(model).toLowerCase() === "ark-seedance-2.0"
     ? arkVideoFullResolutionOptions
     : arkVideoCompactResolutionOptions;
@@ -1826,9 +1981,8 @@ function videoResolutionOptionsForModel(model) {
 
 function videoDurationRangeForModel(model) {
   if (isGrokBuildVideoModelName(model)) return { min: 6, max: 10, step: 1 };
-  return String(model).toLowerCase() === "ark-seedance-2.5"
-    ? { min: 4, max: 30, step: 1 }
-    : { min: 4, max: 15, step: 1 };
+  if (isDreaminaVideoModelName(model)) return { ...dreaminaVideoDurationRange(model), step: 1 };
+  return String(model).toLowerCase() === "ark-seedance-2.5" ? { min: 4, max: 30, step: 1 } : { min: 4, max: 15, step: 1 };
 }
 
 function normalizeVideoDurationForModel(value, model) {
@@ -1867,7 +2021,9 @@ function videoTaskBaseUrl(model) {
 }
 
 function videoReferenceLimit(model) {
-  return isGrokBuildVideoModelName(model) ? 7 : 9;
+  if (isGrokBuildVideoModelName(model)) return 7;
+  if (isDreaminaVideoModelName(model)) return dreaminaVideoImageReferenceLimit(model);
+  return 9;
 }
 
 function createDefaultTaskNode(mode = "create") {
@@ -1881,6 +2037,9 @@ function createDefaultTaskNode(mode = "create") {
     n: "1",
     size: "auto",
     quality: "",
+    ttImageVersion: "flare",
+    ttImageAspectRatio: "auto",
+    ttImageResolution: "auto",
     format: "png",
     baseUrl: config.baseUrl || "https://yunwu.ai",
     endpointPath: defaultEndpointForMode(normalizedMode),
@@ -2015,6 +2174,11 @@ function createDefaultStoryBreakdownNode() {
     videoSize: dreaminaVideoDefaultRatio,
     videoQuality: dreaminaVideoDefaultResolution,
     videoDuration: dreaminaVideoDefaultDuration,
+    episodes: [],
+    episodesSourceSignature: "",
+    activeEpisodeId: "",
+    runningEpisodeId: "",
+    assetMemory: [],
     result: null,
     activeTab: "assets",
     selectedAssetIds: [],
@@ -2042,6 +2206,11 @@ function normalizeStoryBreakdownResult(value) {
       id,
       kind,
       name: String(asset?.name || `${storyAssetKindLabels[kind]} ${index + 1}`),
+      reuseMode: normalizeStoryAssetReuseMode(asset?.reuseMode || asset?.reuse || asset?.action),
+      canonicalAssetId: String(asset?.canonicalAssetId || asset?.memoryAssetId || id),
+      variantOf: String(asset?.variantOf || asset?.baseAssetId || ""),
+      variantNotes: String(asset?.variantNotes || asset?.changeSummary || ""),
+      continuityKey: String(asset?.continuityKey || asset?.identityKey || ""),
       description: String(asset?.description || ""),
       prompt: String(asset?.prompt || asset?.description || ""),
       negativePrompt: String(asset?.negativePrompt || ""),
@@ -2086,14 +2255,164 @@ function normalizeStoryBreakdownResult(value) {
       .filter((id) => validShotIds.has(id));
   });
   return {
-    schema: "cc-story-breakdown-v1",
+    schema: value.schema === "cc-story-episode-v2" || value.episode ? "cc-story-episode-v2" : "cc-story-breakdown-v1",
     title: String(value.title || "未命名剧本"),
     logline: String(value.logline || value.summary || ""),
     productionNotes: String(value.productionNotes || ""),
     styleBible: String(value.styleBible || ""),
+    episode: value.episode && typeof value.episode === "object"
+      ? {
+          id: String(value.episode.id || ""),
+          title: String(value.episode.title || value.episodeTitle || ""),
+          summary: String(value.episode.summary || value.episodeSummary || ""),
+          continuityNotes: String(value.episode.continuityNotes || value.continuityNotes || ""),
+          index: Math.max(0, Number(value.episode.index) || 0),
+          total: Math.max(1, Number(value.episode.total) || 1),
+          episodeNumber: Math.max(1, Number(value.episode.episodeNumber) || Number(value.episode.index) + 1 || 1),
+          partIndex: Math.max(1, Number(value.episode.partIndex) || 1),
+          partCount: Math.max(1, Number(value.episode.partCount) || 1)
+        }
+      : null,
     assets,
     shots
   };
+}
+
+function normalizeStoryEpisodeState(value, index, total) {
+  const source = value && typeof value === "object" ? value : {};
+  const script = String(source.script || "");
+  const signature = String(source.signature || storyScriptSignature(script));
+  const result = normalizeStoryBreakdownResult(source.result);
+  const assetIds = new Set((result?.assets || []).map((asset) => asset.id));
+  const shotIds = new Set((result?.shots || []).map((shot) => shot.id));
+  return {
+    id: String(source.id || `episode-${index + 1}-${signature.split("-")[0]}`),
+    index,
+    total,
+    title: String(source.title || `第 ${index + 1} 集`),
+    script,
+    charCount: script.length,
+    episodeNumber: Math.max(1, Number(source.episodeNumber) || index + 1),
+    partIndex: Math.max(1, Number(source.partIndex) || 1),
+    partCount: Math.max(1, Number(source.partCount) || 1),
+    signature,
+    result,
+    status: source.status === "running" ? "idle" : String(source.status || (result ? "ready" : "idle")),
+    error: String(source.error || ""),
+    analysisVersion: String(source.analysisVersion || ""),
+    selectedAssetIds: Array.isArray(source.selectedAssetIds)
+      ? dedupeStrings(source.selectedAssetIds).filter((id) => assetIds.has(id))
+      : (result?.assets || []).filter((asset) => asset.reuseMode !== storyAssetReuseModes.REUSE).map((asset) => asset.id),
+    selectedStoryboardShotIds: Array.isArray(source.selectedStoryboardShotIds)
+      ? dedupeStrings(source.selectedStoryboardShotIds).filter((id) => shotIds.has(id))
+      : [...shotIds],
+    selectedVideoShotIds: Array.isArray(source.selectedVideoShotIds)
+      ? dedupeStrings(source.selectedVideoShotIds).filter((id) => shotIds.has(id))
+      : [...shotIds]
+  };
+}
+
+function syncStoryEpisodesFromScript(node, options = {}) {
+  const sourceSignature = storyScriptSignature(node.script || "");
+  if (!options.force && node.episodesSourceSignature === sourceSignature && node.episodes?.length) {
+    syncStoryNodeFromActiveEpisode(node);
+    return node.episodes;
+  }
+  const detected = splitStoryIntoEpisodes(node.script || "");
+  const existing = Array.isArray(node.episodes) ? node.episodes : [];
+  const used = new Set();
+  const next = detected.map((episode, index) => {
+    const previous = existing.find((item) => !used.has(item.id) && item.signature === episode.signature)
+      || existing.find((item) =>
+        !used.has(item.id)
+        && Number(item.episodeNumber) === Number(episode.episodeNumber)
+        && Number(item.partIndex || 1) === Number(episode.partIndex || 1)
+      )
+      || (existing[index] && !used.has(existing[index].id) ? existing[index] : null);
+    if (previous?.id) used.add(previous.id);
+    const sameSource = previous?.signature === episode.signature;
+    return normalizeStoryEpisodeState({
+      ...episode,
+      id: previous?.id || episode.id,
+      result: previous?.result || null,
+      status: sameSource ? previous?.status : previous?.result ? "stale" : "idle",
+      error: sameSource ? previous?.error : "",
+      analysisVersion: previous?.analysisVersion || "",
+      selectedAssetIds: previous?.selectedAssetIds,
+      selectedStoryboardShotIds: previous?.selectedStoryboardShotIds,
+      selectedVideoShotIds: previous?.selectedVideoShotIds
+    }, index, detected.length);
+  });
+  node.episodes = next;
+  node.episodesSourceSignature = sourceSignature;
+  if (!next.some((episode) => episode.id === node.activeEpisodeId)) {
+    node.activeEpisodeId = next.find((episode) => !episode.result)?.id || next[0]?.id || "";
+  }
+  syncStoryNodeFromActiveEpisode(node);
+  return next;
+}
+
+function storyActiveEpisode(node) {
+  const episodes = Array.isArray(node?.episodes) ? node.episodes : [];
+  return episodes.find((episode) => episode.id === node.activeEpisodeId) || episodes[0] || null;
+}
+
+function storeStoryNodeSelectionsInEpisode(node) {
+  const episode = storyActiveEpisode(node);
+  if (!episode) return;
+  episode.selectedAssetIds = dedupeStrings(node.selectedAssetIds || []);
+  episode.selectedStoryboardShotIds = dedupeStrings(node.selectedStoryboardShotIds || []);
+  episode.selectedVideoShotIds = dedupeStrings(node.selectedVideoShotIds || []);
+}
+
+function syncStoryNodeFromActiveEpisode(node) {
+  const episode = storyActiveEpisode(node);
+  if (!episode) {
+    node.result = null;
+    node.analysisVersion = "";
+    node.selectedAssetIds = [];
+    node.selectedStoryboardShotIds = [];
+    node.selectedVideoShotIds = [];
+    if (!["running", "loading-file"].includes(node.status)) node.status = "idle";
+    return;
+  }
+  node.activeEpisodeId = episode.id;
+  node.result = episode.result || null;
+  node.analysisVersion = episode.analysisVersion || "";
+  node.selectedAssetIds = dedupeStrings(episode.selectedAssetIds || []);
+  node.selectedStoryboardShotIds = dedupeStrings(episode.selectedStoryboardShotIds || []);
+  node.selectedVideoShotIds = dedupeStrings(episode.selectedVideoShotIds || []);
+  if (!["running", "loading-file"].includes(node.status)) {
+    node.status = episode.status === "error" ? "error" : episode.result ? "ready" : "idle";
+    node.error = episode.error || "";
+  }
+}
+
+function setStoryActiveEpisode(node, episodeId) {
+  storeStoryNodeSelectionsInEpisode(node);
+  if (!node.episodes?.some((episode) => episode.id === episodeId)) return false;
+  node.activeEpisodeId = episodeId;
+  syncStoryNodeFromActiveEpisode(node);
+  return true;
+}
+
+function storyAssetMemoryBeforeEpisode(node, episodeId) {
+  const episodes = Array.isArray(node?.episodes) ? node.episodes : [];
+  const targetIndex = episodes.findIndex((episode) => episode.id === episodeId);
+  if (targetIndex < 0) return normalizeStoryAssetMemory(node?.assetMemory);
+  let memory = [];
+  episodes.slice(0, targetIndex).forEach((episode) => {
+    if (episode.result?.assets?.length) memory = mergeStoryAssetMemory(memory, episode.result.assets, episode);
+  });
+  return memory;
+}
+
+function rebuildStoryAssetMemory(node) {
+  let memory = [];
+  for (const episode of Array.isArray(node?.episodes) ? node.episodes : []) {
+    if (episode.result?.assets?.length) memory = mergeStoryAssetMemory(memory, episode.result.assets, episode);
+  }
+  return memory;
 }
 
 function uniqueStoryItemId(value, prefix, index, seen) {
@@ -2822,7 +3141,7 @@ function buildNodeRequest(node) {
     if (storedFiles?.images?.length) {
       const formData = new FormData();
       appendNodeFields(formData, node, { includeCachedAssets: true });
-      storedFiles.images.slice(0, 9).forEach((file) => formData.append("image", file));
+      storedFiles.images.slice(0, videoReferenceLimit(node.model)).forEach((file) => formData.append("image", file));
       return { body: formData };
     }
 
@@ -2870,6 +3189,9 @@ function buildNodePayload(node) {
     n: node.n,
     size: node.size,
     quality: node.quality,
+    ttImageVersion: node.ttImageVersion,
+    ttImageAspectRatio: node.ttImageAspectRatio,
+    ttImageResolution: node.ttImageResolution,
     format: node.format,
     background: node.background,
     moderation: node.moderation,
@@ -2893,6 +3215,9 @@ function appendNodeFields(formData, node, options = {}) {
   formData.append("n", node.n);
   formData.append("size", node.size);
   formData.append("quality", node.quality || "");
+  formData.append("ttImageVersion", node.ttImageVersion || "flare");
+  formData.append("ttImageAspectRatio", node.ttImageAspectRatio || "auto");
+  formData.append("ttImageResolution", node.ttImageResolution || "auto");
   formData.append("format", node.format || "");
   formData.append("background", node.background || "");
   formData.append("moderation", node.moderation || "");
@@ -2924,6 +3249,7 @@ function normalizeNodeImage(image, node) {
     model: node.model,
     size: node.size,
     quality: node.quality || "",
+    ttImageVersion: generation.ttImageVersion,
     width: Number(image.width) || undefined,
     height: Number(image.height) || undefined,
     size: image.size || node.size || "",
@@ -2948,6 +3274,9 @@ function buildGenerationSnapshot(node) {
     n: String(node.n || "1"),
     size: node.size || "auto",
     quality: node.quality || "",
+    ttImageVersion: normalizeTtImage25Version(node.ttImageVersion),
+    ttImageAspectRatio: normalizeTtImage25AspectRatio(node.ttImageAspectRatio),
+    ttImageResolution: normalizeTtImage25Resolution(node.ttImageResolution),
     format: node.format || "png",
     background: node.background || "",
     moderation: node.moderation || "",
@@ -3040,6 +3369,7 @@ function createImageNodesForTask(taskNode, images) {
       sourceTaskId: taskNode.id,
       sourceImageKey: key,
       storyNodeId: taskNode.storyNodeId || "",
+      storyEpisodeId: taskNode.storyEpisodeId || "",
       storyItemId: taskNode.storyItemId || "",
       storyOutputKind: taskNode.storyOutputKind || "",
       storyAnalysisVersion: taskNode.storyAnalysisVersion || "",
@@ -3629,6 +3959,7 @@ function createVideoNodesForTask(taskNode, videos) {
       sourceTaskId: taskNode.id,
       sourceVideoKey: key,
       storyNodeId: taskNode.storyNodeId || "",
+      storyEpisodeId: taskNode.storyEpisodeId || "",
       storyItemId: taskNode.storyItemId || "",
       storyOutputKind: taskNode.storyOutputKind || "",
       storyAnalysisVersion: taskNode.storyAnalysisVersion || "",
@@ -4476,30 +4807,58 @@ function renderDreaminaStatus(data = {}) {
 }
 
 function dreaminaModelOptionsForVersions(versions) {
-  return versions.map((version) => [`dreamina-${version}`, `即梦 ${version}`]);
+  return versions.map((version) => [
+    `dreamina-${version}`,
+    version === "5.0Pro" ? "即梦 Seedream 5.0 Pro" : `即梦 ${version}`
+  ]);
+}
+
+function dreaminaVideoModelOptionsForVersions(versions) {
+  const labels = {
+    "seedance2.5": "Seedance 2.5（即梦 VIP）",
+    "seedance2.0fast": "Seedance 2.0 Fast",
+    "seedance2.0": "Seedance 2.0",
+    "seedance2.0mini": "Seedance 2.0 Mini",
+    "seedance2.0_vip": "Seedance 2.0 VIP",
+    "seedance2.0fast_vip": "Seedance 2.0 Fast VIP"
+  };
+  return versions.map((version) => [`dreamina-video-${version}`, labels[version] || version]);
 }
 
 function normalizeDreaminaModelVersions(values) {
-  return [...new Set((Array.isArray(values) ? values : []).map((value) => String(value || "").trim()).filter(Boolean))].sort(
-    (left, right) => right.localeCompare(left, undefined, { numeric: true, sensitivity: "base" })
-  );
+  return [...new Set(
+    (Array.isArray(values) ? values : []).map(canonicalDreaminaModelVersion).filter(Boolean)
+  )].sort(compareDreaminaModelVersions);
 }
 
 function updateDreaminaModelOptions(data = {}) {
   const nextTextModels = normalizeDreaminaModelVersions(data.textImageModels);
   const nextEditModels = normalizeDreaminaModelVersions(data.imageEditModels);
+  const nextVideoModels = [...new Set(
+    (Array.isArray(data.videoModels) ? data.videoModels : []).map(canonicalDreaminaVideoModelVersion).filter(Boolean)
+  )].sort(compareDreaminaVideoModelVersions);
   const textModels = nextTextModels.length ? nextTextModels : dreaminaTextModelVersions;
   const editModels = nextEditModels.length ? nextEditModels : dreaminaEditModelVersions;
-  const changed = textModels.join("|") !== dreaminaTextModelVersions.join("|") || editModels.join("|") !== dreaminaEditModelVersions.join("|");
+  const videoModels = nextVideoModels.length ? nextVideoModels : dreaminaVideoModelVersions;
+  const changed = textModels.join("|") !== dreaminaTextModelVersions.join("|")
+    || editModels.join("|") !== dreaminaEditModelVersions.join("|")
+    || videoModels.join("|") !== dreaminaVideoModelVersions.join("|");
   if (!changed) return;
 
   dreaminaTextModelVersions = textModels;
   dreaminaEditModelVersions = editModels;
+  dreaminaVideoModelVersions = videoModels;
   taskModelOptions.splice(
     0,
     taskModelOptions.length,
     ...baseTaskModelOptions,
     ...dreaminaModelOptionsForVersions(dreaminaTextModelVersions)
+  );
+  dreaminaVideoModelOptions.splice(
+    0,
+    dreaminaVideoModelOptions.length,
+    ...baseVideoModelOptions,
+    ...dreaminaVideoModelOptionsForVersions(dreaminaVideoModelVersions)
   );
   if (!isLoadingProject && canvasStage) renderCanvas();
 }
@@ -4697,6 +5056,12 @@ async function saveSettings(event) {
       cacheDir: data.cacheDir,
       photoshopBridgeEnabled: Boolean(data.photoshopBridgeEnabled)
     };
+    const synchronizedTaskNodes = canvasState.nodes.filter((node) => node.type === "task");
+    for (const node of synchronizedTaskNodes) applyTaskModelDefaults(node, { connectionChanged: true });
+    if (synchronizedTaskNodes.length) {
+      renderCanvas();
+      saveCanvasState();
+    }
     setKeyStatus(config.hasAnyKey ?? config.hasApiKey, config.dreaminaLoggedIn);
     renderAssistantModelSelectors();
     applyPhotoshopBridgeAvailability();
@@ -7946,6 +8311,9 @@ function getImageGeneration(node) {
     n: String(generation.n || "1"),
     size: generation.size || image.size || "auto",
     quality: generation.quality || "",
+    ttImageVersion: generation.ttImageVersion || "flare",
+    ttImageAspectRatio: generation.ttImageAspectRatio || "auto",
+    ttImageResolution: generation.ttImageResolution || "auto",
     format: generation.format || image.format || "png",
     background: generation.background || "",
     moderation: generation.moderation || "",
@@ -8069,6 +8437,9 @@ function applyGenerationToTask(task, generation) {
   task.n = String(generation.n || "1");
   task.size = generation.size || defaultSizeForModel(task.model, task.mode);
   task.quality = generation.quality || "";
+  task.ttImageVersion = normalizeTtImage25Version(generation.ttImageVersion);
+  task.ttImageAspectRatio = normalizeTtImage25AspectRatio(generation.ttImageAspectRatio);
+  task.ttImageResolution = normalizeTtImage25Resolution(generation.ttImageResolution);
   task.format = generation.format || "png";
   task.background = generation.background || "";
   task.moderation = generation.moderation || "";
@@ -9835,16 +10206,19 @@ function createStoryBreakdownHeader(node, selected) {
   const title = document.createElement("strong");
   title.textContent = node.result?.title || node.title || "剧本拆解";
   const meta = document.createElement("small");
+  const episode = storyActiveEpisode(node);
+  const episodeCount = node.episodes?.length || 0;
+  const memoryCount = node.assetMemory?.length || 0;
   const assetCount = node.result?.assets?.length || 0;
   const shotCount = node.result?.shots?.length || 0;
   meta.textContent = node.status === "running"
-    ? "正在拆解剧本资产与镜头"
+    ? `正在拆解 ${episode?.title || "当前集"} 的资产与镜头`
     : node.status === "loading-file"
       ? "正在读取剧本文件"
       : node.result
-        ? `${assetCount} 个资产 · ${shotCount} 个镜头`
+        ? `${episode?.title || "当前集"} · ${assetCount} 个资产 · ${shotCount} 个镜头 · 记忆 ${memoryCount}`
         : node.script
-          ? `${node.script.length.toLocaleString("zh-CN")} 字 · 等待分析`
+          ? `${episodeCount || splitStoryIntoEpisodes(node.script).length} 集/片段 · ${node.script.length.toLocaleString("zh-CN")} 字 · 等待分析`
           : "上传剧本后开始拆解";
   heading.append(title, meta);
   header.append(mark, heading);
@@ -9910,9 +10284,11 @@ function createStoryBreakdownCompactSummary(node) {
     stat.className = "story-breakdown-child-stat";
     stat.textContent = parts.join(" · ");
     summary.append(stat);
-    const staleCount = progress.children.filter(
-      (item) => node.analysisVersion && item.storyAnalysisVersion && item.storyAnalysisVersion !== node.analysisVersion
-    ).length;
+    const staleCount = progress.children.filter((item) => {
+      const episode = node.episodes?.find((candidate) => candidate.id === item.storyEpisodeId);
+      const currentVersion = episode?.analysisVersion || (!item.storyEpisodeId ? node.analysisVersion : "");
+      return currentVersion && item.storyAnalysisVersion && item.storyAnalysisVersion !== currentVersion;
+    }).length;
     if (staleCount) {
       const stale = document.createElement("p");
       stale.className = "story-breakdown-stale";
@@ -9921,7 +10297,12 @@ function createStoryBreakdownCompactSummary(node) {
     }
   } else {
     const text = document.createElement("p");
-    text.textContent = node.error || node.result?.logline || node.instructions || "选中节点以导入剧本并开始拆解。";
+    const episode = storyActiveEpisode(node);
+    text.textContent = node.error
+      || episode?.result?.episode?.summary
+      || node.result?.logline
+      || node.instructions
+      || "选中节点以导入剧本并按集拆解。";
     summary.append(text);
   }
   return summary;
@@ -9952,7 +10333,24 @@ function createStoryBreakdownEditor(node) {
   upload.className = "story-upload-button";
   upload.append(createNodeIcon("story"), document.createTextNode(node.scriptFileName ? "更换文件" : "上传剧本"));
   upload.addEventListener("click", () => fileInput.click());
-  sourceHead.append(sourceTitle, upload, fileInput);
+  const detect = document.createElement("button");
+  detect.type = "button";
+  detect.className = "story-upload-button";
+  const detectedCount = node.script.trim() ? splitStoryIntoEpisodes(node.script).length : 0;
+  detect.textContent = detectedCount ? `识别分集 ${detectedCount}` : "识别分集";
+  detect.disabled = node.status === "running" || !node.script.trim();
+  detect.addEventListener("click", () => {
+    storeStoryNodeSelectionsInEpisode(node);
+    const episodes = syncStoryEpisodesFromScript(node, { force: true });
+    node.error = "";
+    updateNode(node);
+    saveCanvasState();
+    showToast(`已识别 ${episodes.length} 个分集/分析片段`);
+  });
+  const sourceActions = document.createElement("div");
+  sourceActions.className = "story-source-actions";
+  sourceActions.append(detect, upload, fileInput);
+  sourceHead.append(sourceTitle, sourceActions);
 
   const fileMeta = document.createElement("p");
   fileMeta.className = "story-file-meta";
@@ -9969,6 +10367,7 @@ function createStoryBreakdownEditor(node) {
   script.addEventListener("input", () => {
     node.script = script.value;
     node.scriptFileName = node.scriptFileName && script.value ? node.scriptFileName : "";
+    node.episodesSourceSignature = "";
     saveCanvasState({ history: false });
   });
 
@@ -9986,6 +10385,7 @@ function createStoryBreakdownEditor(node) {
   const settings = document.createElement("div");
   settings.className = "story-analysis-settings";
   settings.append(
+    createStoryEpisodeSelectControl(node),
     createStoryAssistantModelField(node),
     createStorySelectControl("画面比例", node.aspectRatio, storyAspectRatioOptions, (value) => {
       node.aspectRatio = value;
@@ -10004,16 +10404,44 @@ function createStoryBreakdownEditor(node) {
   analyze.type = "button";
   analyze.className = "story-primary-action";
   analyze.disabled = node.status === "running" || node.status === "loading-file" || !node.script.trim();
-  analyze.append(createNodeIcon("spark"), document.createTextNode(node.result ? "重新拆解" : "开始拆解"));
+  const activeEpisode = storyActiveEpisode(node);
+  analyze.append(
+    createNodeIcon("spark"),
+    document.createTextNode(activeEpisode?.result ? "重新拆解本集" : node.episodes?.length ? "拆解本集" : "识别并拆解首集")
+  );
   analyze.addEventListener("click", () => analyzeStoryBreakdown(node.id));
   const scriptLength = (node.script || "").length;
-  if (scriptLength > 30000) {
+  if (node.script && node.episodesSourceSignature !== storyScriptSignature(node.script)) {
     const warn = document.createElement("p");
     warn.className = "story-script-warn";
-    warn.textContent = `剧本 ${(scriptLength / 1000).toFixed(1)}K 字，超过建议上限（30,000 字），可能超时。建议手动分段后分次导入拆解。`;
+    warn.textContent = `完整剧本已修改，拆解时会重新识别分集；预计 ${detectedCount || 1} 个分析单元。`;
     actions.prepend(warn);
+  } else if (activeEpisode?.status === "stale") {
+    const warn = document.createElement("p");
+    warn.className = "story-script-warn";
+    warn.textContent = "这一集的剧本或前序资产记忆已变化，当前结果已保留但建议重新拆解。";
+    actions.prepend(warn);
+  } else if (scriptLength > 30000 && node.episodes?.length) {
+    const info = document.createElement("p");
+    info.className = "story-script-warn is-info";
+    info.textContent = `完整剧本 ${(scriptLength / 1000).toFixed(1)}K 字，已拆为 ${node.episodes.length} 个独立分析单元，不会一次全部发送。`;
+    actions.prepend(info);
   }
   actions.append(analyze);
+  const activeIndex = node.episodes?.findIndex((episode) => episode.id === node.activeEpisodeId) ?? -1;
+  const nextEpisode = activeIndex >= 0 ? node.episodes?.[activeIndex + 1] : null;
+  if (nextEpisode && node.status !== "running") {
+    const next = document.createElement("button");
+    next.type = "button";
+    next.className = "story-stop-action";
+    next.textContent = `转到 ${nextEpisode.title}`;
+    next.addEventListener("click", () => {
+      if (!setStoryActiveEpisode(node, nextEpisode.id)) return;
+      updateNode(node);
+      saveCanvasState();
+    });
+    actions.append(next);
+  }
   if (node.status === "running") {
     const stop = document.createElement("button");
     stop.type = "button";
@@ -10049,6 +10477,33 @@ function createStoryAssistantModelField(node) {
     saveCanvasState();
   });
   return createStoryControlField("分析模型", select);
+}
+
+function createStoryEpisodeSelectControl(node) {
+  const select = document.createElement("select");
+  const episodes = Array.isArray(node.episodes) ? node.episodes : [];
+  if (!episodes.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = node.script.trim() ? "尚未识别分集" : "请先导入剧本";
+    select.append(option);
+  } else {
+    episodes.forEach((episode, index) => {
+      const option = document.createElement("option");
+      option.value = episode.id;
+      const state = episode.status === "ready" ? "✓" : episode.status === "stale" ? "!" : episode.status === "error" ? "×" : "○";
+      option.textContent = `${state} ${index + 1}/${episodes.length} ${episode.title} · ${episode.charCount.toLocaleString("zh-CN")} 字`;
+      select.append(option);
+    });
+    select.value = node.activeEpisodeId || episodes[0].id;
+  }
+  select.disabled = node.status === "running" || !episodes.length;
+  select.addEventListener("change", () => {
+    if (!setStoryActiveEpisode(node, select.value)) return;
+    updateNode(node);
+    saveCanvasState();
+  });
+  return createStoryControlField("当前分析集", select);
 }
 
 function createStorySelectControl(label, value, options, onChange) {
@@ -10088,19 +10543,23 @@ function createStoryControlField(label, control) {
 }
 
 function createStoryBreakdownResults(node) {
-  const result = node.result;
+  const episode = storyActiveEpisode(node);
+  const result = episode?.result || node.result;
   const section = document.createElement("section");
   section.className = "story-results-panel";
   const overview = document.createElement("div");
   overview.className = "story-result-overview";
   const copy = document.createElement("div");
   const title = document.createElement("strong");
-  title.textContent = result.title;
+  title.textContent = episode?.title ? `${episode.title} · ${result.title}` : result.title;
   const logline = document.createElement("p");
   logline.textContent = result.logline || result.productionNotes || "拆解完成，可分别创建生图与视频节点。";
   copy.append(title, logline);
   const counts = document.createElement("span");
-  counts.textContent = `${result.assets.length} 资产 / ${result.shots.length} 镜头`;
+  const reuseCounts = Object.fromEntries(
+    Object.values(storyAssetReuseModes).map((mode) => [mode, result.assets.filter((asset) => asset.reuseMode === mode).length])
+  );
+  counts.textContent = `${result.assets.length} 资产（新增 ${reuseCounts.new} / 复用 ${reuseCounts.reuse} / 变体 ${reuseCounts.variant}）· ${result.shots.length} 镜头`;
   overview.append(copy, counts);
 
   const tabs = document.createElement("div");
@@ -10149,16 +10608,19 @@ function createStoryBreakdownResults(node) {
   oneClick.type = "button";
   oneClick.className = "story-primary-action story-one-click";
   oneClick.append(createNodeIcon("spark"), document.createTextNode("一键创建所有节点"));
-  oneClick.addEventListener("click", () => {
-    node.selectedAssetIds = result.assets.map((asset) => asset.id);
+  oneClick.addEventListener("click", async () => {
+    node.selectedAssetIds = result.assets
+      .filter((asset) => asset.reuseMode !== storyAssetReuseModes.REUSE)
+      .map((asset) => asset.id);
     node.selectedStoryboardShotIds = result.shots.map((shot) => shot.id);
     node.selectedVideoShotIds = result.shots.map((shot) => shot.id);
+    storeStoryNodeSelectionsInEpisode(node);
     saveCanvasState();
-    createStoryImageTasks(node.id, "assets");
-    createStoryImageTasks(node.id, "storyboards");
-    void createStoryVideoTasks(node.id);
+    await createStoryImageTasks(node.id, "assets");
+    await createStoryImageTasks(node.id, "storyboards");
+    await createStoryVideoTasks(node.id);
   });
-  section.append(overview, oneClick, tabs, toolbar, list, output);
+  section.append(overview, createStoryAssetMemoryPanel(node), oneClick, tabs, toolbar, list, output);
 
   const failedNodes = storyChildNodes(node).filter((item) => ["error", "failed"].includes(item.status));
   if (failedNodes.length) {
@@ -10184,8 +10646,42 @@ function storySelectionKey(tab) {
 
 function setStorySelection(node, key, ids) {
   node[key] = dedupeStrings(ids);
+  storeStoryNodeSelectionsInEpisode(node);
   updateNode(node);
   saveCanvasState();
+}
+
+function createStoryAssetMemoryPanel(node) {
+  const memory = normalizeStoryAssetMemory(node.assetMemory);
+  const panel = document.createElement("details");
+  panel.className = "story-memory-panel";
+  const summary = document.createElement("summary");
+  const variants = memory.filter((asset) => asset.sourceMode === storyAssetReuseModes.VARIANT).length;
+  summary.textContent = `项目资产记忆 ${memory.length}（基础 ${memory.length - variants} / 变体 ${variants}）`;
+  panel.append(summary);
+  if (!memory.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "分析首集后，这里会保存可跨集复用的人物、场景、服装和道具设定。";
+    panel.append(empty);
+    return panel;
+  }
+  const list = document.createElement("div");
+  list.className = "story-memory-list";
+  memory.slice(0, 60).forEach((asset) => {
+    const row = document.createElement("div");
+    row.className = "story-memory-item";
+    const label = document.createElement("span");
+    label.textContent = storyAssetKindLabels[asset.kind] || "资产";
+    const name = document.createElement("strong");
+    name.textContent = asset.name;
+    const meta = document.createElement("small");
+    const relation = asset.variantOf ? `变体自 ${asset.variantOf}` : `出现 ${asset.appearanceCount} 集/次`;
+    meta.textContent = `${relation}${asset.lastEpisodeId ? ` · 最近 ${asset.lastEpisodeId}` : ""}`;
+    row.append(label, name, meta);
+    list.append(row);
+  });
+  panel.append(list);
+  return panel;
 }
 
 function createStoryResultItem(node, item, selectionKey, checked) {
@@ -10207,10 +10703,22 @@ function createStoryResultItem(node, item, selectionKey, checked) {
   kind.textContent = item.kind ? storyAssetKindLabels[item.kind] || "资产" : `${item.durationSec || 5}s`;
   const name = document.createElement("strong");
   name.textContent = item.name || item.title;
-  line.append(kind, name);
+  line.append(kind);
+  if (item.kind) {
+    const reuseMode = normalizeStoryAssetReuseMode(item.reuseMode);
+    const reuse = document.createElement("em");
+    reuse.className = `story-reuse-badge is-${reuseMode}`;
+    reuse.textContent = reuseMode === storyAssetReuseModes.REUSE
+      ? "复用"
+      : reuseMode === storyAssetReuseModes.VARIANT
+        ? "变体"
+        : "新增";
+    line.append(reuse);
+  }
+  line.append(name);
   const prompt = document.createElement("small");
   prompt.textContent = node.activeTab === "assets"
-    ? item.prompt || item.description
+    ? [item.variantNotes ? `变化：${item.variantNotes}` : "", item.prompt || item.description].filter(Boolean).join(" · ")
     : node.activeTab === "videos"
       ? item.videoPrompt
       : item.imagePrompt;
@@ -10313,7 +10821,7 @@ function createStoryImageOutputControls(node) {
   create.className = "story-primary-action";
   create.append(createNodeIcon("image-generate"), document.createTextNode(isAsset ? "创建资产生图节点" : "创建分镜生图节点"));
   create.disabled = !(node[storySelectionKey(node.activeTab)] || []).length;
-  create.addEventListener("click", () => createStoryImageTasks(node.id, isAsset ? "assets" : "storyboards"));
+  create.addEventListener("click", () => void createStoryImageTasks(node.id, isAsset ? "assets" : "storyboards"));
   controls.append(create);
   return controls;
 }
@@ -10373,6 +10881,7 @@ function createStoryVideoOutputControls(node) {
 async function importStoryScriptFile(nodeId, file) {
   const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "story-breakdown");
   if (!node || !file) return;
+  storeStoryNodeSelectionsInEpisode(node);
   node.status = "loading-file";
   node.error = "";
   updateNode(node);
@@ -10391,13 +10900,14 @@ async function importStoryScriptFile(nodeId, file) {
     }
     const current = canvasState.nodes.find((item) => item.id === nodeId && item.type === "story-breakdown");
     if (!current) return;
-    current.script = String(document.text || "").slice(0, 120000);
+    current.script = String(document.text || "").slice(0, 1_000_000);
     current.scriptFileName = document.name || file.name;
+    const episodes = syncStoryEpisodesFromScript(current, { force: true });
     current.status = "idle";
     current.error = "";
     updateNode(current);
     saveCanvasState();
-    showToast(`已导入剧本：${current.scriptFileName}`);
+    showToast(`已导入剧本：${current.scriptFileName}，识别到 ${episodes.length} 个分集/分析片段`);
   } catch (error) {
     const current = canvasState.nodes.find((item) => item.id === nodeId && item.type === "story-breakdown");
     if (!current) return;
@@ -10412,11 +10922,21 @@ async function analyzeStoryBreakdown(nodeId) {
   const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "story-breakdown");
   if (!node || node.status === "running" || !node.script.trim()) return;
 
+  storeStoryNodeSelectionsInEpisode(node);
+  const episodes = syncStoryEpisodesFromScript(node);
+  const episode = storyActiveEpisode(node);
+  if (!episode?.script.trim()) return showToast("当前分集没有可分析的剧本文本");
+  const episodeId = episode.id;
+  const priorAssetMemory = storyAssetMemoryBeforeEpisode(node, episodeId);
+
   storyAnalysisControllers.get(nodeId)?.abort();
   const controller = new AbortController();
   storyAnalysisControllers.set(nodeId, controller);
   node.status = "running";
+  node.runningEpisodeId = episodeId;
   node.error = "";
+  episode.status = "running";
+  episode.error = "";
   node.z = ++canvasState.nextZ;
   updateNode(node);
   saveCanvasState({ history: false });
@@ -10428,7 +10948,20 @@ async function analyzeStoryBreakdown(nodeId) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: node.model,
-        script: node.script,
+        script: episode.script,
+        episode: {
+          id: episode.id,
+          title: episode.title,
+          index: episode.index,
+          total: episodes.length,
+          episodeNumber: episode.episodeNumber,
+          partIndex: episode.partIndex,
+          partCount: episode.partCount
+        },
+        assetMemory: storyAssetMemoryForPrompt(priorAssetMemory, {
+          maxItems: 120,
+          context: episode.script
+        }),
         instructions: node.instructions,
         aspectRatio: node.aspectRatio,
         visualStyle: node.visualStyle
@@ -10441,30 +10974,54 @@ async function analyzeStoryBreakdown(nodeId) {
     if (!result || (!result.assets.length && !result.shots.length)) throw new Error("拆解结果中没有可用资产或镜头");
     const current = canvasState.nodes.find((item) => item.id === nodeId && item.type === "story-breakdown");
     if (!current) return;
-    current.result = result;
+    const targetEpisode = current.episodes?.find((item) => item.id === episodeId);
+    if (!targetEpisode) throw new Error("分集列表已变化，请重新选择后分析");
+    const analysisVersion = String(Date.now());
+    targetEpisode.result = result;
+    targetEpisode.status = "ready";
+    targetEpisode.error = "";
+    targetEpisode.analysisVersion = analysisVersion;
+    targetEpisode.selectedAssetIds = result.assets
+      .filter((asset) => asset.reuseMode !== storyAssetReuseModes.REUSE)
+      .map((asset) => asset.id);
+    targetEpisode.selectedStoryboardShotIds = result.shots.map((shot) => shot.id);
+    targetEpisode.selectedVideoShotIds = result.shots.map((shot) => shot.id);
+    const targetIndex = current.episodes.indexOf(targetEpisode);
+    current.episodes.slice(targetIndex + 1).forEach((laterEpisode) => {
+      if (laterEpisode.result) laterEpisode.status = "stale";
+    });
+    current.assetMemory = rebuildStoryAssetMemory(current);
     current.title = result.title || current.title;
-    current.selectedAssetIds = result.assets.map((asset) => asset.id);
-    current.selectedStoryboardShotIds = result.shots.map((shot) => shot.id);
-    current.selectedVideoShotIds = result.shots.map((shot) => shot.id);
     current.activeTab = result.assets.length ? "assets" : "storyboards";
-    current.analysisVersion = String(Date.now());
+    if (current.activeEpisodeId === episodeId) syncStoryNodeFromActiveEpisode(current);
     current.status = "ready";
+    current.runningEpisodeId = "";
     current.error = "";
     rawResponse.textContent = JSON.stringify(data, null, 2);
     updateNode(current);
     saveCanvasState();
-    showToast(`拆解完成：${result.assets.length} 个资产，${result.shots.length} 个镜头`);
+    showToast(`${targetEpisode.title} 拆解完成：${result.assets.length} 个资产，${result.shots.length} 个镜头；项目记忆 ${current.assetMemory.length} 项`);
   } catch (error) {
     const current = canvasState.nodes.find((item) => item.id === nodeId && item.type === "story-breakdown");
     if (!current) return;
+    const targetEpisode = current.episodes?.find((item) => item.id === episodeId);
     if (controller.signal.aborted) {
       current.status = "idle";
       current.error = "";
+      if (targetEpisode) {
+        targetEpisode.status = targetEpisode.result ? "ready" : "idle";
+        targetEpisode.error = "";
+      }
     } else {
       current.status = "error";
       current.error = error.message || "剧本拆解失败";
+      if (targetEpisode) {
+        targetEpisode.status = "error";
+        targetEpisode.error = current.error;
+      }
       showToast(current.error);
     }
+    current.runningEpisodeId = "";
     updateNode(current);
     saveCanvasState({ history: false });
   } finally {
@@ -10480,7 +11037,10 @@ function stopStoryBreakdown(nodeId) {
   storyAnalysisControllers.delete(nodeId);
   const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "story-breakdown");
   if (node) {
+    const runningEpisode = node.episodes?.find((episode) => episode.id === node.runningEpisodeId);
+    if (runningEpisode) runningEpisode.status = runningEpisode.result ? "ready" : "idle";
     node.status = "idle";
+    node.runningEpisodeId = "";
     node.error = "";
     updateNode(node);
     saveCanvasState({ history: false });
@@ -10488,7 +11048,7 @@ function stopStoryBreakdown(nodeId) {
   showToast("已停止剧本拆解");
 }
 
-function createStoryImageTasks(nodeId, mode) {
+async function createStoryImageTasks(nodeId, mode) {
   const story = canvasState.nodes.find((item) => item.id === nodeId && item.type === "story-breakdown");
   if (!story?.result || !["assets", "storyboards"].includes(mode)) return;
   const items = mode === "assets" ? story.result.assets : story.result.shots;
@@ -10500,6 +11060,8 @@ function createStoryImageTasks(nodeId, mode) {
   const x = story.x + (story.width || defaultStoryBreakdownWidth) + 64 + lane * (defaultTaskWidth + 48);
   const baseY = nextStoryOutputY(story.id, mode, story.y);
   const created = [];
+  const references = [];
+  const episodeId = storyActiveEpisode(story)?.id || "";
   selectedItems.forEach((item, index) => {
     const task = createDefaultTaskNode("create");
     task.prompt = storyImagePrompt(story, item, mode);
@@ -10511,6 +11073,7 @@ function createStoryImageTasks(nodeId, mode) {
     applyTaskModelDefaults(task, { modelChanged: true, modeChanged: true });
     if (isSizeAllowedForModel(desiredSize, task.model, "create")) task.size = desiredSize;
     task.storyNodeId = story.id;
+    task.storyEpisodeId = episodeId;
     task.storyItemId = item.id;
     task.storyOutputKind = mode;
     task.storyAnalysisVersion = story.analysisVersion || "";
@@ -10519,9 +11082,18 @@ function createStoryImageTasks(nodeId, mode) {
     task.z = ++canvasState.nextZ;
     canvasState.nodes.push(task);
     created.push(task);
+    if (mode === "assets" && item.reuseMode === storyAssetReuseModes.VARIANT && item.variantOf) {
+      references.push([task.id, storyAssetReferenceImageNodeIds(story, item)]);
+    }
   });
+  selectStoryOutputNodes(created, { save: false });
+  let linkedCount = 0;
+  for (const [taskId, imageIds] of references) {
+    if (!imageIds.length) continue;
+    if (await useCanvasImagesAsReference(taskId, imageIds)) linkedCount += 1;
+  }
   selectStoryOutputNodes(created);
-  showToast(`已创建 ${created.length} 个${mode === "assets" ? "资产" : "分镜"}生图节点`);
+  showToast(`已创建 ${created.length} 个${mode === "assets" ? "资产" : "分镜"}生图节点${linkedCount ? `，${linkedCount} 个变体已关联母资产` : ""}`);
 }
 
 async function createStoryVideoTasks(nodeId) {
@@ -10535,6 +11107,7 @@ async function createStoryVideoTasks(nodeId) {
   const baseY = nextStoryOutputY(story.id, "videos", story.y);
   const created = [];
   const references = [];
+  const episodeId = storyActiveEpisode(story)?.id || "";
   shots.forEach((shot, index) => {
     const task = createDefaultVideoTaskNode();
     task.prompt = storyVideoPrompt(story, shot);
@@ -10550,6 +11123,7 @@ async function createStoryVideoTasks(nodeId) {
       : videoResolutionOptionsForModel(task.model)[0]?.[0] || dreaminaVideoDefaultResolution;
     task.n = storyShotDuration(story, shot, task.model);
     task.storyNodeId = story.id;
+    task.storyEpisodeId = episodeId;
     task.storyItemId = shot.id;
     task.storyOutputKind = "videos";
     task.storyAnalysisVersion = story.analysisVersion || "";
@@ -10573,12 +11147,15 @@ async function createStoryVideoTasks(nodeId) {
 
 function storyImagePrompt(story, item, mode) {
   const prompt = mode === "assets" ? item.prompt || item.description : item.imagePrompt;
+  const variant = mode === "assets" && item.reuseMode === storyAssetReuseModes.VARIANT
+    ? `以母资产 ${item.variantOf} 为一致性基础，仅改变：${item.variantNotes || "剧本指定的新状态"}`
+    : "";
   const negative = mode === "assets" && item.negativePrompt ? "避免：" + item.negativePrompt : "";
   const ratio = mode === "assets"
     ? story.assetRatioByKind?.[item.kind] || story.aspectRatio
     : story.aspectRatio;
   const compositionHint = mode === "assets" ? storyAssetCompositionHints[item.kind] || "" : "";
-  return [story.visualStyle, ratio + " 画幅", compositionHint, prompt, negative].filter(Boolean).join("，");
+  return [story.visualStyle, ratio + " 画幅", compositionHint, variant, prompt, negative].filter(Boolean).join("，");
 }
 
 function storyVideoPrompt(story, shot) {
@@ -10603,14 +11180,52 @@ function nextStoryOutputY(storyNodeId, kind, fallbackY) {
 
 function storyReferenceImageNodeIds(story, shot, videoModel) {
   const imageNodes = canvasState.nodes.filter((node) => node.type === "image" && node.storyNodeId === story.id && node.image?.url);
+  const episodeId = storyActiveEpisode(story)?.id || "";
   const storyboardIds = imageNodes
-    .filter((node) => node.storyOutputKind === "storyboards" && node.storyItemId === shot.id)
+    .filter((node) =>
+      node.storyOutputKind === "storyboards"
+      && node.storyItemId === shot.id
+      && (!node.storyEpisodeId || node.storyEpisodeId === episodeId)
+    )
     .map((node) => node.id);
-  const assetIdSet = new Set(shot.assetIds || []);
+  const assetIdSet = storyAssetIdsWithBases(story, shot.assetIds || []);
   const assetIds = imageNodes
     .filter((node) => node.storyOutputKind === "assets" && assetIdSet.has(node.storyItemId))
     .map((node) => node.id);
   return dedupeStrings([...storyboardIds, ...assetIds]).slice(0, videoReferenceLimit(videoModel));
+}
+
+function storyAssetIdsWithBases(story, assetIds) {
+  const result = new Set(dedupeStrings(assetIds));
+  const assets = [
+    ...(story.result?.assets || []),
+    ...normalizeStoryAssetMemory(story.assetMemory)
+  ];
+  const byId = new Map(assets.map((asset) => [asset.id, asset]));
+  for (const id of [...result]) {
+    let asset = byId.get(id);
+    let depth = 0;
+    while (asset?.variantOf && depth < 8) {
+      result.add(asset.variantOf);
+      asset = byId.get(asset.variantOf);
+      depth += 1;
+    }
+  }
+  return result;
+}
+
+function storyAssetReferenceImageNodeIds(story, asset) {
+  const ids = storyAssetIdsWithBases(story, [asset.variantOf || asset.id]);
+  return canvasState.nodes
+    .filter((node) =>
+      node.type === "image"
+      && node.storyNodeId === story.id
+      && node.storyOutputKind === "assets"
+      && ids.has(node.storyItemId)
+      && node.image?.url
+    )
+    .map((node) => node.id)
+    .slice(0, 4);
 }
 
 function selectStoryOutputNodes(nodes, options = {}) {
@@ -12279,6 +12894,28 @@ function createImageToolbar(node) {
   download.download = node.image?.filename || "generated-image";
   download.textContent = "下载";
 
+  const convertFormat = document.createElement("select");
+  convertFormat.className = "image-format-select";
+  convertFormat.title = "转换图片格式（保留原图并在右侧创建新图片）";
+  convertFormat.setAttribute("aria-label", "转换图片格式");
+  const convertPlaceholder = document.createElement("option");
+  convertPlaceholder.value = "";
+  convertPlaceholder.textContent = imageFormatConversions.has(node.id) ? "转换中…" : "转格式";
+  convertFormat.append(convertPlaceholder);
+  for (const [format, label] of [["png", "转 PNG"], ["jpeg", "转 JPG"], ["webp", "转 WebP"]]) {
+    const option = document.createElement("option");
+    option.value = format;
+    option.textContent = label;
+    convertFormat.append(option);
+  }
+  convertFormat.value = "";
+  convertFormat.disabled = imageFormatConversions.has(node.id);
+  convertFormat.addEventListener("change", () => {
+    const targetFormat = convertFormat.value;
+    convertFormat.value = "";
+    if (targetFormat) void convertImageNodeFormat(node.id, targetFormat, convertFormat);
+  });
+
   const togglePrompt = document.createElement("button");
   togglePrompt.type = "button";
   togglePrompt.textContent = "提示词";
@@ -12304,7 +12941,7 @@ function createImageToolbar(node) {
     deleteNodes([node.id]);
   });
 
-  toolbar.append(scaleInput, reset, open, download, togglePrompt);
+  toolbar.append(scaleInput, reset, open, download, convertFormat, togglePrompt);
   if (config.photoshopBridgeEnabled) toolbar.append(sendToPhotoshop);
   toolbar.append(remove);
   return toolbar;
@@ -12326,7 +12963,8 @@ function createImagePromptPanel(node) {
     node.image?.model,
     node.image?.size,
     node.image?.format,
-    node.image?.quality || node.image?.generation?.quality
+    node.image?.quality || node.image?.generation?.quality,
+    node.image?.ttImageVersion || node.image?.generation?.ttImageVersion
   ).filter(Boolean).join(" · ");
 
   const actions = document.createElement("div");
@@ -13137,7 +13775,10 @@ function createTaskHeader(node) {
 
   const meta = document.createElement("span");
   meta.className = "node-meta";
-  meta.textContent = [...taskMetaParts(node.model, node.size, node.format, node.quality), cacheStatusText(node)].filter(Boolean).join(" · ");
+  meta.textContent = [
+    ...taskMetaParts(node.model, node.size, node.format, node.quality, node.ttImageVersion),
+    cacheStatusText(node)
+  ].filter(Boolean).join(" · ");
 
   header.append(status, titleWrap, modeTabs, meta, createTaskActions(node));
   return header;
@@ -13528,18 +14169,62 @@ function createDebugPanel(node) {
     );
     advancedGrid.append(createSelectField("格式", node, "format", formatOptions));
     if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
+  } else if (usesTtImage25Parameters(node.model)) {
+    const mediaProtocol = usesTtImage25MediaProtocol(node.model);
+    const versionField = createSelectField("版本", node, "ttImageVersion", ttImage25VersionOptions);
+    if (mediaProtocol) {
+      settings.append(
+        modelField,
+        versionField,
+        createSelectField("比例", node, "ttImageAspectRatio", ttImage25AspectRatioOptions, {
+          onChange: (value) => {
+            node.size = "auto";
+            if (value === "auto") node.ttImageResolution = "auto";
+            applyTtImage25NodeDefaults(node);
+            updateNode(node);
+          }
+        }),
+        createSelectField("分辨率", node, "ttImageResolution", ttImage25ResolutionOptions, {
+          onChange: (value) => {
+            node.size = "auto";
+            if (value === "auto") node.ttImageAspectRatio = "auto";
+            applyTtImage25NodeDefaults(node);
+            updateNode(node);
+          }
+        }),
+        createSelectField("质量", node, "quality", gptImage25QualityOptions)
+      );
+      advancedGrid.append(createTextField("自定义尺寸（优先）", node, "size"));
+    } else {
+      settings.append(
+        modelField,
+        versionField,
+        createSelectField("比例 / 尺寸", node, "size", gptImage25SizeOptions),
+        createNumberField("数量", node, "n", { min: 1, max: 1 }),
+        createSelectField("质量", node, "quality", gptImage25QualityOptions)
+      );
+      advancedGrid.append(createSelectField("格式", node, "format", formatOptions));
+    }
+    advancedGrid.append(createSelectField("背景", node, "background", ttImage25BackgroundOptions, {
+      onChange: (value) => {
+        if (value === "transparent") node.format = "png";
+        updateNode(node);
+      }
+    }));
+    if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
   } else {
+    const gptImage25 = usesGptImage25Parameters(node.model);
     settings.append(
       modelField,
-      createSelectField("尺寸", node, "size", sizeOptionsForModel(node.model, node.mode)),
+      createSelectField(gptImage25 ? "比例 / 尺寸" : "尺寸", node, "size", sizeOptionsForModel(node.model, node.mode)),
       createNumberField("数量", node, "n", { min: 1, max: 10 }),
-      createSelectField("质量", node, "quality", qualityOptions)
+      createSelectField("质量", node, "quality", qualityOptionsForModel(node.model))
     );
     advancedGrid.append(createSelectField("格式", node, "format", formatOptions));
     if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
   }
 
-  if (node.mode === "edit" && !isDreaminaModelName(node.model) && !usesBananaImageParameters(node.model) && !isSeedreamImageModelName(node.model)) {
+  if (node.mode === "edit" && !isDreaminaModelName(node.model) && !usesBananaImageParameters(node.model) && !isSeedreamImageModelName(node.model) && !usesTtImage25Parameters(node.model)) {
     advancedGrid.append(
       createSelectField("背景", node, "background", backgroundOptions),
       createSelectField("审核", node, "moderation", moderationOptions)
@@ -13721,6 +14406,10 @@ function createEditAssetFields(node) {
           : `当前 Seedream 模型最多使用 ${limit} 张参考图片`);
       }
       files = files.slice(0, remaining);
+    } else if (usesTtImage25Parameters(node.model)) {
+      const remaining = Math.max(0, ttImage25ReferenceLimit - (node.cachedImages?.length || 0) - (stored.images?.length || 0));
+      if (files.length > remaining) showToast(`TT Image 2.5 最多使用 ${ttImage25ReferenceLimit} 张参考图片`);
+      files = files.slice(0, remaining);
     } else if (isGrokBuildImageModelName(node.model)) {
       const remaining = Math.max(0, 7 - (node.cachedImages?.length || 0) - (stored.images?.length || 0));
       if (files.length > remaining) showToast("Grok 官方图片编辑最多使用 7 张参考图片");
@@ -13769,7 +14458,7 @@ function createEditAssetFields(node) {
   summary.className = "asset-summary";
   summary.textContent = assetSummaryText(node);
 
-  const hint = createSeedreamAssetHint(node);
+  const hint = createSeedreamAssetHint(node) || createTtImage25AssetHint(node);
   panel.append(...[hint, referenceActions, thumbnails, summary].filter(Boolean));
 
   return panel;
@@ -13788,6 +14477,14 @@ function createSeedreamAssetHint(node) {
       ? `${autoDetected}画布多图融合：图 1 是按当前位置、大小与遮挡层级生成的构图稿，后续图片用于补充原图细节。中转站是否支持由其上游决定。`
       : `${autoDetected}多图融合：按“图 1、图 2…”顺序使用 2–10 张参考图，输出一张融合结果。中转站是否支持由其上游决定。`
     : `${autoDetected}智能拆图层：只发送第 1 张图片并启用 layer_decomposition，结果会按坐标和层级还原为可独立编辑的透明 PNG 图层。`;
+  return hint;
+}
+
+function createTtImage25AssetHint(node) {
+  if (!usesTtImage25Parameters(node.model)) return null;
+  const hint = document.createElement("p");
+  hint.className = "seedream-mode-hint mode-fusion";
+  hint.textContent = "TT Image 2.5 支持 1–16 张参考图，可用于图生图、局部编辑和多图融合；参考图会按画布连接顺序发送。";
   return hint;
 }
 
@@ -14725,6 +15422,16 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
           : `当前 Seedream 模型最多使用 ${referenceLimit} 张参考图，已自动截取`);
         ordinaryImageNodes = ordinaryImageNodes.slice(0, availableSlots);
       }
+    } else if (target.type === "task" && usesTtImage25Parameters(target.model)) {
+      availableSlots = Math.max(
+        0,
+        ttImage25ReferenceLimit - (target.cachedImages?.length || 0) - (stored.images?.length || 0)
+      );
+      ordinaryImageNodes = ordinaryImageNodes.filter((imageNode) => !existingReferenceIds.has(imageNode.id));
+      if (ordinaryImageNodes.length > availableSlots) {
+        showToast(`TT Image 2.5 最多使用 ${ttImage25ReferenceLimit} 张参考图，已自动截取`);
+        ordinaryImageNodes = ordinaryImageNodes.slice(0, availableSlots);
+      }
     } else if (target.type === "task" && isGrokBuildImageModelName(target.model)) {
       availableSlots = Math.max(0, 7 - (target.cachedImages?.length || 0) - (stored.images?.length || 0));
       ordinaryImageNodes = ordinaryImageNodes.filter((imageNode) => !existingReferenceIds.has(imageNode.id));
@@ -14756,6 +15463,8 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
             ? seedreamModeForNode(target) === seedreamProModes.LAYERS
               ? "智能拆图层只能使用 1 张输入图片"
               : `当前 Seedream 模型最多使用 ${seedreamReferenceLimitForNode(target)} 张参考图`
+          : target.type === "task" && usesTtImage25Parameters(target.model)
+            ? `TT Image 2.5 最多使用 ${ttImage25ReferenceLimit} 张参考图`
           : target.type === "task" && isGrokBuildImageModelName(target.model)
             ? "Grok 官方图片编辑最多使用 7 张参考图"
             : `当前视频模型最多使用 ${videoReferenceLimit(target.model)} 个参考素材`;
@@ -14821,6 +15530,146 @@ async function imageNodeToFile(node) {
   const file = new File([blob], filename, { type });
   tagReferenceFile(file, node.id);
   return file;
+}
+
+async function convertImageNodeFormat(nodeId, targetFormat, control) {
+  const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "image");
+  const format = normalizeCanvasImageFormat(targetFormat);
+  if (!node?.image?.url || !format || imageFormatConversions.has(nodeId)) return null;
+
+  const projectId = currentProjectId;
+  imageFormatConversions.add(nodeId);
+  setImageFormatControlBusy(control, true);
+
+  try {
+    const sourceFile = await imageNodeToFile(node);
+    const sourceFormat = normalizeCanvasImageFormat(sourceFile.type)
+      || normalizeCanvasImageFormat(node.image?.format)
+      || normalizeCanvasImageFormat(fileExtension(sourceFile.name));
+    if (sourceFormat === format) {
+      showToast(`当前图片已经是 ${imageFormatLabel(format)} 格式`);
+      return null;
+    }
+
+    const encoded = await encodeImageFile(sourceFile, format);
+    const formData = new FormData();
+    formData.append("projectId", projectId);
+    formData.append("image", encoded.file);
+    const response = await fetch("/api/cache-assets", { method: "POST", body: formData });
+    const data = await readJsonResponse(response);
+    if (!response.ok || data.parseError) throw new Error(data.error || "转换后的图片缓存失败");
+    const asset = (data.assets || []).find((item) => item.field === "image");
+    if (!asset) throw new Error("转换完成，但没有取得缓存图片");
+    if (currentProjectId !== projectId) throw new Error("转换期间已切换画布，请返回原画布后重试");
+
+    const liveSource = canvasState.nodes.find((item) => item.id === nodeId && item.type === "image");
+    if (!liveSource) throw new Error("原图片已被删除，未创建转换节点");
+    const sourceBounds = mediaNodeWorldBounds(liveSource);
+    const convertedNode = createLocalImageNode(
+      asset,
+      { width: encoded.width, height: encoded.height },
+      sourceBounds.x + sourceBounds.width + 32,
+      sourceBounds.y
+    );
+    const sourceScale = Number(liveSource.scale);
+    if (Number.isFinite(sourceScale) && sourceScale > 0) convertedNode.scale = sourceScale;
+    convertedNode.sourceTaskId = liveSource.sourceTaskId || "";
+    convertedNode.storyNodeId = liveSource.storyNodeId || "";
+    convertedNode.storyEpisodeId = liveSource.storyEpisodeId || "";
+    convertedNode.storyItemId = liveSource.storyItemId || "";
+    convertedNode.storyOutputKind = liveSource.storyOutputKind || "";
+    convertedNode.storyAnalysisVersion = liveSource.storyAnalysisVersion || "";
+    convertedNode.convertedFromNodeId = liveSource.id;
+    convertedNode.image = {
+      ...clonePlainValue(liveSource.image || {}),
+      id: createId(),
+      type: "file",
+      url: asset.url || `/${asset.path}`,
+      filename: asset.originalName || encoded.file.name,
+      sourceUrl: "",
+      contentHash: "",
+      prompt: liveSource.image?.prompt || "格式转换图片",
+      size: `${encoded.width}x${encoded.height}`,
+      width: encoded.width,
+      height: encoded.height,
+      format,
+      outputFormat: format,
+      cachedAsset: asset,
+      convertedFrom: {
+        nodeId: liveSource.id,
+        filename: liveSource.image?.filename || sourceFile.name,
+        format: sourceFormat
+      },
+      createdAt: new Date().toISOString()
+    };
+    convertedNode.sourceImageKey = asset.filename || convertedNode.image.url;
+
+    canvasState.nodes.push(convertedNode);
+    selectedNodeIds.clear();
+    selectedNodeIds.add(convertedNode.id);
+    renderCanvas();
+    saveCanvasState();
+    updateCanvasMeta();
+    showToast(`已转换为 ${imageFormatLabel(format)}，原图已保留`);
+    return convertedNode;
+  } catch (error) {
+    showToast(error.message || "图片格式转换失败");
+    return null;
+  } finally {
+    imageFormatConversions.delete(nodeId);
+    setImageFormatControlBusy(control, false);
+    const liveNode = canvasState.nodes.find((item) => item.id === nodeId);
+    if (liveNode && selectedNodeIds.has(nodeId) && !control?.isConnected) updateNode(liveNode);
+  }
+}
+
+function setImageFormatControlBusy(control, busy) {
+  if (!control) return;
+  control.disabled = busy;
+  const placeholder = control.options?.[0];
+  if (placeholder) placeholder.textContent = busy ? "转换中…" : "转格式";
+}
+
+async function encodeImageFile(sourceFile, targetFormat) {
+  const format = normalizeCanvasImageFormat(targetFormat);
+  if (!format) throw new Error("暂不支持这个目标格式");
+  const decoded = await createDrawableForCanvasComposition(sourceFile);
+  try {
+    const width = Math.round(Number(decoded.drawable.naturalWidth) || Number(decoded.drawable.width) || 0);
+    const height = Math.round(Number(decoded.drawable.naturalHeight) || Number(decoded.drawable.height) || 0);
+    if (!width || !height) throw new Error("无法读取原图片尺寸");
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { alpha: format !== "jpeg" });
+    if (!context) throw new Error("无法创建图片转换画布");
+    if (format === "jpeg") {
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, width, height);
+    }
+    context.drawImage(decoded.drawable, 0, 0, width, height);
+
+    const contentType = contentTypeFromFormat(format);
+    const quality = format === "png" ? undefined : 0.92;
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, contentType, quality));
+    if (!blob) throw new Error(`${imageFormatLabel(format)} 编码失败`);
+    if (normalizeCanvasImageFormat(blob.type) !== format) {
+      throw new Error(`当前环境不支持 ${imageFormatLabel(format)} 编码`);
+    }
+    const filename = convertedImageFilename(sourceFile.name, format);
+    return {
+      file: new File([blob], filename, { type: contentType, lastModified: Date.now() }),
+      width,
+      height
+    };
+  } finally {
+    decoded.release();
+  }
+}
+
+function imageFormatLabel(format) {
+  return normalizeCanvasImageFormat(format) === "jpeg" ? "JPG" : String(format || "").toUpperCase();
 }
 
 function tagReferenceFile(file, sourceImageNodeId) {
@@ -17256,19 +18105,68 @@ function migrateNode(node) {
 }
 
 function migrateStoryBreakdownNode(node) {
-  const result = normalizeStoryBreakdownResult(node.result);
+  const legacyResult = normalizeStoryBreakdownResult(node.result);
+  const script = String(node.script || "");
+  const sourceEpisodes = Array.isArray(node.episodes) && node.episodes.length
+    ? node.episodes
+    : splitStoryIntoEpisodes(script);
+  let episodes = sourceEpisodes.map((episode, index) => normalizeStoryEpisodeState(episode, index, sourceEpisodes.length));
+  if (!episodes.length && legacyResult) {
+    episodes = [normalizeStoryEpisodeState({
+      id: "episode-1-legacy",
+      title: legacyResult.episode?.title || "第 1 集",
+      script,
+      result: legacyResult,
+      status: "ready",
+      analysisVersion: node.analysisVersion,
+      selectedAssetIds: node.selectedAssetIds,
+      selectedStoryboardShotIds: node.selectedStoryboardShotIds,
+      selectedVideoShotIds: node.selectedVideoShotIds
+    }, 0, 1)];
+  }
+  let activeEpisodeId = episodes.some((episode) => episode.id === node.activeEpisodeId)
+    ? node.activeEpisodeId
+    : episodes[0]?.id || "";
+  const legacyTarget = episodes.find((episode) => episode.id === activeEpisodeId) || episodes[0];
+  if (legacyResult && legacyTarget && !legacyTarget.result) {
+    legacyTarget.result = legacyResult;
+    legacyTarget.status = episodes.length > 1 ? "stale" : "ready";
+    legacyTarget.analysisVersion = String(node.analysisVersion || "");
+    const assetIds = new Set(legacyResult.assets.map((asset) => asset.id));
+    const shotIds = new Set(legacyResult.shots.map((shot) => shot.id));
+    legacyTarget.selectedAssetIds = Array.isArray(node.selectedAssetIds)
+      ? dedupeStrings(node.selectedAssetIds).filter((id) => assetIds.has(id))
+      : legacyResult.assets.filter((asset) => asset.reuseMode !== storyAssetReuseModes.REUSE).map((asset) => asset.id);
+    legacyTarget.selectedStoryboardShotIds = Array.isArray(node.selectedStoryboardShotIds)
+      ? dedupeStrings(node.selectedStoryboardShotIds).filter((id) => shotIds.has(id))
+      : [...shotIds];
+    legacyTarget.selectedVideoShotIds = Array.isArray(node.selectedVideoShotIds)
+      ? dedupeStrings(node.selectedVideoShotIds).filter((id) => shotIds.has(id))
+      : [...shotIds];
+  }
+  let assetMemory = normalizeStoryAssetMemory(node.assetMemory);
+  if (!assetMemory.length) {
+    episodes.forEach((episode) => {
+      if (episode.result?.assets?.length) assetMemory = mergeStoryAssetMemory(assetMemory, episode.result.assets, episode);
+    });
+  }
+  activeEpisodeId = episodes.some((episode) => episode.id === activeEpisodeId)
+    ? activeEpisodeId
+    : episodes[0]?.id || "";
+  const activeEpisode = episodes.find((episode) => episode.id === activeEpisodeId) || null;
+  const result = activeEpisode?.result || legacyResult;
   const imageModel = normalizeImageModelName(node.imageModel || config.defaultModel || "gpt-image-2");
   const videoModel = isSupportedVideoModelName(node.videoModel) ? node.videoModel : dreaminaVideoDefaultModel;
   const assetIds = new Set((result?.assets || []).map((asset) => asset.id));
   const shotIds = new Set((result?.shots || []).map((shot) => shot.id));
-  const selectedAssetIds = Array.isArray(node.selectedAssetIds)
-    ? dedupeStrings(node.selectedAssetIds).filter((id) => assetIds.has(id))
-    : [...assetIds];
-  const selectedStoryboardShotIds = Array.isArray(node.selectedStoryboardShotIds)
-    ? dedupeStrings(node.selectedStoryboardShotIds).filter((id) => shotIds.has(id))
+  const selectedAssetIds = Array.isArray(activeEpisode?.selectedAssetIds)
+    ? dedupeStrings(activeEpisode.selectedAssetIds).filter((id) => assetIds.has(id))
+    : (result?.assets || []).filter((asset) => asset.reuseMode !== storyAssetReuseModes.REUSE).map((asset) => asset.id);
+  const selectedStoryboardShotIds = Array.isArray(activeEpisode?.selectedStoryboardShotIds)
+    ? dedupeStrings(activeEpisode.selectedStoryboardShotIds).filter((id) => shotIds.has(id))
     : [...shotIds];
-  const selectedVideoShotIds = Array.isArray(node.selectedVideoShotIds)
-    ? dedupeStrings(node.selectedVideoShotIds).filter((id) => shotIds.has(id))
+  const selectedVideoShotIds = Array.isArray(activeEpisode?.selectedVideoShotIds)
+    ? dedupeStrings(activeEpisode.selectedVideoShotIds).filter((id) => shotIds.has(id))
     : [...shotIds];
   const imageSize = isSizeAllowedForModel(node.imageSize, imageModel, "create")
     ? node.imageSize
@@ -17284,7 +18182,7 @@ function migrateStoryBreakdownNode(node) {
     id: node.id || createId(),
     type: "story-breakdown",
     title: String(node.title || result?.title || "剧本拆解"),
-    script: String(node.script || ""),
+    script,
     scriptFileName: String(node.scriptFileName || ""),
     instructions: String(node.instructions || ""),
     model: String(node.model || config.assistantModel || assistantDefaultModel),
@@ -17297,14 +18195,21 @@ function migrateStoryBreakdownNode(node) {
     videoSize,
     videoQuality,
     videoDuration: String(node.videoDuration || dreaminaVideoDefaultDuration),
+    episodes,
+    episodesSourceSignature: Object.prototype.hasOwnProperty.call(node, "episodesSourceSignature")
+      ? String(node.episodesSourceSignature || "")
+      : storyScriptSignature(script),
+    activeEpisodeId,
+    runningEpisodeId: "",
+    assetMemory,
     result,
     activeTab: ["assets", "storyboards", "videos"].includes(node.activeTab) ? node.activeTab : "assets",
     selectedAssetIds,
     selectedStoryboardShotIds,
     selectedVideoShotIds,
-    analysisVersion: String(node.analysisVersion || ""),
-    status: node.status === "running" || node.status === "loading-file" ? "idle" : node.status || "idle",
-    error: String(node.error || ""),
+    analysisVersion: String(activeEpisode?.analysisVersion || node.analysisVersion || ""),
+    status: activeEpisode?.status === "error" ? "error" : result ? "ready" : "idle",
+    error: String(activeEpisode?.error || ""),
     width: Math.max(Number(node.width) || defaultStoryBreakdownWidth, 600),
     x: Number(node.x) || 0,
     y: Number(node.y) || 0,
@@ -17407,6 +18312,9 @@ function migrateTaskNode(node) {
     connectionOverride: Boolean(node.connectionOverride),
     mode,
     seedreamMode: normalizeSeedreamProMode(node.seedreamMode),
+    ttImageVersion: normalizeTtImage25Version(node.ttImageVersion),
+    ttImageAspectRatio: normalizeTtImage25AspectRatio(node.ttImageAspectRatio),
+    ttImageResolution: normalizeTtImage25Resolution(node.ttImageResolution),
     background: node.background || "",
     moderation: node.moderation || "",
     extraParams,
@@ -17520,6 +18428,7 @@ function materializeTaskImageNodes() {
         sourceTaskId: task.id,
         sourceImageKey: key,
         storyNodeId: task.storyNodeId || "",
+        storyEpisodeId: task.storyEpisodeId || "",
         storyItemId: task.storyItemId || "",
         storyOutputKind: task.storyOutputKind || "",
         storyAnalysisVersion: task.storyAnalysisVersion || "",
@@ -17566,6 +18475,7 @@ function materializeTaskVideoNodes() {
         sourceTaskId: task.id,
         sourceVideoKey: key,
         storyNodeId: task.storyNodeId || "",
+        storyEpisodeId: task.storyEpisodeId || "",
         storyItemId: task.storyItemId || "",
         storyOutputKind: task.storyOutputKind || "",
         storyAnalysisVersion: task.storyAnalysisVersion || "",

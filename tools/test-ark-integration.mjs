@@ -13,8 +13,15 @@ const arkImagePayloads = [];
 const mediaGeneratePayloads = [];
 const mediaGeneratePolls = new Map();
 const gptCreateModels = [];
+const gptImage25CreatePayloads = [];
+const ttImage25CreatePayloads = [];
+const grokCreatePayloads = [];
+const grokEditPayloads = [];
+const grokGenerationEditPayloads = [];
+let grokEditContentType = "";
 let openAiEditContentType = "";
 let openAiEditBody = "";
+let ttImage25EditBody = "";
 
 const mock = http.createServer((req, res) => {
   const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
@@ -97,6 +104,19 @@ const mock = http.createServer((req, res) => {
   }
   if (req.method === "POST" && req.url === "/v1/images/generations") {
     return readJson(req).then((payload) => {
+      if (payload.model === "grok-imagine-image-2.0") {
+        if (Array.isArray(payload.image)) grokGenerationEditPayloads.push(payload);
+        else grokCreatePayloads.push(payload);
+        return sendJson(res, { data: [{ b64_json: pngBase64 }] });
+      }
+      if (payload.model === "tt-image-2.5") {
+        ttImage25CreatePayloads.push(payload);
+        return sendJson(res, { data: [{ b64_json: pngBase64 }] });
+      }
+      if (String(payload.model || "").startsWith("gpt-image-2.5-")) {
+        gptImage25CreatePayloads.push(payload);
+        return sendJson(res, { data: [{ b64_json: pngBase64 }] });
+      }
       gptCreateModels.push(payload.model);
       if (payload.model === "gpt-image-2") {
         res.statusCode = 400;
@@ -107,9 +127,21 @@ const mock = http.createServer((req, res) => {
     });
   }
   if (req.method === "POST" && req.url === "/v1/images/edits") {
+    if (String(req.headers["content-type"] || "").includes("application/json")) {
+      return readJson(req).then((payload) => {
+        grokEditContentType = String(req.headers["content-type"] || "");
+        grokEditPayloads.push(payload);
+        if (payload.prompt === "test Grok Imagine generations JSON fallback") {
+          res.statusCode = 400;
+          return sendJson(res, { error: { message: "failed to parse multipart form (request id: mock-grok-fallback)" } });
+        }
+        return sendJson(res, { data: [{ b64_json: pngBase64 }] });
+      });
+    }
     return readBuffer(req).then((body) => {
       openAiEditContentType = String(req.headers["content-type"] || "");
       openAiEditBody = body.toString("utf8");
+      if (/name="model"\r?\n\r?\ntt-image-2\.5/iu.test(openAiEditBody)) ttImage25EditBody = openAiEditBody;
       return sendJson(res, {
         data: [
           { b64_json: pngBase64, z_index: 0, name: "background" },
@@ -154,16 +186,20 @@ const mock = http.createServer((req, res) => {
   if (req.method === "POST" && req.url === "/v1/media/generate") {
     return readJson(req).then((payload) => {
       mediaGeneratePayloads.push(payload);
+      if (payload.prompt === "test media generate business error") {
+        return sendJson(res, { code: 422, msg: "上游不支持当前尺寸", data: null });
+      }
+      if (payload.prompt === "test media generate synchronous nested output") {
+        return sendJson(res, { code: 200, data: { output: { images: [{ b64_json: pngBase64 }] } } });
+      }
+      if (payload.prompt === "test media generate OpenAI data array") {
+        return sendJson(res, { code: 200, data: [{ b64_json: pngBase64 }] });
+      }
       const taskId = 900000 + mediaGeneratePayloads.length;
-      return sendJson(res, {
-        code: 200,
-        msg: "任务创建成功",
-        data: {
-          "任务ids": [taskId],
-          "成功数量": 1,
-          task_id: taskId
-        }
-      });
+      if (mediaGeneratePayloads.length === 1) {
+        return sendJson(res, { code: 200, msg: "任务创建成功", data: { task: { id: taskId } } });
+      }
+      return sendJson(res, { code: 200, msg: "任务创建成功", result: { task_ids: [taskId] } });
     });
   }
   if (req.method === "GET" && requestUrl.pathname === "/v1/media/status") {
@@ -234,6 +270,50 @@ const connections = {
     editEndpoint: "/v1/images/edits",
     chatEndpoint: "/v1/chat/completions"
   },
+  "sunburst-custom-relay": {
+    preset: "custom",
+    capability: "image",
+    protocol: "openai-images",
+    authType: "bearer",
+    apiModel: "gpt-image-2.5-sunburst-2026-09-08",
+    baseUrl: `http://127.0.0.1:${mockPort}`,
+    imageEndpoint: "/v1/images/generations",
+    editEndpoint: "/v1/images/edits",
+    chatEndpoint: "/v1/chat/completions"
+  },
+  "tt-image-2.5-openai-smoke": {
+    preset: "custom",
+    capability: "image",
+    protocol: "openai-images",
+    authType: "bearer",
+    apiModel: "tt-image-2.5",
+    baseUrl: `http://127.0.0.1:${mockPort}`,
+    imageEndpoint: "/v1/images/generations",
+    editEndpoint: "/v1/images/edits",
+    chatEndpoint: "/v1/chat/completions"
+  },
+  "tt-image-2.5-media-smoke": {
+    preset: "custom",
+    capability: "image",
+    protocol: "media-generate",
+    authType: "bearer",
+    apiModel: "tt-image-2.5",
+    baseUrl: `http://127.0.0.1:${mockPort}`,
+    imageEndpoint: "/v1/media/generate",
+    editEndpoint: "/v1/media/generate",
+    chatEndpoint: "/v1/chat/completions"
+  },
+  grokimagezhenzhen: {
+    preset: "custom",
+    capability: "image",
+    protocol: "openai-images",
+    authType: "bearer",
+    apiModel: "grok-imagine-image-2.0",
+    baseUrl: `http://127.0.0.1:${mockPort}`,
+    imageEndpoint: "/v1/images/generations",
+    editEndpoint: "/v1/images/edits",
+    chatEndpoint: "/v1/chat/completions"
+  },
   "seedream5.0pro-aggregate": {
     preset: "custom",
     capability: "image",
@@ -276,7 +356,18 @@ const child = spawn(process.execPath, ["server.js"], {
     CC_CANVAS_ALLOW_LOCAL_ARK_ASSET_URLS: "1",
     CC_CANVAS_MEDIA_POLL_INTERVAL_MS: "10",
     CC_CANVAS_MEDIA_POLL_TIMEOUT_MS: "2000",
+    CC_CANVAS_MODEL_KEYS_B64: Buffer.from(JSON.stringify({
+      "sunburst-custom-relay": "smoke-gpt-image-25-key",
+      "tt-image-2.5-openai-smoke": "smoke-tt-image-25-key",
+      "tt-image-2.5-media-smoke": "smoke-tt-image-25-key",
+      grokimagezhenzhen: "smoke-grok-image-key",
+      "seedream5.0pro-aggregate": "smoke-seedream-aggregate-key",
+      "seedream5.0pro-official-route": "smoke-seedream-official-route-key",
+      "seedream-v5-pro/layer-decomposition": "smoke-layer-key",
+      "seedream-v5-pro-zhenzhen-layer-decomposition": "smoke-zhenzhen-layer-key"
+    }), "utf8").toString("base64url"),
     YUNWU_MODEL_KEY_GPT_IMAGE_2: "smoke-gpt-image-key",
+    YUNWU_MODEL_KEY_GROKIMAGEZHENZHEN: "smoke-grok-image-key",
     YUNWU_MODEL_KEY_SEEDREAM_V5_PRO_LAYER_DECOMPOSITION: "smoke-layer-key",
     YUNWU_MODEL_KEY_SEEDREAM_V5_PRO_ZHENZHEN_LAYER_DECOMPOSITION: "smoke-zhenzhen-layer-key",
     CC_CANVAS_MODEL_CONNECTIONS_B64: Buffer.from(JSON.stringify(connections), "utf8").toString("base64url")
@@ -294,6 +385,14 @@ try {
   assert.equal(config.modelConnections["seedream5.0pro-aggregate"].editEndpoint, "/v1/media/generate");
   assert.equal(config.modelConnections["seedream5.0pro-official-route"].protocol, "ark-images");
   assert.equal(config.modelConnections["seedream5.0pro-official-route"].imageEndpoint, "/api/v3/images/generations");
+  assert.equal(config.modelConnections["sunburst-custom-relay"].apiModel, "gpt-image-2.5-sunburst-2026-09-08");
+  assert.equal(config.connectionModels.some(({ model }) => model === "gpt-image-2.5-sunburst"), true);
+  assert.equal(config.connectionModels.some(({ model }) => model === "gpt-image-2.5-flare"), true);
+  const ttImageDefinition = config.connectionModels.find(({ model }) => model === "tt-image-2.5");
+  assert.equal(ttImageDefinition?.presetDefaults?.lingke?.baseUrl, "https://api.lk888.ai");
+  assert.equal(ttImageDefinition?.presetDefaults?.lingke?.protocol, "openai-images");
+  assert.equal(ttImageDefinition?.presetDefaults?.["lingke-media"]?.protocol, "media-generate");
+  assert.equal(ttImageDefinition?.presetDefaults?.["lingke-media"]?.imageEndpoint, "/v1/media/generate");
 
   const assetGroups = await postJson(`http://127.0.0.1:${appPort}/api/ark-assets/groups`, {
     projectName: "default",
@@ -359,6 +458,101 @@ try {
   assert.equal(gptImage.fallback.to, "gpt-image-2-c");
   assert.equal(gptImage.images.length, 1);
 
+  const gptImage25 = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+    projectId: "ark-smoke",
+    mode: "create",
+    prompt: "test GPT Image 2.5 parameter synchronization",
+    model: "sunburst-custom-relay",
+    n: "1",
+    size: "1536 X 1024",
+    quality: "MAX",
+    format: "webp",
+    extraParams: {}
+  });
+  assert.equal(gptImage25.images.length, 1);
+  assert.equal(gptImage25CreatePayloads.length, 1);
+  assert.equal(gptImage25CreatePayloads[0].model, "gpt-image-2.5-sunburst-2026-09-08");
+  assert.equal(gptImage25CreatePayloads[0].size, "1536x1024");
+  assert.equal(gptImage25CreatePayloads[0].quality, "max");
+  assert.equal(gptImage25CreatePayloads[0].output_format, "webp");
+  assert.equal(gptImage25CreatePayloads[0].format, undefined);
+
+  const gptImage25EditForm = new FormData();
+  appendFields(gptImage25EditForm, {
+    projectId: "ark-smoke",
+    mode: "edit",
+    prompt: "test GPT Image 2.5 edit parameter synchronization",
+    model: "sunburst-custom-relay",
+    n: "1",
+    size: "1024 X 1536",
+    quality: "XHIGH",
+    format: "jpeg",
+    extraParams: "{}"
+  });
+  gptImage25EditForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "gpt-25-reference.png");
+  const gptImage25Edit = await postForm(`http://127.0.0.1:${appPort}/api/generate`, gptImage25EditForm);
+  assert.equal(gptImage25Edit.images.length, 2);
+  assert.match(openAiEditContentType, /^multipart\/form-data; boundary=/iu);
+  assert.match(openAiEditBody, /name="size"\r\n\r\n1024x1536\r\n/u);
+  assert.match(openAiEditBody, /name="quality"\r\n\r\nxhigh\r\n/u);
+  assert.match(openAiEditBody, /name="output_format"\r\n\r\njpeg\r\n/u);
+  assert.doesNotMatch(openAiEditBody, /name="format"\r\n/u);
+
+  const ttImage25OpenAi = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+    projectId: "ark-smoke",
+    mode: "create",
+    prompt: "test TT Image 2.5 OpenAI-compatible sizing",
+    model: "tt-image-2.5-openai-smoke",
+    n: "4",
+    size: "auto",
+    quality: "XHIGH",
+    ttImageVersion: "sunburst",
+    ttImageAspectRatio: "16:9",
+    ttImageResolution: "2K",
+    background: "transparent",
+    format: "webp",
+    extraParams: {}
+  });
+  assert.equal(ttImage25OpenAi.images.length, 1);
+  assert.equal(ttImage25CreatePayloads.length, 1);
+  assert.equal(ttImage25CreatePayloads[0].model, "tt-image-2.5");
+  assert.equal(ttImage25CreatePayloads[0].n, 1);
+  assert.equal(ttImage25CreatePayloads[0].version, "sunburst");
+  assert.equal(ttImage25CreatePayloads[0].size, "2560x1440");
+  assert.equal(ttImage25CreatePayloads[0].quality, "xhigh");
+  assert.equal(ttImage25CreatePayloads[0].background, "transparent");
+  assert.equal(ttImage25CreatePayloads[0].output_format, "png");
+  assert.equal(ttImage25CreatePayloads[0].aspect_ratio, undefined);
+  assert.equal(ttImage25CreatePayloads[0].resolution, undefined);
+
+  const ttImage25EditForm = new FormData();
+  appendFields(ttImage25EditForm, {
+    projectId: "ark-smoke",
+    mode: "edit",
+    prompt: "test TT Image 2.5 multi-reference edit",
+    model: "tt-image-2.5-openai-smoke",
+    n: "1",
+    size: "1536 X 1024",
+    quality: "MAX",
+    ttImageVersion: "flare",
+    ttImageAspectRatio: "auto",
+    ttImageResolution: "auto",
+    background: "opaque",
+    format: "jpeg",
+    extraParams: "{}"
+  });
+  ttImage25EditForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "tt-reference-1.png");
+  ttImage25EditForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "tt-reference-2.png");
+  const ttImage25Edit = await postForm(`http://127.0.0.1:${appPort}/api/generate`, ttImage25EditForm);
+  assert.equal(ttImage25Edit.images.length, 2);
+  assert.match(ttImage25EditBody, /name="size"\r\n\r\n1536x1024\r\n/u);
+  assert.match(ttImage25EditBody, /name="n"\r\n\r\n1\r\n/u);
+  assert.match(ttImage25EditBody, /name="version"\r\n\r\nflare\r\n/u);
+  assert.match(ttImage25EditBody, /name="quality"\r\n\r\nmax\r\n/u);
+  assert.match(ttImage25EditBody, /name="background"\r\n\r\nopaque\r\n/u);
+  assert.match(ttImage25EditBody, /name="output_format"\r\n\r\njpeg\r\n/u);
+  assert.equal((ttImage25EditBody.match(/name="image";/gu) || []).length, 2);
+
   const customConnectionResponse = await fetch(`http://127.0.0.1:${appPort}/api/generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -382,6 +576,95 @@ try {
   assert.match(customConnectionError.error, /Unknown model: gpt-image-2/u);
   assert.equal(customConnectionError.fallback, null);
   assert.deepEqual(gptCreateModels, ["gpt-image-2", "gpt-image-2-c", "gpt-image-2"]);
+
+  const grokCreate = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+    projectId: "ark-smoke",
+    mode: "create",
+    prompt: "test Grok Imagine JSON create",
+    model: "grokimagezhenzhen",
+    n: "1",
+    size: "2048x1152",
+    quality: "high",
+    format: "png",
+    extraParams: {}
+  });
+  assert.equal(grokCreate.images.length, 1);
+  assert.equal(grokCreatePayloads.length, 1);
+  assert.equal(grokCreatePayloads[0].size, undefined);
+  assert.equal(grokCreatePayloads[0].aspect_ratio, "16:9");
+  assert.equal(grokCreatePayloads[0].resolution, "2k");
+  assert.equal(grokCreatePayloads[0].quality, "medium");
+  assert.equal(grokCreatePayloads[0].response_format, "url");
+
+  const grokEditForm = new FormData();
+  appendFields(grokEditForm, {
+    projectId: "ark-smoke",
+    mode: "edit",
+    prompt: "test Grok Imagine JSON edit",
+    model: "grokimagezhenzhen",
+    n: "1",
+    size: "2048x1152",
+    quality: "",
+    format: "png",
+    extraParams: "{}"
+  });
+  grokEditForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "grok-reference.png");
+  const grokEdit = await postForm(`http://127.0.0.1:${appPort}/api/generate`, grokEditForm);
+  assert.equal(grokEdit.images.length, 1);
+  assert.match(grokEditContentType, /^application\/json/iu);
+  assert.equal(grokEditPayloads.length, 1);
+  assert.equal(grokEditPayloads[0].size, undefined);
+  assert.equal(grokEditPayloads[0].aspect_ratio, "16:9");
+  assert.equal(grokEditPayloads[0].resolution, "2k");
+  assert.equal(grokEditPayloads[0].image.type, "image_url");
+  assert.match(grokEditPayloads[0].image.url, /^data:image\/png;base64,/u);
+  assert.equal(grokEditPayloads[0].images, undefined);
+
+  const grokMultiEditForm = new FormData();
+  appendFields(grokMultiEditForm, {
+    projectId: "ark-smoke",
+    mode: "edit",
+    prompt: "test Grok Imagine multi-image JSON edit",
+    model: "grokimagezhenzhen",
+    n: "1",
+    size: "3:2|1k",
+    quality: "low",
+    format: "png",
+    extraParams: "{}"
+  });
+  grokMultiEditForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "grok-reference-1.png");
+  grokMultiEditForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "grok-reference-2.png");
+  const grokMultiEdit = await postForm(`http://127.0.0.1:${appPort}/api/generate`, grokMultiEditForm);
+  assert.equal(grokMultiEdit.images.length, 1);
+  assert.equal(grokEditPayloads.length, 2);
+  assert.equal(grokEditPayloads[1].image, undefined);
+  assert.equal(grokEditPayloads[1].images.length, 2);
+  assert.equal(grokEditPayloads[1].aspect_ratio, "3:2");
+  assert.equal(grokEditPayloads[1].resolution, "1k");
+  assert.equal(grokEditPayloads[1].quality, "low");
+
+  const grokFallbackEditForm = new FormData();
+  appendFields(grokFallbackEditForm, {
+    projectId: "ark-smoke",
+    mode: "edit",
+    prompt: "test Grok Imagine generations JSON fallback",
+    model: "grokimagezhenzhen",
+    n: "1",
+    size: "2048x1152",
+    quality: "medium",
+    format: "png",
+    extraParams: "{}"
+  });
+  grokFallbackEditForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "grok-fallback-reference.png");
+  const grokFallbackEdit = await postForm(`http://127.0.0.1:${appPort}/api/generate`, grokFallbackEditForm);
+  assert.equal(grokFallbackEdit.images.length, 1);
+  assert.equal(grokFallbackEdit.request.transport, "generations-json");
+  assert.match(grokFallbackEdit.fallback.reason, /failed to parse multipart form/iu);
+  assert.equal(grokGenerationEditPayloads.length, 1);
+  assert.equal(Array.isArray(grokGenerationEditPayloads[0].image), true);
+  assert.equal(grokGenerationEditPayloads[0].image.length, 1);
+  assert.match(grokGenerationEditPayloads[0].image[0], /^data:image\/png;base64,/u);
+  assert.equal(grokGenerationEditPayloads[0].images, undefined);
 
   const image = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
     projectId: "ark-smoke",
@@ -455,6 +738,119 @@ try {
   assert.equal(mediaGeneratePayloads[1].params.layer_decomposition, true);
   assert.match(mediaGeneratePayloads[1].params.images[0], /^data:image\/png;base64,/u);
   assert.equal(mediaGeneratePolls.get("900002"), 2);
+
+  const synchronousAggregateImage = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+    projectId: "ark-smoke",
+    mode: "create",
+    prompt: "test media generate synchronous nested output",
+    model: "seedream5.0pro-aggregate",
+    n: "1",
+    size: "1K",
+    format: "png",
+    connectionOverride: true,
+    apiKeyOverride: "smoke-key",
+    baseUrl: `http://127.0.0.1:${mockPort}`,
+    endpointPath: "/v1/media/generate",
+    extraParams: {}
+  });
+  assert.equal(synchronousAggregateImage.images.length, 1);
+  assert.equal(synchronousAggregateImage.request.taskId, "");
+
+  const openAiStyleAggregateImage = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+    projectId: "ark-smoke",
+    mode: "create",
+    prompt: "test media generate OpenAI data array",
+    model: "seedream5.0pro-aggregate",
+    n: "1",
+    size: "1K",
+    format: "png",
+    connectionOverride: true,
+    apiKeyOverride: "smoke-key",
+    baseUrl: `http://127.0.0.1:${mockPort}`,
+    endpointPath: "/v1/media/generate",
+    extraParams: {}
+  });
+  assert.equal(openAiStyleAggregateImage.images.length, 1);
+  assert.equal(openAiStyleAggregateImage.request.taskId, "");
+
+  const aggregateBusinessErrorResponse = await fetch(`http://127.0.0.1:${appPort}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      projectId: "ark-smoke",
+      mode: "create",
+      prompt: "test media generate business error",
+      model: "seedream5.0pro-aggregate",
+      n: "1",
+      size: "1K",
+      format: "png",
+      connectionOverride: true,
+      apiKeyOverride: "smoke-key",
+      baseUrl: `http://127.0.0.1:${mockPort}`,
+      endpointPath: "/v1/media/generate",
+      extraParams: {}
+    })
+  });
+  const aggregateBusinessError = await aggregateBusinessErrorResponse.json();
+  assert.equal(aggregateBusinessErrorResponse.status, 502);
+  assert.match(aggregateBusinessError.error, /上游不支持当前尺寸/u);
+  assert.doesNotMatch(aggregateBusinessError.error, /task_id/u);
+
+  const ttImage25Media = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+    projectId: "ark-smoke",
+    mode: "create",
+    prompt: "test TT Image 2.5 native media parameters",
+    model: "tt-image-2.5-media-smoke",
+    n: "1",
+    size: "auto",
+    quality: "MAX",
+    ttImageVersion: "SUNBURST",
+    ttImageAspectRatio: "21:9",
+    ttImageResolution: "4k",
+    background: "transparent",
+    format: "webp",
+    extraParams: { notify_url: "https://example.com/hook" }
+  });
+  const ttImage25MediaPayload = mediaGeneratePayloads.at(-1);
+  assert.equal(ttImage25Media.images.length, 1);
+  assert.equal(ttImage25Media.request.provider, "media-generate");
+  assert.equal(ttImage25MediaPayload.model, "tt-image-2.5");
+  assert.equal(ttImage25MediaPayload.notify_url, "https://example.com/hook");
+  assert.equal(ttImage25MediaPayload.params.version, "sunburst");
+  assert.equal(ttImage25MediaPayload.params.aspect_ratio, "21:9");
+  assert.equal(ttImage25MediaPayload.params.resolution, "4K");
+  assert.equal(ttImage25MediaPayload.params.quality, "max");
+  assert.equal(ttImage25MediaPayload.params.background, "transparent");
+  assert.equal(ttImage25MediaPayload.params.size, undefined);
+  assert.equal(ttImage25MediaPayload.params.images, undefined);
+
+  const ttImage25MediaEditForm = new FormData();
+  appendFields(ttImage25MediaEditForm, {
+    projectId: "ark-smoke",
+    mode: "edit",
+    prompt: "test TT Image 2.5 native multi-image fusion",
+    model: "tt-image-2.5-media-smoke",
+    n: "1",
+    size: "3200x2560",
+    quality: "high",
+    ttImageVersion: "flare",
+    ttImageAspectRatio: "auto",
+    ttImageResolution: "auto",
+    background: "opaque",
+    format: "png",
+    extraParams: "{}"
+  });
+  ttImage25MediaEditForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "tt-media-reference-1.png");
+  ttImage25MediaEditForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "tt-media-reference-2.png");
+  const ttImage25MediaEdit = await postForm(`http://127.0.0.1:${appPort}/api/generate`, ttImage25MediaEditForm);
+  const ttImage25MediaEditPayload = mediaGeneratePayloads.at(-1);
+  assert.equal(ttImage25MediaEdit.images.length, 1);
+  assert.equal(ttImage25MediaEditPayload.params.version, "flare");
+  assert.equal(ttImage25MediaEditPayload.params.size, "3200x2560");
+  assert.equal(ttImage25MediaEditPayload.params.aspect_ratio, undefined);
+  assert.equal(ttImage25MediaEditPayload.params.resolution, undefined);
+  assert.equal(ttImage25MediaEditPayload.params.images.length, 2);
+  assert.match(ttImage25MediaEditPayload.params.images[0], /^data:image\/png;base64,/u);
 
   const editForm = new FormData();
   appendFields(editForm, {
@@ -632,6 +1028,7 @@ try {
     assetLibraryCount: assetLibrary.items.length,
     downloadedAssetUri: downloadedAsset.arkAsset.assetUri,
     gptImageFallback: `${gptImage.fallback.from}->${gptImage.fallback.to}`,
+    grokImagineJsonEdit: grokEditContentType,
     imageCount: image.images.length,
     migratedImageSize: migratedImage.request.payload.size,
     mediaGenerateModel: mediaGeneratePayloads[0].model,

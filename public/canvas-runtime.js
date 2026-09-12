@@ -1,5 +1,32 @@
 export const seedreamLayerLayoutVersion = 3;
 
+export function normalizeCanvasImageFormat(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .split(";", 1)[0]
+    .replace(/^image\//, "")
+    .replace(/^\./, "");
+  if (["jpg", "jpeg", "jfif", "pjpeg"].includes(normalized)) return "jpeg";
+  if (normalized === "png") return "png";
+  if (normalized === "webp") return "webp";
+  return "";
+}
+
+export function convertedImageFilename(filename, targetFormat) {
+  const format = normalizeCanvasImageFormat(targetFormat);
+  if (!format) return "";
+  const extension = format === "jpeg" ? "jpg" : format;
+  const clean = String(filename || "")
+    .split(/[?#]/, 1)[0]
+    .split(/[\\/]/)
+    .pop()
+    ?.trim() || "canvas-image";
+  const dotIndex = clean.lastIndexOf(".");
+  const stem = (dotIndex > 0 ? clean.slice(0, dotIndex) : clean) || "canvas-image";
+  return `${stem}.${extension}`;
+}
+
 export function reorderLayerItemsByZ(items, selectedItemIds, action) {
   const source = Array.isArray(items) ? items : [];
   const selectedIds = selectedItemIds instanceof Set

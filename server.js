@@ -43,8 +43,9 @@ import {
   dreaminaImageResolutionTypes,
   dreaminaSupportsImageEdit,
   dreaminaVideoDurationRange,
-  dreaminaVideoImageReferenceLimit,
+  dreaminaVideoModes,
   dreaminaVideoModelVersions,
+  dreaminaVideoReferenceLimits,
   dreaminaVideoResolutionTypes,
   effectiveImageProtocol,
   extractDreaminaModelVersions,
@@ -54,6 +55,7 @@ import {
   isTtImage25Model,
   normalizeGptImage25Quality,
   normalizeGptImage25Size,
+  normalizeDreaminaVideoMode,
   normalizeSeedreamProMode,
   normalizeTtImage25Background,
   normalizeTtImage25Sizing,
@@ -137,7 +139,7 @@ const dreaminaSkillUrl = `${dreaminaDownloadBase}/SKILL.md`;
 const dreaminaVersionUrl = "https://lf3-static.bytednsdoc.com/obj/eden-cn/psj_hupthlyk/ljhwZthlaukjlkulzlp/version.json";
 const dreaminaWindowsBinaryUrl = `${dreaminaDownloadBase}/dreamina_cli_windows_amd64.exe`;
 const dreaminaWindowsBinarySha256 =
-  process.env.DREAMINA_WINDOWS_SHA256 || "7b88b1e770cd4410d1ac6779057adf7e9e0f6a1a00bc4fb2b9a564db8ddb999e";
+  process.env.DREAMINA_WINDOWS_SHA256 || "13a817e455179ab994495eedb875cf845348d05f526b21c2ef207e1fc47f6014";
 const dreaminaRatios = new Set(["21:9", "16:9", "3:2", "4:3", "1:1", "3:4", "2:3", "9:16"]);
 const dreaminaVideoRatios = new Set(["1:1", "3:4", "16:9", "4:3", "9:16", "21:9"]);
 const dreaminaVideoExtensions = new Set([".mp4", ".mov", ".webm", ".m4v"]);
@@ -277,7 +279,13 @@ const mimeTypes = new Map([
   [".mp4", "video/mp4"],
   [".mov", "video/quicktime"],
   [".webm", "video/webm"],
-  [".m4v", "video/x-m4v"]
+  [".m4v", "video/x-m4v"],
+  [".mp3", "audio/mpeg"],
+  [".wav", "audio/wav"],
+  [".m4a", "audio/mp4"],
+  [".aac", "audio/aac"],
+  [".flac", "audio/flac"],
+  [".ogg", "audio/ogg"]
 ]);
 
 const server = http.createServer(async (req, res) => {
@@ -341,6 +349,10 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/dreamina/relogin") {
       return await handleDreaminaRelogin(res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/dreamina/upscale") {
+      return await handleDreaminaUpscale(req, res);
     }
 
     if (req.method === "GET" && url.pathname === "/api/grok-build/status") {
@@ -2131,6 +2143,64 @@ async function handleDreaminaRelogin(res) {
     });
   } catch (error) {
     sendJson(res, 500, { error: dreaminaErrorMessage(error) });
+  }
+}
+
+async function handleDreaminaUpscale(req, res) {
+  const contentType = req.headers["content-type"] || "";
+  if (!contentType.includes("multipart/form-data")) {
+    return sendJson(res, 400, { error: "即梦超清需要上传一张图片。" });
+  }
+
+  const startedAt = Date.now();
+  let inputDir = "";
+  try {
+    const body = await readMultipartBody(req, contentType);
+    const projectId = normalizeProjectId(body.projectId || "default");
+    const image = (Array.isArray(body.files) ? body.files : []).find(
+      (file) => file.name === "image" && String(file.contentType || "").startsWith("image/")
+    );
+    if (!image) return sendJson(res, 400, { error: "请选择一张需要超清的图片。" });
+
+    const resolutionType = String(body.resolutionType || body.resolution_type || "4k").trim().toLowerCase();
+    if (!["2k", "4k", "8k"].includes(resolutionType)) {
+      return sendJson(res, 400, { error: "即梦超清仅支持 2K、4K 或 8K。" });
+    }
+
+    await mkdir(projectOutputDir(projectId), { recursive: true });
+    inputDir = await mkdtemp(path.join(tmpdir(), "cc-dreamina-upscale-"));
+    const [imagePath] = await writeDreaminaInputFiles([image], inputDir, "upscale");
+    const submitResult = await runDreamina([
+      "image_upscale",
+      `--image=${imagePath}`,
+      `--resolution_type=${resolutionType}`,
+      "--poll=30"
+    ], { timeoutMs: 90000 });
+    const submitted = parseDreaminaJson(submitResult.stdout);
+    const finalData = await resolveDreaminaResult(submitted, projectOutputDir(projectId));
+    const images = await dreaminaResultImages(finalData, projectId);
+    if (!images.length) {
+      return sendJson(res, 502, {
+        error: "即梦超清已完成，但没有取得可下载图片。",
+        upstream: finalData
+      });
+    }
+
+    return sendJson(res, 200, {
+      durationMs: Date.now() - startedAt,
+      request: { provider: "dreamina-cli", command: "image_upscale", resolutionType },
+      images,
+      raw: finalData
+    });
+  } catch (error) {
+    return sendJson(res, dreaminaErrorStatus(error), {
+      error: dreaminaErrorMessage(error),
+      upstream: error.data || undefined
+    });
+  } finally {
+    if (inputDir && isPathInside(inputDir, tmpdir())) {
+      await rm(inputDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }
 
@@ -4649,7 +4719,7 @@ async function handleCacheAssets(req, res) {
   await mkdir(projectAssetDir(projectId), { recursive: true });
 
   for (const file of files) {
-    if (!["image", "mask", "video"].includes(file.name)) continue;
+    if (!["image", "mask", "video", "audio"].includes(file.name)) continue;
     const saved = await saveUploadedAsset(file, projectId);
     assets.push({
       field: file.name,
@@ -6777,38 +6847,88 @@ async function handleDreaminaVideoGenerate(res, body, prompt) {
 
   try {
     const files = Array.isArray(body.files) ? body.files : [];
-    const uploadedImages = files.filter((file) => file.name === "image" && String(file.contentType || "").startsWith("image/"));
     const extraParams = parseExtraParamsValue(body.extraParams);
     const modelVersion = dreaminaVideoModelVersion(extraParams.model_version || body.model);
-    const cachedImages = await loadCachedAssets(parseCachedAssetRefs(body.cachedImages), projectId);
-    const imageFiles = [...cachedImages, ...uploadedImages]
-      .filter((file) => String(file.contentType || "").startsWith("image/"))
-      .slice(0, dreaminaVideoImageReferenceLimit(modelVersion));
-    const command = imageFiles.length ? "multimodal2video" : "text2video";
-    const duration = parseDreaminaVideoDuration(extraParams.duration || body.n, modelVersion);
-    const ratio = parseDreaminaVideoRatio(extraParams.ratio || body.size);
+    const cachedMedia = (
+      await Promise.all([
+        loadCachedAssets(parseCachedAssetRefs(body.cachedImages), projectId),
+        loadCachedAssets(parseCachedAssetRefs(body.cachedVideos), projectId),
+        loadCachedAssets(parseCachedAssetRefs(body.cachedAudios), projectId)
+      ])
+    ).flat();
+    const allMedia = [...cachedMedia, ...files];
+    const imageFiles = allMedia.filter((file) => file.name === "image" || String(file.contentType || "").startsWith("image/"));
+    const videoFiles = allMedia.filter((file) => file.name === "video" || String(file.contentType || "").startsWith("video/"));
+    const audioFiles = allMedia.filter((file) => file.name === "audio" || String(file.contentType || "").startsWith("audio/"));
+    const requestedMode = normalizeDreaminaVideoMode(extraParams.video_mode || body.videoMode);
+    const hasReferences = imageFiles.length + videoFiles.length + audioFiles.length > 0;
+    const videoMode = requestedMode === dreaminaVideoModes.AUTO
+      ? hasReferences ? dreaminaVideoModes.MULTIMODAL : dreaminaVideoModes.TEXT
+      : requestedMode;
+    validateDreaminaVideoReferences({ modelVersion, videoMode, imageFiles, videoFiles, audioFiles });
+
+    const command = {
+      [dreaminaVideoModes.TEXT]: "text2video",
+      [dreaminaVideoModes.IMAGE]: "image2video",
+      [dreaminaVideoModes.FRAMES]: "frames2video",
+      [dreaminaVideoModes.MULTIFRAME]: "multiframe2video",
+      [dreaminaVideoModes.MULTIMODAL]: "multimodal2video"
+    }[videoMode];
+    const duration = parseDreaminaVideoDuration(extraParams.duration || body.n, modelVersion, videoMode);
+    const requestedRatio = String(extraParams.ratio ?? body.size ?? "").trim();
+    const ratio = parseDreaminaVideoRatio(requestedRatio);
     const videoResolution = parseDreaminaVideoResolution(
       extraParams.video_resolution || extraParams.resolution || body.quality,
-      modelVersion
+      modelVersion,
+      videoMode
     );
     const session = normalizeDreaminaSession(extraParams.session);
+    const transitionCount = videoMode === dreaminaVideoModes.MULTIFRAME ? Math.max(0, imageFiles.length - 1) : 0;
+    const transitions = parseDreaminaVideoTransitions(
+      body.videoTransitions || extraParams.transitions,
+      transitionCount,
+      prompt,
+      duration
+    );
 
     await mkdir(projectOutputDir(projectId), { recursive: true });
-    const args = [
-      command,
-      `--prompt=${prompt}`,
-      `--model_version=${modelVersion}`,
-      `--duration=${duration}`,
-      `--ratio=${ratio}`,
-      `--video_resolution=${videoResolution}`
-    ];
-    if (session !== null) args.push(`--session=${session}`);
-
-    if (imageFiles.length) {
+    let imagePaths = [];
+    let videoPaths = [];
+    let audioPaths = [];
+    if (hasReferences) {
       inputDir = await mkdtemp(path.join(tmpdir(), "cc-dreamina-video-"));
-      const imagePaths = await writeDreaminaInputFiles(imageFiles, inputDir);
-      imagePaths.forEach((imagePath) => args.push(`--image=${imagePath}`));
+      imagePaths = await writeDreaminaInputFiles(imageFiles, inputDir, "image");
+      videoPaths = await writeDreaminaInputFiles(videoFiles, inputDir, "video");
+      audioPaths = await writeDreaminaInputFiles(audioFiles, inputDir, "audio");
     }
+
+    const args = [command];
+    if (videoMode === dreaminaVideoModes.MULTIFRAME) {
+      args.push(`--images=${imagePaths.join(",")}`, `--video_resolution=${videoResolution}`);
+      if (imagePaths.length === 2) {
+        args.push(`--prompt=${prompt}`, `--duration=${Math.max(2, duration)}`);
+      } else {
+        transitions.forEach((transition) => {
+          args.push(`--transition-prompt=${transition.prompt}`);
+          args.push(`--transition-duration=${transition.duration}`);
+        });
+      }
+    } else {
+      args.push(`--prompt=${prompt}`, `--model_version=${modelVersion}`, `--duration=${duration}`, `--video_resolution=${videoResolution}`);
+      const followsFirstFrame = [dreaminaVideoModes.IMAGE, dreaminaVideoModes.FRAMES].includes(videoMode)
+        && modelVersion === "seedance2.5";
+      if (!followsFirstFrame && ratio) args.push(`--ratio=${ratio}`);
+      if (videoMode === dreaminaVideoModes.IMAGE) args.push(`--image=${imagePaths[0]}`);
+      if (videoMode === dreaminaVideoModes.FRAMES) {
+        args.push(`--first=${imagePaths[0]}`, `--last=${imagePaths[1]}`);
+      }
+      if (videoMode === dreaminaVideoModes.MULTIMODAL) {
+        imagePaths.forEach((imagePath) => args.push(`--image=${imagePath}`));
+        videoPaths.forEach((videoPath) => args.push(`--video=${videoPath}`));
+        audioPaths.forEach((audioPath) => args.push(`--audio=${audioPath}`));
+      }
+    }
+    if (session !== null) args.push(`--session=${session}`);
 
     args.push("--poll=30");
     const submitResult = await runDreamina(args, { timeoutMs: 180000 });
@@ -6830,11 +6950,16 @@ async function handleDreaminaVideoGenerate(res, body, prompt) {
       request: {
         provider: "dreamina-cli",
         command,
+        videoMode,
         modelVersion,
         duration,
-        ratio,
+        ratio: ratio || "auto",
         videoResolution,
-        referenceCount: imageFiles.length
+        referenceCount: imageFiles.length + videoFiles.length + audioFiles.length,
+        imageReferenceCount: imageFiles.length,
+        videoReferenceCount: videoFiles.length,
+        audioReferenceCount: audioFiles.length,
+        transitionCount
       },
       videos,
       raw: finalData
@@ -6873,21 +6998,76 @@ function dreaminaVideoModelVersion(model) {
   return version;
 }
 
-function parseDreaminaVideoDuration(value, modelVersion) {
-  const duration = Number.parseInt(value, 10);
-  const range = dreaminaVideoDurationRange(modelVersion);
+function parseDreaminaVideoDuration(value, modelVersion, mode = dreaminaVideoModes.AUTO) {
+  const duration = Number.parseFloat(value);
+  const range = dreaminaVideoDurationRange(modelVersion, mode);
   if (!Number.isFinite(duration)) return 5;
   return Math.min(range.max, Math.max(range.min, duration));
 }
 
 function parseDreaminaVideoRatio(value) {
-  const ratio = String(value || "16:9").trim();
+  const ratio = String(value || "").trim();
+  if (!ratio || ratio.toLowerCase() === "auto") return "";
   return dreaminaVideoRatios.has(ratio) ? ratio : "16:9";
 }
 
-function parseDreaminaVideoResolution(value, modelVersion) {
+function parseDreaminaVideoResolution(value, modelVersion, mode = dreaminaVideoModes.AUTO) {
   const resolution = String(value || "720p").trim().toLowerCase();
-  return dreaminaVideoResolutionTypes(modelVersion).includes(resolution) ? resolution : "720p";
+  return dreaminaVideoResolutionTypes(modelVersion, mode).includes(resolution) ? resolution : "720p";
+}
+
+function validateDreaminaVideoReferences({ modelVersion, videoMode, imageFiles, videoFiles, audioFiles }) {
+  const limits = dreaminaVideoReferenceLimits(modelVersion, videoMode);
+  const counts = {
+    images: imageFiles.length,
+    videos: videoFiles.length,
+    audios: audioFiles.length
+  };
+  const total = counts.images + counts.videos + counts.audios;
+  if (counts.images > limits.images || counts.videos > limits.videos || counts.audios > limits.audios || total > limits.total) {
+    throw new Error(
+      `当前模式素材数量超限：图片 ${counts.images}/${limits.images}，视频 ${counts.videos}/${limits.videos}，音频 ${counts.audios}/${limits.audios}，总数 ${total}/${limits.total}。`
+    );
+  }
+  if (counts.images < limits.minImages) {
+    throw new Error(`当前视频模式至少需要 ${limits.minImages} 张参考图片。`);
+  }
+  if (videoMode === dreaminaVideoModes.IMAGE && counts.images !== 1) {
+    throw new Error("单图成片模式需要且只能使用 1 张参考图片。");
+  }
+  if (videoMode === dreaminaVideoModes.FRAMES && counts.images !== 2) {
+    throw new Error("首尾帧模式需要且只能使用 2 张参考图片。");
+  }
+  if (videoMode === dreaminaVideoModes.MULTIFRAME && (counts.images < 2 || counts.images > 20)) {
+    throw new Error("智能多帧模式需要 2–20 张参考图片。");
+  }
+  if (videoMode === dreaminaVideoModes.MULTIMODAL && !total) {
+    throw new Error("全能参考模式至少需要 1 个参考素材。");
+  }
+  if (videoMode === dreaminaVideoModes.MULTIMODAL && modelVersion !== "seedance2.5" && !counts.images && !counts.videos) {
+    throw new Error("当前 Seedance 模型的全能参考至少需要 1 张图片或 1 个视频；仅 Seedance 2.5 支持纯音频参考。");
+  }
+}
+
+function parseDreaminaVideoTransitions(value, count, fallbackPrompt, fallbackDuration) {
+  if (!count) return [];
+  let source = value;
+  if (typeof source === "string") {
+    try {
+      source = JSON.parse(source);
+    } catch {
+      source = [];
+    }
+  }
+  if (!Array.isArray(source)) source = [];
+  return Array.from({ length: count }, (_, index) => {
+    const item = isPlainObject(source[index]) ? source[index] : {};
+    const prompt = sanitizeOptionalText(item.prompt) || fallbackPrompt;
+    if (!prompt) throw new Error(`智能多帧第 ${index + 1} 段缺少提示词。`);
+    const rawDuration = Number(item.duration ?? fallbackDuration ?? 3);
+    const duration = Math.min(8, Math.max(1, Number.isFinite(rawDuration) ? rawDuration : 3));
+    return { prompt, duration };
+  });
 }
 
 function normalizeDreaminaSession(value) {
@@ -6896,12 +7076,12 @@ function normalizeDreaminaSession(value) {
   return Number.isInteger(session) && session >= 0 ? session : null;
 }
 
-async function writeDreaminaInputFiles(files, directory) {
+async function writeDreaminaInputFiles(files, directory, prefix = "reference") {
   const paths = [];
   for (let index = 0; index < files.length; index += 1) {
     const file = files[index];
     const extension = extensionFromMime(file.contentType) || extensionFromUrl(file.filename) || ".png";
-    const filePath = path.join(directory, `reference-${index + 1}.${String(extension).replace(/^\./, "")}`);
+    const filePath = path.join(directory, `${prefix}-${index + 1}.${String(extension).replace(/^\./, "")}`);
     await writeFile(filePath, file.data);
     paths.push(filePath);
   }
@@ -7262,9 +7442,9 @@ async function installDreaminaWindows() {
     await downloadFileToPath(dreaminaSkillUrl, tempSkill);
     await downloadFileToPath(dreaminaVersionUrl, tempVersion);
 
-    await rename(tempExecutable, executable);
-    await rename(tempSkill, path.join(skillDir, "SKILL.md"));
-    await rename(tempVersion, path.join(configDir, "version.json"));
+    await replaceDreaminaInstallFile(tempExecutable, executable);
+    await replaceDreaminaInstallFile(tempSkill, path.join(skillDir, "SKILL.md"));
+    await replaceDreaminaInstallFile(tempVersion, path.join(configDir, "version.json"));
     await ensureWindowsUserPath(installDir);
     ensureCurrentProcessPath(installDir);
 
@@ -7272,6 +7452,44 @@ async function installDreaminaWindows() {
   } finally {
     await rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+async function replaceDreaminaInstallFile(source, destination) {
+  const backup = `${destination}.update-backup`;
+  await removeDreaminaInstallBackup(backup, { required: true });
+  let hadExisting = false;
+  try {
+    const info = await stat(destination);
+    hadExisting = info.isFile();
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  if (hadExisting) await rename(destination, backup);
+  try {
+    await rename(source, destination);
+  } catch (error) {
+    if (hadExisting) await rename(backup, destination).catch(() => {});
+    throw error;
+  }
+  if (hadExisting) await removeDreaminaInstallBackup(backup);
+}
+
+async function removeDreaminaInstallBackup(filePath, options = {}) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      await rm(filePath, { force: true });
+      return true;
+    } catch (error) {
+      if (error.code === "ENOENT") return true;
+      lastError = error;
+      if (!["EBUSY", "EACCES", "EPERM"].includes(error.code)) break;
+      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+    }
+  }
+  if (options.required && lastError) throw lastError;
+  return false;
 }
 
 async function downloadFileToPath(url, destination) {
@@ -8195,15 +8413,23 @@ function extensionFromMime(mime) {
   if (mime === "video/quicktime") return "mov";
   if (mime === "video/webm") return "webm";
   if (mime === "video/x-m4v") return "m4v";
+  if (mime === "audio/mpeg" || mime === "audio/mp3") return "mp3";
+  if (mime === "audio/wav" || mime === "audio/x-wav") return "wav";
+  if (mime === "audio/mp4" || mime === "audio/x-m4a") return "m4a";
+  if (mime === "audio/aac") return "aac";
+  if (mime === "audio/flac") return "flac";
+  if (mime === "audio/ogg") return "ogg";
   return "";
 }
 
 function extensionFromUrl(url) {
+  const allowed = ["png", "jpg", "jpeg", "webp", "gif", "svg", "mp4", "mov", "webm", "m4v", "mp3", "wav", "m4a", "aac", "flac", "ogg"];
   try {
     const ext = path.extname(new URL(url).pathname).replace(".", "").toLowerCase();
-    return ["png", "jpg", "jpeg", "webp", "gif", "svg", "mp4", "mov", "webm", "m4v"].includes(ext) ? ext : "";
+    return allowed.includes(ext) ? ext : "";
   } catch {
-    return "";
+    const ext = path.extname(String(url || "").split(/[?#]/u)[0]).replace(".", "").toLowerCase();
+    return allowed.includes(ext) ? ext : "";
   }
 }
 

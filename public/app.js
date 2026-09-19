@@ -9,13 +9,15 @@ import {
   dreaminaImageResolutionTypes,
   dreaminaSupportsImageEdit,
   dreaminaVideoDurationRange,
-  dreaminaVideoImageReferenceLimit,
+  dreaminaVideoModes,
   dreaminaVideoModelVersions as fallbackDreaminaVideoModelVersions,
+  dreaminaVideoReferenceLimits,
   dreaminaVideoResolutionTypes,
   gptImage25Profile,
   gptImage25Profiles,
   isGptImage25Size,
   normalizeBananaImageParameters,
+  normalizeDreaminaVideoMode,
   normalizeSeedreamProMode,
   normalizeTtImage25AspectRatio,
   normalizeTtImage25Background,
@@ -546,6 +548,7 @@ const arkVideoModelOptions = [
 const dreaminaDefaultModel = "dreamina-5.0";
 const dreaminaDefaultSize = "1:1|2k";
 const dreaminaVideoDefaultModel = "dreamina-video-seedance2.0fast";
+const dreaminaVideoDefaultMode = dreaminaVideoModes.AUTO;
 const dreaminaVideoDefaultRatio = "16:9";
 const dreaminaVideoDefaultDuration = "5";
 const dreaminaVideoDefaultResolution = "720p";
@@ -654,6 +657,14 @@ const baseVideoModelOptions = [
 let dreaminaVideoModelVersions = [...fallbackDreaminaVideoModelVersions];
 const dreaminaVideoModelOptions = [...baseVideoModelOptions, ...dreaminaVideoModelOptionsForVersions(dreaminaVideoModelVersions)];
 const dreaminaVideoRatioOptions = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"].map((ratio) => [ratio, ratio]);
+const dreaminaVideoModeOptions = [
+  [dreaminaVideoModes.AUTO, "自动（按参考素材判断）"],
+  [dreaminaVideoModes.TEXT, "文生视频"],
+  [dreaminaVideoModes.IMAGE, "单图成片"],
+  [dreaminaVideoModes.FRAMES, "首尾帧"],
+  [dreaminaVideoModes.MULTIFRAME, "智能多帧"],
+  [dreaminaVideoModes.MULTIMODAL, "全能参考"]
+];
 const arkVideoRatioOptions = [["adaptive", "自适应"], ...dreaminaVideoRatioOptions];
 const grokBuildVideoRatioOptions = ["16:9", "9:16", "1:1", "3:2", "2:3"].map((ratio) => [ratio, ratio]);
 const customVideoResolutionOptions = [["720p", "720p"], ["1080p", "1080p（VIP）"]];
@@ -748,6 +759,7 @@ let activeSettingsConnectionModel = "";
 const midjourneyPolls = new Map();
 const generationControllers = new Map();
 const imageFormatConversions = new Set();
+const imageUpscaleTasks = new Set();
 let layerAlignmentCvPromise = null;
 const canvasNodeElements = new Map();
 const canvasNodeById = new Map();
@@ -1960,15 +1972,22 @@ function arkOptimizeOptionsForModel(model) {
     : arkOptimizeOptions;
 }
 
-function videoRatioOptionsForModel(model) {
+function videoRatioOptionsForModel(model, mode = dreaminaVideoDefaultMode) {
   if (isGrokBuildVideoModelName(model)) return grokBuildVideoRatioOptions;
-  return isArkVideoModelName(model) ? arkVideoRatioOptions : dreaminaVideoRatioOptions;
+  if (isArkVideoModelName(model)) return arkVideoRatioOptions;
+  const normalizedMode = normalizeDreaminaVideoMode(mode);
+  if (normalizedMode === dreaminaVideoModes.MULTIFRAME) return [["auto", "跟随首图"]];
+  if ([dreaminaVideoModes.IMAGE, dreaminaVideoModes.FRAMES].includes(normalizedMode)) {
+    if (canonicalDreaminaVideoModelVersion(model) === "seedance2.5") return [["auto", "跟随首图"]];
+    return [["auto", "跟随首图"], ...dreaminaVideoRatioOptions];
+  }
+  return dreaminaVideoRatioOptions;
 }
 
-function videoResolutionOptionsForModel(model) {
+function videoResolutionOptionsForModel(model, mode = dreaminaVideoDefaultMode) {
   if (isGrokBuildVideoModelName(model)) return grokBuildVideoResolutionOptions;
   if (isDreaminaVideoModelName(model)) {
-    return dreaminaVideoResolutionTypes(canonicalDreaminaVideoModelVersion(model)).map((resolution) => [
+    return dreaminaVideoResolutionTypes(canonicalDreaminaVideoModelVersion(model), mode).map((resolution) => [
       resolution,
       resolution === "4k" ? "4K（VIP）" : resolution
     ]);
@@ -1979,14 +1998,14 @@ function videoResolutionOptionsForModel(model) {
     : arkVideoCompactResolutionOptions;
 }
 
-function videoDurationRangeForModel(model) {
+function videoDurationRangeForModel(model, mode = dreaminaVideoDefaultMode) {
   if (isGrokBuildVideoModelName(model)) return { min: 6, max: 10, step: 1 };
-  if (isDreaminaVideoModelName(model)) return { ...dreaminaVideoDurationRange(model), step: 1 };
+  if (isDreaminaVideoModelName(model)) return { ...dreaminaVideoDurationRange(model, mode), step: 1 };
   return String(model).toLowerCase() === "ark-seedance-2.5" ? { min: 4, max: 30, step: 1 } : { min: 4, max: 15, step: 1 };
 }
 
-function normalizeVideoDurationForModel(value, model) {
-  const range = videoDurationRangeForModel(model);
+function normalizeVideoDurationForModel(value, model, mode = dreaminaVideoDefaultMode) {
+  const range = videoDurationRangeForModel(model, mode);
   if (isGrokBuildVideoModelName(model)) {
     const options = [["6", "6 秒"], ["10", "10 秒"]];
     const candidate = String(value || "").trim();
@@ -2020,10 +2039,83 @@ function videoTaskBaseUrl(model) {
     : "";
 }
 
-function videoReferenceLimit(model) {
+function videoReferenceLimit(model, mode = dreaminaVideoDefaultMode) {
   if (isGrokBuildVideoModelName(model)) return 7;
-  if (isDreaminaVideoModelName(model)) return dreaminaVideoImageReferenceLimit(model);
+  if (isDreaminaVideoModelName(model)) return dreaminaVideoReferenceLimits(model, mode).images;
   return 9;
+}
+
+function videoModeForNode(node) {
+  return isDreaminaVideoModelName(node?.model)
+    ? normalizeDreaminaVideoMode(node?.videoMode)
+    : dreaminaVideoModes.AUTO;
+}
+
+function videoReferenceLimitsForNode(node) {
+  if (isDreaminaVideoModelName(node?.model)) {
+    return dreaminaVideoReferenceLimits(node.model, videoModeForNode(node));
+  }
+  const images = videoReferenceLimit(node?.model);
+  return { images, videos: 0, audios: 0, total: images, minImages: 0 };
+}
+
+function videoReferenceCountsForNode(node) {
+  const stored = fileStore.get(node?.id) || {};
+  return {
+    images: (node?.cachedImages?.length || 0) + (stored.images?.length || 0),
+    videos: (node?.cachedVideos?.length || 0) + (stored.videos?.length || 0),
+    audios: (node?.cachedAudios?.length || 0) + (stored.audios?.length || 0)
+  };
+}
+
+function validateVideoNodeReferences(node) {
+  if (!isDreaminaVideoModelName(node?.model)) return "";
+  const mode = videoModeForNode(node);
+  const limits = videoReferenceLimitsForNode(node);
+  const counts = videoReferenceCountsForNode(node);
+  const total = counts.images + counts.videos + counts.audios;
+  if (counts.images > limits.images || counts.videos > limits.videos || counts.audios > limits.audios || total > limits.total) {
+    return `素材数量超限：图片 ${counts.images}/${limits.images}，视频 ${counts.videos}/${limits.videos}，音频 ${counts.audios}/${limits.audios}`;
+  }
+  if (mode === dreaminaVideoModes.TEXT && total) return "文生视频模式不能使用参考素材";
+  if (mode === dreaminaVideoModes.IMAGE && counts.images !== 1) return "单图成片模式需要且只能使用 1 张参考图片";
+  if (mode === dreaminaVideoModes.FRAMES && counts.images !== 2) return "首尾帧模式需要且只能使用 2 张参考图片";
+  if (mode === dreaminaVideoModes.MULTIFRAME && (counts.images < 2 || counts.images > 20)) return "智能多帧模式需要 2–20 张参考图片";
+  if ([dreaminaVideoModes.IMAGE, dreaminaVideoModes.FRAMES, dreaminaVideoModes.MULTIFRAME].includes(mode) && (counts.videos || counts.audios)) {
+    return `${dreaminaVideoModeLabel(mode)}只接受图片参考`;
+  }
+  if (mode === dreaminaVideoModes.MULTIMODAL && !total) return "全能参考模式至少需要 1 个参考素材";
+  if (mode === dreaminaVideoModes.MULTIMODAL && canonicalDreaminaVideoModelVersion(node.model) !== "seedance2.5" && !counts.images && !counts.videos) {
+    return "当前模型的全能参考不能只使用音频；请添加图片或视频";
+  }
+  return "";
+}
+
+function dreaminaVideoModeLabel(mode) {
+  const normalized = normalizeDreaminaVideoMode(mode);
+  return dreaminaVideoModeOptions.find(([value]) => value === normalized)?.[1] || "自动";
+}
+
+function normalizeVideoTransitionsForNode(node) {
+  const imageCount = videoReferenceCountsForNode(node).images;
+  const count = Math.max(0, imageCount - 1);
+  const source = Array.isArray(node.videoTransitions) ? node.videoTransitions : [];
+  node.videoTransitions = Array.from({ length: count }, (_, index) => {
+    const transition = isPlainObject(source[index]) ? source[index] : {};
+    return {
+      prompt: String(transition.prompt || ""),
+      duration: clamp(Number(transition.duration) || Number(node.n) || 3, 1, 8)
+    };
+  });
+  return node.videoTransitions;
+}
+
+function multiframeTotalDuration(node) {
+  const imageCount = videoReferenceCountsForNode(node).images;
+  if (imageCount < 2) return Number(node.n) || 3;
+  if (imageCount === 2) return Math.max(2, Number(node.n) || 3);
+  const transitions = normalizeVideoTransitionsForNode(node);
+  return Math.round(transitions.reduce((sum, transition) => sum + (Number(transition.duration) || 3), 0) * 10) / 10;
 }
 
 function createDefaultTaskNode(mode = "create") {
@@ -2130,17 +2222,24 @@ function createDefaultVideoTaskNode() {
     endpointPath: "dreamina-video-cli",
     apiKeyOverride: "",
     mode: "video",
+    videoMode: dreaminaVideoDefaultMode,
+    videoTransitions: [],
     extraParams: {},
     extraParamsText: "{}",
     arkAssetUris: [],
     arkAssetUrisText: "",
     referenceMentionAliases: {},
     cachedImages: [],
+    cachedVideos: [],
+    cachedAudios: [],
     referenceImageNodeIds: [],
+    referenceVideoNodeIds: [],
     promptNoteNodeIds: [],
     promptNotePlacements: {},
     cacheStatus: "pending",
     sessionFiles: [],
+    sessionVideoFiles: [],
+    sessionAudioFiles: [],
     videos: [],
     status: "idle",
     error: "",
@@ -3052,9 +3151,16 @@ async function generateVideoNode(nodeId) {
     return;
   }
 
+  const referenceError = validateVideoNodeReferences(node);
+  if (referenceError) {
+    showToast(referenceError);
+    return;
+  }
+
   if (!syncNodeExtraParams(node)) return;
   if (isArkVideoModelName(node.model) && !syncArkAssetUris(node)) return;
-  if (fileStore.get(node.id)?.images?.length) {
+  const storedMedia = fileStore.get(node.id) || {};
+  if (storedMedia.images?.length || storedMedia.videos?.length || storedMedia.audios?.length) {
     await cacheEditFiles(node.id);
   }
 
@@ -3138,10 +3244,13 @@ function stopGenerationNode(nodeId) {
 function buildNodeRequest(node) {
   if (node.type === "video-task") {
     const storedFiles = fileStore.get(node.id);
-    if (storedFiles?.images?.length) {
+    if (storedFiles?.images?.length || storedFiles?.videos?.length || storedFiles?.audios?.length) {
       const formData = new FormData();
       appendNodeFields(formData, node, { includeCachedAssets: true });
-      storedFiles.images.slice(0, videoReferenceLimit(node.model)).forEach((file) => formData.append("image", file));
+      const limits = videoReferenceLimitsForNode(node);
+      (storedFiles.images || []).slice(0, limits.images).forEach((file) => formData.append("image", file));
+      (storedFiles.videos || []).slice(0, limits.videos).forEach((file) => formData.append("video", file));
+      (storedFiles.audios || []).slice(0, limits.audios).forEach((file) => formData.append("audio", file));
       return { body: formData };
     }
 
@@ -3183,6 +3292,8 @@ function buildNodePayload(node) {
   return {
     projectId: currentProjectId,
     mode: node.mode,
+    videoMode: node.videoMode,
+    videoTransitions: node.videoTransitions || [],
     seedreamMode: seedreamModeForNode(node),
     prompt: requestPromptForNode(node),
     model: node.model,
@@ -3202,6 +3313,8 @@ function buildNodePayload(node) {
     extraParams: node.extraParams || {},
     arkAssetUris: node.arkAssetUris || [],
     cachedImages: node.cachedImages || [],
+    cachedVideos: node.cachedVideos || [],
+    cachedAudios: node.cachedAudios || [],
     cachedMask: node.cachedMask ? [node.cachedMask] : []
   };
 }
@@ -3209,6 +3322,8 @@ function buildNodePayload(node) {
 function appendNodeFields(formData, node, options = {}) {
   formData.append("projectId", currentProjectId);
   formData.append("mode", node.mode);
+  formData.append("videoMode", node.videoMode || dreaminaVideoDefaultMode);
+  formData.append("videoTransitions", JSON.stringify(node.videoTransitions || []));
   formData.append("seedreamMode", seedreamModeForNode(node));
   formData.append("prompt", requestPromptForNode(node));
   formData.append("model", node.model);
@@ -3231,6 +3346,12 @@ function appendNodeFields(formData, node, options = {}) {
   }
   if (options.includeCachedAssets && node.cachedImages?.length) {
     formData.append("cachedImages", JSON.stringify(node.cachedImages));
+  }
+  if (options.includeCachedAssets && node.cachedVideos?.length) {
+    formData.append("cachedVideos", JSON.stringify(node.cachedVideos));
+  }
+  if (options.includeCachedAssets && node.cachedAudios?.length) {
+    formData.append("cachedAudios", JSON.stringify(node.cachedAudios));
   }
   if (options.includeCachedAssets && node.cachedMask) {
     formData.append("cachedMask", JSON.stringify([node.cachedMask]));
@@ -3268,6 +3389,8 @@ function normalizeNodeImage(image, node) {
 function buildGenerationSnapshot(node) {
   return {
     mode: node.mode === "edit" ? "edit" : "create",
+    videoMode: normalizeDreaminaVideoMode(node.videoMode),
+    videoTransitions: clonePlainValue(node.videoTransitions || []),
     seedreamMode: seedreamModeForNode(node),
     prompt: effectivePromptForNode(node),
     model: node.model || config.defaultModel || "gpt-image-2",
@@ -3286,7 +3409,10 @@ function buildGenerationSnapshot(node) {
     arkAssetUris: clonePlainValue(node.arkAssetUris || []),
     referenceMentionAliases: clonePlainValue(node.referenceMentionAliases || {}),
     cachedImages: clonePlainValue(node.cachedImages || []),
+    cachedVideos: clonePlainValue(node.cachedVideos || []),
+    cachedAudios: clonePlainValue(node.cachedAudios || []),
     referenceImageNodeIds: dedupeStrings(node.referenceImageNodeIds || []),
+    referenceVideoNodeIds: dedupeStrings(node.referenceVideoNodeIds || []),
     promptNoteNodeIds: dedupeStrings(node.promptNoteNodeIds || []),
     promptNotePlacements: normalizePromptNotePlacements(node.promptNotePlacements, node.promptNoteNodeIds),
     cachedMask: node.cachedMask ? clonePlainValue(node.cachedMask) : null
@@ -4083,16 +4209,26 @@ function parseVideoDimensions(video, fallbackRatio = "16:9") {
 async function cacheEditFiles(nodeId) {
   const storedFiles = fileStore.get(nodeId);
   const node = canvasState.nodes.find((item) => item.id === nodeId);
-  if (!node || (!storedFiles?.images?.length && !storedFiles?.mask)) return;
+  if (!node || (
+    !storedFiles?.images?.length
+    && !storedFiles?.videos?.length
+    && !storedFiles?.audios?.length
+    && !storedFiles?.mask
+  )) return;
 
   const formData = new FormData();
   formData.append("projectId", currentProjectId);
   (storedFiles.images || []).forEach((file) => formData.append("image", file));
+  (storedFiles.videos || []).forEach((file) => formData.append("video", file));
+  (storedFiles.audios || []).forEach((file) => formData.append("audio", file));
   if (storedFiles.mask) formData.append("mask", storedFiles.mask);
   const imageReferenceMetadata = (storedFiles.images || []).map((file) => ({
     sourceImageNodeId: file.sourceImageNodeId || "",
     canvasComposition: Boolean(file.seedreamCanvasComposition),
     canvasSourceNodeIds: dedupeStrings(file.seedreamCanvasSourceNodeIds || [])
+  }));
+  const videoReferenceMetadata = (storedFiles.videos || []).map((file) => ({
+    sourceVideoNodeId: file.sourceVideoNodeId || ""
   }));
 
   try {
@@ -4105,6 +4241,8 @@ async function cacheEditFiles(nodeId) {
 
     const assets = data.assets || [];
     const imageAssets = assets.filter((asset) => asset.field === "image");
+    const videoAssets = assets.filter((asset) => asset.field === "video");
+    const audioAssets = assets.filter((asset) => asset.field === "audio");
     imageAssets.forEach((asset, index) => {
       const metadata = imageReferenceMetadata[index] || {};
       if (metadata.sourceImageNodeId) asset.sourceImageNodeId = metadata.sourceImageNodeId;
@@ -4113,17 +4251,30 @@ async function cacheEditFiles(nodeId) {
         asset.canvasSourceNodeIds = metadata.canvasSourceNodeIds;
       }
     });
+    videoAssets.forEach((asset, index) => {
+      const metadata = videoReferenceMetadata[index] || {};
+      if (metadata.sourceVideoNodeId) asset.sourceVideoNodeId = metadata.sourceVideoNodeId;
+    });
     if (imageAssets.length) node.cachedImages = dedupeAssetRefs([...(node.cachedImages || []), ...imageAssets]);
+    if (videoAssets.length) node.cachedVideos = dedupeAssetRefs([...(node.cachedVideos || []), ...videoAssets]);
+    if (audioAssets.length) node.cachedAudios = dedupeAssetRefs([...(node.cachedAudios || []), ...audioAssets]);
     const maskAsset = assets.find((asset) => asset.field === "mask");
     node.cachedMask = maskAsset || node.cachedMask || null;
-    node.cacheStatus = node.cachedImages.length ? "ready" : "session-only";
+    const cachedCount = (node.cachedImages?.length || 0) + (node.cachedVideos?.length || 0) + (node.cachedAudios?.length || 0);
+    node.cacheStatus = cachedCount ? "ready" : "session-only";
 
     const nextStored = { ...storedFiles };
     if (imageAssets.length) delete nextStored.images;
+    if (videoAssets.length) delete nextStored.videos;
+    if (audioAssets.length) delete nextStored.audios;
     if (maskAsset) delete nextStored.mask;
     if (imageAssets.length && !nextStored.images?.length) node.sessionFiles = [];
     else if (imageAssets.length && node.sessionFiles?.length) node.sessionFiles = node.sessionFiles.slice(imageAssets.length);
-    if (nextStored.images?.length || nextStored.mask) fileStore.set(node.id, nextStored);
+    if (videoAssets.length && !nextStored.videos?.length) node.sessionVideoFiles = [];
+    else if (videoAssets.length && node.sessionVideoFiles?.length) node.sessionVideoFiles = node.sessionVideoFiles.slice(videoAssets.length);
+    if (audioAssets.length && !nextStored.audios?.length) node.sessionAudioFiles = [];
+    else if (audioAssets.length && node.sessionAudioFiles?.length) node.sessionAudioFiles = node.sessionAudioFiles.slice(audioAssets.length);
+    if (nextStored.images?.length || nextStored.videos?.length || nextStored.audios?.length || nextStored.mask) fileStore.set(node.id, nextStored);
     else fileStore.delete(node.id);
   } catch {
     node.cacheStatus = "session-only";
@@ -8339,6 +8490,8 @@ function getVideoGeneration(node) {
   const model = generation.model || video.model || dreaminaVideoDefaultModel;
   return {
     prompt,
+    videoMode: normalizeDreaminaVideoMode(generation.videoMode),
+    videoTransitions: Array.isArray(generation.videoTransitions) ? clonePlainValue(generation.videoTransitions) : [],
     model: isSupportedVideoModelName(model) ? model : dreaminaVideoDefaultModel,
     n: String(generation.n || video.duration || dreaminaVideoDefaultDuration),
     size: generation.size || video.size || dreaminaVideoDefaultRatio,
@@ -8352,7 +8505,10 @@ function getVideoGeneration(node) {
       ? clonePlainValue(generation.referenceMentionAliases)
       : {},
     cachedImages: Array.isArray(generation.cachedImages) ? clonePlainValue(generation.cachedImages) : [],
-    referenceImageNodeIds: Array.isArray(generation.referenceImageNodeIds) ? dedupeStrings(generation.referenceImageNodeIds) : []
+    cachedVideos: Array.isArray(generation.cachedVideos) ? clonePlainValue(generation.cachedVideos) : [],
+    cachedAudios: Array.isArray(generation.cachedAudios) ? clonePlainValue(generation.cachedAudios) : [],
+    referenceImageNodeIds: Array.isArray(generation.referenceImageNodeIds) ? dedupeStrings(generation.referenceImageNodeIds) : [],
+    referenceVideoNodeIds: Array.isArray(generation.referenceVideoNodeIds) ? dedupeStrings(generation.referenceVideoNodeIds) : []
   };
 }
 
@@ -8362,11 +8518,15 @@ function applyGenerationToVideoTask(task, generation) {
   task.promptNotePlacements = {};
   task.model = generation.model || dreaminaVideoDefaultModel;
   task.provider = videoTaskProvider(task.model);
-  task.n = String(generation.n || dreaminaVideoDefaultDuration);
-  task.size = videoRatioOptionsForModel(task.model).some(([value]) => value === generation.size)
+  task.videoMode = isDreaminaVideoModelName(task.model)
+    ? normalizeDreaminaVideoMode(generation.videoMode)
+    : dreaminaVideoDefaultMode;
+  task.videoTransitions = Array.isArray(generation.videoTransitions) ? clonePlainValue(generation.videoTransitions) : [];
+  task.n = normalizeVideoDurationForModel(generation.n || dreaminaVideoDefaultDuration, task.model, task.videoMode);
+  task.size = videoRatioOptionsForModel(task.model, task.videoMode).some(([value]) => value === generation.size)
     ? generation.size
-    : dreaminaVideoDefaultRatio;
-  task.quality = videoResolutionOptionsForModel(task.model).some(([value]) => value === generation.quality)
+    : videoRatioOptionsForModel(task.model, task.videoMode)[0]?.[0] || dreaminaVideoDefaultRatio;
+  task.quality = videoResolutionOptionsForModel(task.model, task.videoMode).some(([value]) => value === generation.quality)
     ? generation.quality
     : dreaminaVideoDefaultResolution;
   task.format = generation.format || "mp4";
@@ -8380,13 +8540,21 @@ function applyGenerationToVideoTask(task, generation) {
     ? clonePlainValue(generation.referenceMentionAliases)
     : {};
   task.cachedImages = Array.isArray(generation.cachedImages) ? dedupeAssetRefs(clonePlainValue(generation.cachedImages)) : [];
+  task.cachedVideos = Array.isArray(generation.cachedVideos) ? dedupeAssetRefs(clonePlainValue(generation.cachedVideos)) : [];
+  task.cachedAudios = Array.isArray(generation.cachedAudios) ? dedupeAssetRefs(clonePlainValue(generation.cachedAudios)) : [];
   task.referenceImageNodeIds = dedupeStrings([
     ...(generation.referenceImageNodeIds || []),
     ...task.cachedImages.map((image) => image?.sourceImageNodeId || "")
   ]);
+  task.referenceVideoNodeIds = dedupeStrings([
+    ...(generation.referenceVideoNodeIds || []),
+    ...task.cachedVideos.map((video) => video?.sourceVideoNodeId || "")
+  ]);
   task.sessionFiles = [];
+  task.sessionVideoFiles = [];
+  task.sessionAudioFiles = [];
   fileStore.delete(task.id);
-  task.cacheStatus = task.cachedImages.length ? "ready" : "pending";
+  task.cacheStatus = task.cachedImages.length || task.cachedVideos.length || task.cachedAudios.length ? "ready" : "pending";
   task.status = "idle";
   task.error = "";
   task.durationMs = null;
@@ -9967,7 +10135,7 @@ function renderReferenceLinks() {
     title.textContent =
       link.kind === "prompt"
         ? `提示词连接 · ${promptPlacementLabels[normalizePromptNotePlacement(link.placement)]}`
-        : link.kind === "asset" ? "虚拟人像入库连接" : "参考图连接";
+        : link.kind === "asset" ? "虚拟人像入库连接" : link.kind === "video" ? "参考视频连接" : "参考图连接";
     path.append(title);
     layer.append(path);
   }
@@ -9991,6 +10159,7 @@ function createReferenceLinkMarker(id, shapeClass) {
 
 function referenceLinksForCanvas() {
   const imageIds = new Set(canvasState.nodes.filter((node) => node.type === "image").map((node) => node.id));
+  const videoIds = new Set(canvasState.nodes.filter((node) => node.type === "video").map((node) => node.id));
   const promptSourceIds = new Set(canvasState.nodes.filter(isPromptSourceNode).map((node) => node.id));
   const links = [];
   for (const target of canvasState.nodes) {
@@ -10003,8 +10172,8 @@ function referenceLinksForCanvas() {
     if (!["task", "video-task", "midjourney-task"].includes(target.type)) continue;
     if (target.type !== "task" || target.mode === "edit") {
       for (const sourceId of referenceSourceNodeIdsForTask(target)) {
-        if (!imageIds.has(sourceId)) continue;
-        links.push({ sourceId, targetId: target.id, kind: "image" });
+        if (imageIds.has(sourceId)) links.push({ sourceId, targetId: target.id, kind: "image" });
+        else if (videoIds.has(sourceId)) links.push({ sourceId, targetId: target.id, kind: "video" });
       }
     }
     for (const sourceId of promptSourceNodeIdsForTask(target)) {
@@ -10023,7 +10192,9 @@ function referenceLinksForCanvas() {
 function referenceSourceNodeIdsForTask(node) {
   const ids = [
     ...(node.cachedImages || []).map((image) => image?.sourceImageNodeId || ""),
-    ...(Array.isArray(node.referenceImageNodeIds) ? node.referenceImageNodeIds : [])
+    ...(node.cachedVideos || []).map((video) => video?.sourceVideoNodeId || ""),
+    ...(Array.isArray(node.referenceImageNodeIds) ? node.referenceImageNodeIds : []),
+    ...(Array.isArray(node.referenceVideoNodeIds) ? node.referenceVideoNodeIds : [])
   ];
   return dedupeStrings(ids);
 }
@@ -12916,6 +13087,28 @@ function createImageToolbar(node) {
     if (targetFormat) void convertImageNodeFormat(node.id, targetFormat, convertFormat);
   });
 
+  const upscale = document.createElement("select");
+  upscale.className = "image-upscale-select";
+  upscale.title = "使用即梦 CLI 超清图片（保留原图并在右侧创建新图片）";
+  upscale.setAttribute("aria-label", "即梦图片超清");
+  const upscalePlaceholder = document.createElement("option");
+  upscalePlaceholder.value = "";
+  upscalePlaceholder.textContent = imageUpscaleTasks.has(node.id) ? "超清中…" : "超清";
+  upscale.append(upscalePlaceholder);
+  for (const resolution of ["2k", "4k", "8k"]) {
+    const option = document.createElement("option");
+    option.value = resolution;
+    option.textContent = resolution.toUpperCase();
+    upscale.append(option);
+  }
+  upscale.value = "";
+  upscale.disabled = imageUpscaleTasks.has(node.id);
+  upscale.addEventListener("change", () => {
+    const resolution = upscale.value;
+    upscale.value = "";
+    if (resolution) void upscaleImageNode(node.id, resolution, upscale);
+  });
+
   const togglePrompt = document.createElement("button");
   togglePrompt.type = "button";
   togglePrompt.textContent = "提示词";
@@ -12941,7 +13134,7 @@ function createImageToolbar(node) {
     deleteNodes([node.id]);
   });
 
-  toolbar.append(scaleInput, reset, open, download, convertFormat, togglePrompt);
+  toolbar.append(scaleInput, reset, open, download, convertFormat, upscale, togglePrompt);
   if (config.photoshopBridgeEnabled) toolbar.append(sendToPhotoshop);
   toolbar.append(remove);
   return toolbar;
@@ -13447,7 +13640,20 @@ function createVideoTaskHeader(node) {
 
   const meta = document.createElement("span");
   meta.className = "node-meta";
-  meta.textContent = [videoModelLabel(node.model), node.size, `${node.n || dreaminaVideoDefaultDuration}s`, node.quality].filter(Boolean).join(" · ");
+  const mode = videoModeForNode(node);
+  const modelLabel = isDreaminaVideoModelName(node.model) && mode === dreaminaVideoModes.MULTIFRAME
+    ? "智能多帧固定模型"
+    : videoModelLabel(node.model);
+  const durationLabel = mode === dreaminaVideoModes.MULTIFRAME
+    ? `${multiframeTotalDuration(node)}s`
+    : `${node.n || dreaminaVideoDefaultDuration}s`;
+  meta.textContent = [
+    modelLabel,
+    isDreaminaVideoModelName(node.model) ? dreaminaVideoModeLabel(mode) : "",
+    node.size === "auto" ? "跟随首图" : node.size,
+    durationLabel,
+    node.quality
+  ].filter(Boolean).join(" · ");
 
   header.append(status, title, meta, createTaskActions(node));
   return header;
@@ -13456,25 +13662,65 @@ function createVideoTaskHeader(node) {
 function createVideoTaskSettings(node) {
   const settings = document.createElement("div");
   settings.className = "node-config-grid video-config-grid";
+  const videoMode = videoModeForNode(node);
+  const durationRange = videoDurationRangeForModel(node.model, videoMode);
+  if (videoMode === dreaminaVideoModes.MULTIFRAME && videoReferenceCountsForNode(node).images <= 2) {
+    durationRange.min = 2;
+  }
   const durationField = isGrokBuildVideoModelName(node.model)
     ? createSelectField("时长", node, "n", [["6", "6 秒"], ["10", "10 秒"]])
-    : createNumberField("时长（秒）", node, "n", videoDurationRangeForModel(node.model));
-  settings.append(
-    createSelectField("模型", node, "model", videoModelOptions(node.model), {
+    : createNumberField(
+        videoMode === dreaminaVideoModes.MULTIFRAME ? "默认分段时长（秒）" : "时长（秒）",
+        node,
+        "n",
+        durationRange
+      );
+
+  if (isDreaminaVideoModelName(node.model)) {
+    settings.append(createSelectField("生成模式", node, "videoMode", dreaminaVideoModeOptions, {
+      onChange: (value) => {
+        node.videoMode = normalizeDreaminaVideoMode(value);
+        node.n = normalizeVideoDurationForModel(node.n, node.model, node.videoMode);
+        const ratios = videoRatioOptionsForModel(node.model, node.videoMode);
+        if (!ratios.some(([ratio]) => ratio === node.size)) node.size = ratios[0]?.[0] || dreaminaVideoDefaultRatio;
+        const resolutions = videoResolutionOptionsForModel(node.model, node.videoMode);
+        if (!resolutions.some(([resolution]) => resolution === node.quality)) node.quality = resolutions[0]?.[0] || dreaminaVideoDefaultResolution;
+        normalizeVideoTransitionsForNode(node);
+        updateNode(node);
+      }
+    }));
+  }
+
+  if (videoMode === dreaminaVideoModes.MULTIFRAME && isDreaminaVideoModelName(node.model)) {
+    const fixedModel = document.createElement("div");
+    fixedModel.className = "node-static-value";
+    fixedModel.textContent = "CLI 固定智能多帧模型";
+    settings.append(createField("模型", fixedModel));
+  } else {
+    settings.append(createSelectField("模型", node, "model", videoModelOptions(node.model), {
       onChange: (value) => {
         node.provider = videoTaskProvider(value);
         node.baseUrl = videoTaskBaseUrl(value);
         node.endpointPath = videoTaskEndpoint(value);
-        node.n = normalizeVideoDurationForModel(node.n, value);
-        if (!videoResolutionOptionsForModel(value).some(([resolution]) => resolution === node.quality)) node.quality = "720p";
-        if (!videoRatioOptionsForModel(value).some(([ratio]) => ratio === node.size)) node.size = dreaminaVideoDefaultRatio;
+        if (!isDreaminaVideoModelName(value)) node.videoMode = dreaminaVideoDefaultMode;
+        const nextMode = isDreaminaVideoModelName(value) ? videoModeForNode(node) : dreaminaVideoDefaultMode;
+        node.n = normalizeVideoDurationForModel(node.n, value, nextMode);
+        if (!videoResolutionOptionsForModel(value, nextMode).some(([resolution]) => resolution === node.quality)) node.quality = "720p";
+        if (!videoRatioOptionsForModel(value, nextMode).some(([ratio]) => ratio === node.size)) {
+          node.size = videoRatioOptionsForModel(value, nextMode)[0]?.[0] || dreaminaVideoDefaultRatio;
+        }
         updateNode(node);
       }
-    }),
-    createSelectField("比例", node, "size", videoRatioOptionsForModel(node.model)),
+    }));
+  }
+
+  settings.append(
+    createSelectField("比例", node, "size", videoRatioOptionsForModel(node.model, videoMode)),
     durationField,
-    createSelectField("清晰度", node, "quality", videoResolutionOptionsForModel(node.model))
+    createSelectField("清晰度", node, "quality", videoResolutionOptionsForModel(node.model, videoMode))
   );
+
+  if (isDreaminaVideoModelName(node.model)) settings.append(createDreaminaVideoModeHint(node));
 
   if (isArkVideoModelName(node.model)) settings.append(createArkVideoAudioField(node));
 
@@ -13502,6 +13748,22 @@ function createVideoTaskSettings(node) {
   return settings;
 }
 
+function createDreaminaVideoModeHint(node) {
+  const hint = document.createElement("p");
+  hint.className = "seedream-mode-hint dreamina-video-mode-hint";
+  const mode = videoModeForNode(node);
+  const messages = {
+    [dreaminaVideoModes.AUTO]: "自动模式：无参考素材时使用文生视频；有任意参考素材时使用全能参考。",
+    [dreaminaVideoModes.TEXT]: "文生视频：不使用参考素材。",
+    [dreaminaVideoModes.IMAGE]: "单图成片：需要 1 张图片；Seedance 2.5 的比例自动跟随首图。",
+    [dreaminaVideoModes.FRAMES]: "首尾帧：按参考图顺序使用前 2 张作为首帧和尾帧。",
+    [dreaminaVideoModes.MULTIFRAME]: "智能多帧：按参考图顺序连接 2–20 张图片，可逐段设置提示词和时长。模型固定，比例跟随首图。",
+    [dreaminaVideoModes.MULTIMODAL]: "全能参考：可混合图片、视频和音频；Seedance 2.5 最多 50 个素材。"
+  };
+  hint.textContent = messages[mode] || messages[dreaminaVideoModes.AUTO];
+  return hint;
+}
+
 function createArkVideoAudioField(node) {
   const control = document.createElement("label");
   control.className = "node-switch-control";
@@ -13526,38 +13788,39 @@ function createArkVideoAudioField(node) {
 function createVideoReferenceFields(node) {
   const panel = document.createElement("div");
   panel.className = "edit-assets video-reference-assets";
+  const limits = videoReferenceLimitsForNode(node);
+  const mode = videoModeForNode(node);
 
   const imageInput = document.createElement("input");
   imageInput.type = "file";
   imageInput.accept = "image/png,image/jpeg,image/webp";
   imageInput.multiple = true;
   imageInput.addEventListener("pointerdown", (event) => event.stopPropagation());
-  imageInput.addEventListener("change", () => {
-    let files = Array.from(imageInput.files || []);
-    const stored = fileStore.get(node.id) || {};
-    const limit = videoReferenceLimit(node.model);
-    const remaining = Math.max(
-      0,
-      limit - (node.cachedImages?.length || 0) - (stored.images?.length || 0) - (node.arkAssetUris?.length || 0)
-    );
-    if (files.length > remaining) showToast(`当前视频模型最多使用 ${limit} 张参考图片`);
-    files = files.slice(0, remaining);
-    const nextFiles = [...(stored.images || []), ...files];
-    fileStore.set(node.id, { ...stored, images: nextFiles });
-    node.sessionFiles = [...(node.sessionFiles || []), ...files.map((file) => file.name)];
-    node.cacheStatus = files.length ? "caching" : "pending";
-    updateNode(node);
-    saveCanvasState();
-    if (files.length) cacheEditFiles(node.id);
-  });
+  imageInput.addEventListener("change", () => addVideoReferenceFiles(node, "images", Array.from(imageInput.files || [])));
+
+  const videoInput = document.createElement("input");
+  videoInput.type = "file";
+  videoInput.accept = "video/mp4,video/quicktime,video/webm,video/x-m4v";
+  videoInput.multiple = true;
+  videoInput.addEventListener("pointerdown", (event) => event.stopPropagation());
+  videoInput.addEventListener("change", () => addVideoReferenceFiles(node, "videos", Array.from(videoInput.files || [])));
+
+  const audioInput = document.createElement("input");
+  audioInput.type = "file";
+  audioInput.accept = "audio/*";
+  audioInput.multiple = true;
+  audioInput.addEventListener("pointerdown", (event) => event.stopPropagation());
+  audioInput.addEventListener("change", () => addVideoReferenceFiles(node, "audios", Array.from(audioInput.files || [])));
 
   const referenceActions = document.createElement("div");
   referenceActions.className = "reference-actions";
 
   const useSelected = document.createElement("button");
   useSelected.type = "button";
-  useSelected.textContent = "使用选中图片";
-  useSelected.addEventListener("click", () => useSelectedCanvasImagesAsReference(node.id));
+  useSelected.textContent = isDreaminaVideoModelName(node.model) && [dreaminaVideoModes.AUTO, dreaminaVideoModes.MULTIMODAL].includes(mode)
+    ? "使用选中图片/视频"
+    : "使用选中图片";
+  useSelected.addEventListener("click", () => useSelectedCanvasMediaAsVideoReference(node.id));
 
   const pickFromCanvas = document.createElement("button");
   pickFromCanvas.type = "button";
@@ -13569,15 +13832,44 @@ function createVideoReferenceFields(node) {
   });
 
   referenceActions.append(useSelected, pickFromCanvas);
-  const contents = [
-    createField(`参考图片（最多 ${videoReferenceLimit(node.model)} 张，可选）`, imageInput, "node-field-full"),
-    referenceActions,
-    createVideoReferenceThumbnails(node),
-    createVideoReferenceSummary(node)
-  ];
+  const contents = [];
+  if (limits.images) contents.push(createField(`参考图片（最多 ${limits.images} 张）`, imageInput, "node-field-full"));
+  if (limits.videos) contents.push(createField(`参考视频（最多 ${limits.videos} 个）`, videoInput, "node-field-full"));
+  if (limits.audios) contents.push(createField(`参考音频（最多 ${limits.audios} 个）`, audioInput, "node-field-full"));
+  if (limits.total) contents.push(referenceActions);
+  contents.push(createVideoReferenceThumbnails(node), createVideoReferenceSummary(node));
+  if (mode === dreaminaVideoModes.MULTIFRAME) contents.push(createVideoTransitionFields(node));
   if (isArkVideoModelName(node.model)) contents.push(createArkAssetUriField(node));
   panel.append(...contents);
   return panel;
+}
+
+async function addVideoReferenceFiles(node, kind, incomingFiles) {
+  const files = Array.from(incomingFiles || []);
+  if (!files.length) return [];
+  const limits = videoReferenceLimitsForNode(node);
+  const limit = limits[kind] || 0;
+  const counts = videoReferenceCountsForNode(node);
+  const total = counts.images + counts.videos + counts.audios;
+  const remainingForKind = Math.max(0, limit - (counts[kind] || 0));
+  const remainingTotal = Math.max(0, limits.total - total);
+  const accepted = files.slice(0, Math.min(remainingForKind, remainingTotal));
+  if (accepted.length < files.length) {
+    const labels = { images: "图片", videos: "视频", audios: "音频" };
+    showToast(`当前模式最多使用 ${limit} 个${labels[kind]}素材，总素材上限 ${limits.total}`);
+  }
+  if (!accepted.length) return [];
+
+  const stored = fileStore.get(node.id) || {};
+  fileStore.set(node.id, { ...stored, [kind]: [...(stored[kind] || []), ...accepted] });
+  const sessionKey = { images: "sessionFiles", videos: "sessionVideoFiles", audios: "sessionAudioFiles" }[kind];
+  node[sessionKey] = [...(node[sessionKey] || []), ...accepted.map((file) => file.name)];
+  node.cacheStatus = "caching";
+  normalizeVideoTransitionsForNode(node);
+  updateNode(node);
+  saveCanvasState();
+  await cacheEditFiles(node.id);
+  return accepted;
 }
 
 function createArkAssetUriField(node) {
@@ -13604,22 +13896,46 @@ function createArkAssetUriField(node) {
 function createVideoReferenceThumbnails(node) {
   const strip = document.createElement("div");
   strip.className = "reference-thumbs";
-  const images = node.cachedImages || [];
-  if (!images.length) {
+  const references = [
+    ...(node.cachedImages || []).map((asset, index) => ({ asset, kind: "images", index })),
+    ...(node.cachedVideos || []).map((asset, index) => ({ asset, kind: "videos", index })),
+    ...(node.cachedAudios || []).map((asset, index) => ({ asset, kind: "audios", index }))
+  ];
+  if (!references.length) {
     strip.hidden = true;
     return strip;
   }
 
-  for (const [index, image] of images.entries()) {
+  for (const reference of references) {
+    const { asset, kind, index } = reference;
     const item = document.createElement("div");
     item.className = "reference-thumb";
 
     const preview = document.createElement("span");
     preview.className = "reference-thumb-preview";
-    const img = document.createElement("img");
-    img.src = image.url || `/${image.path}`;
-    img.alt = image.originalName || image.filename || `参考图 ${index + 1}`;
-    preview.append(img);
+    const source = asset.url || `/${asset.path}`;
+    if (kind === "images") {
+      const img = document.createElement("img");
+      img.src = source;
+      img.alt = asset.originalName || asset.filename || `参考图 ${index + 1}`;
+      preview.append(img);
+    } else if (kind === "videos") {
+      const video = document.createElement("video");
+      video.src = source;
+      video.muted = true;
+      video.preload = "metadata";
+      preview.append(video);
+    } else {
+      const audioLabel = document.createElement("span");
+      audioLabel.className = "reference-thumb-kind";
+      audioLabel.textContent = "AUDIO";
+      preview.append(audioLabel);
+    }
+    preview.title = asset.originalName || asset.filename || "参考素材";
+    const indexBadge = document.createElement("span");
+    indexBadge.className = "reference-thumb-index";
+    indexBadge.textContent = kind === "images" ? `图 ${index + 1}` : kind === "videos" ? `视频 ${index + 1}` : `音频 ${index + 1}`;
+    preview.append(indexBadge);
 
     const remove = document.createElement("button");
     remove.type = "button";
@@ -13628,12 +13944,18 @@ function createVideoReferenceThumbnails(node) {
     remove.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      const removed = (node.cachedImages || [])[index];
-      node.cachedImages = (node.cachedImages || []).filter((_, itemIndex) => itemIndex !== index);
+      const property = { images: "cachedImages", videos: "cachedVideos", audios: "cachedAudios" }[kind];
+      const removed = (node[property] || [])[index];
+      node[property] = (node[property] || []).filter((_, itemIndex) => itemIndex !== index);
       if (removed?.sourceImageNodeId) {
         node.referenceImageNodeIds = dedupeStrings(node.referenceImageNodeIds || []).filter((id) => id !== removed.sourceImageNodeId);
       }
-      node.cacheStatus = node.cachedImages.length ? "ready" : "pending";
+      if (removed?.sourceVideoNodeId) {
+        node.referenceVideoNodeIds = dedupeStrings(node.referenceVideoNodeIds || []).filter((id) => id !== removed.sourceVideoNodeId);
+      }
+      normalizeVideoTransitionsForNode(node);
+      const remaining = (node.cachedImages?.length || 0) + (node.cachedVideos?.length || 0) + (node.cachedAudios?.length || 0);
+      node.cacheStatus = remaining ? "ready" : "pending";
       updateNode(node);
       saveCanvasState();
     });
@@ -13647,13 +13969,75 @@ function createVideoReferenceThumbnails(node) {
 function createVideoReferenceSummary(node) {
   const summary = document.createElement("p");
   summary.className = "asset-summary";
-  const cached = node.cachedImages?.length || 0;
-  const pending = pendingReferenceImageCount(node);
+  const counts = videoReferenceCountsForNode(node);
+  const total = counts.images + counts.videos + counts.audios;
   const assets = node.arkAssetUris?.length || 0;
-  summary.textContent = cached || pending || assets
-    ? `${cached} 张已缓存参考图，${pending} 张待缓存，${assets} 个虚拟人像素材`
-    : "未选择参考图时将使用文生视频。";
+  summary.textContent = total || assets
+    ? `${counts.images} 张图片 · ${counts.videos} 个视频 · ${counts.audios} 个音频${assets ? ` · ${assets} 个虚拟人像素材` : ""}`
+    : videoModeForNode(node) === dreaminaVideoModes.AUTO
+      ? "未选择参考素材时将使用文生视频。"
+      : `当前为${dreaminaVideoModeLabel(videoModeForNode(node))}模式。`;
   return summary;
+}
+
+function createVideoTransitionFields(node) {
+  const container = document.createElement("div");
+  container.className = "video-transition-list node-field-full";
+  const imageCount = videoReferenceCountsForNode(node).images;
+  const transitionCount = Math.max(0, imageCount - 1);
+  normalizeVideoTransitionsForNode(node);
+
+  const title = document.createElement("strong");
+  title.textContent = "智能多帧分段";
+  container.append(title);
+  if (imageCount < 2) {
+    const empty = document.createElement("p");
+    empty.className = "asset-summary";
+    empty.textContent = "添加 2–20 张图片后，可按图 1→图 2 的顺序设置每段变化。";
+    container.append(empty);
+    return container;
+  }
+  if (imageCount === 2) {
+    const simple = document.createElement("p");
+    simple.className = "asset-summary";
+    simple.textContent = "两张图片将直接使用节点主提示词和默认分段时长。";
+    container.append(simple);
+    return container;
+  }
+
+  for (let index = 0; index < transitionCount; index += 1) {
+    const transition = node.videoTransitions[index] || { prompt: "", duration: 3 };
+    const row = document.createElement("div");
+    row.className = "video-transition-row";
+    const label = document.createElement("span");
+    label.textContent = `图 ${index + 1} → 图 ${index + 2}`;
+    const prompt = document.createElement("input");
+    prompt.type = "text";
+    prompt.value = transition.prompt || "";
+    prompt.placeholder = "留空则使用节点主提示词";
+    prompt.addEventListener("pointerdown", (event) => event.stopPropagation());
+    prompt.addEventListener("input", () => {
+      node.videoTransitions[index] = { ...node.videoTransitions[index], prompt: prompt.value };
+      saveCanvasState({ history: false });
+    });
+    const duration = document.createElement("input");
+    duration.type = "number";
+    duration.min = "1";
+    duration.max = "8";
+    duration.step = "0.5";
+    duration.value = String(transition.duration || node.n || 3);
+    duration.title = "本段时长（秒）";
+    duration.addEventListener("pointerdown", (event) => event.stopPropagation());
+    duration.addEventListener("change", () => {
+      duration.value = String(clamp(Number(duration.value) || 3, 1, 8));
+      node.videoTransitions[index] = { ...node.videoTransitions[index], duration: Number(duration.value) };
+      updateNode(node);
+      saveCanvasState();
+    });
+    row.append(label, prompt, duration);
+    container.append(row);
+  }
+  return container;
 }
 
 function createVideoTaskStatusArea(node) {
@@ -15326,6 +15710,55 @@ async function useSelectedCanvasImagesAsReference(targetNodeId) {
   await useCanvasImagesAsReference(targetNodeId, imageNodeIds);
 }
 
+async function useSelectedCanvasMediaAsVideoReference(targetNodeId) {
+  const target = canvasState.nodes.find((node) => node.id === targetNodeId && node.type === "video-task");
+  if (!target) return;
+  const selected = canvasState.nodes.filter((node) => selectedNodeIds.has(node.id));
+  const imageNodes = orderedCanvasImageNodes(selected.filter((node) => node.type === "image" && node.image?.url));
+  const videoNodes = [...selected]
+    .filter((node) => node.type === "video" && node.video?.url)
+    .sort((left, right) => (Number(left.z) || 0) - (Number(right.z) || 0));
+  if (!imageNodes.length && !videoNodes.length) {
+    showToast("请先选中画布中的图片或视频节点");
+    return;
+  }
+
+  const limits = videoReferenceLimitsForNode(target);
+  let addedImages = 0;
+  let addedVideos = 0;
+  if (imageNodes.length && limits.images) {
+    const before = videoReferenceCountsForNode(target).images;
+    const added = await useCanvasImagesAsReference(targetNodeId, imageNodes.map((node) => node.id));
+    const liveTarget = canvasState.nodes.find((node) => node.id === targetNodeId && node.type === "video-task");
+    addedImages = added && liveTarget ? Math.max(0, videoReferenceCountsForNode(liveTarget).images - before) : 0;
+  }
+  if (videoNodes.length && limits.videos) {
+    try {
+      const files = await Promise.all(videoNodes.map(videoNodeToFile));
+      files.forEach((file, index) => tagVideoReferenceFile(file, videoNodes[index]?.id));
+      const liveTarget = canvasState.nodes.find((node) => node.id === targetNodeId && node.type === "video-task");
+      if (!liveTarget) return;
+      const accepted = await addVideoReferenceFiles(liveTarget, "videos", files);
+      addedVideos = accepted.length;
+      liveTarget.referenceVideoNodeIds = dedupeStrings([
+        ...(liveTarget.referenceVideoNodeIds || []),
+        ...videoNodes.slice(0, accepted.length).map((node) => node.id)
+      ]);
+      selectedNodeIds.clear();
+      selectedNodeIds.add(liveTarget.id);
+      updateNode(liveTarget);
+      saveCanvasState();
+      renderReferenceLinks();
+    } catch (error) {
+      showToast(error.message || "画布视频读取失败");
+      return;
+    }
+  } else if (videoNodes.length) {
+    showToast(`${dreaminaVideoModeLabel(videoModeForNode(target))}模式不接受视频参考`);
+  }
+  if (addedImages || addedVideos) showToast(`已添加 ${addedImages} 张图片和 ${addedVideos} 个视频参考`);
+}
+
 async function useCanvasImagesForTarget(targetNodeId, imageNodeIds) {
   const target = canvasState.nodes.find((node) => node.id === targetNodeId);
   if (target?.type === "ark-asset") {
@@ -15382,10 +15815,15 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
     let availableSlots = Number.POSITIVE_INFINITY;
 
     if (target.type === "video-task") {
-      const referenceLimit = videoReferenceLimit(target.model);
+      const limits = videoReferenceLimitsForNode(target);
+      const referenceLimit = limits.images;
+      const counts = videoReferenceCountsForNode(target);
       availableSlots = Math.max(
         0,
-        referenceLimit - (target.cachedImages?.length || 0) - (stored.images?.length || 0) - existingAssetUris.length
+        Math.min(
+          referenceLimit - counts.images - existingAssetUris.length,
+          limits.total - counts.images - counts.videos - counts.audios - existingAssetUris.length
+        )
       );
       if (isArkVideoModelName(target.model)) {
         ordinaryImageNodes = [];
@@ -15409,7 +15847,7 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
 
       ordinaryImageNodes = ordinaryImageNodes.filter((imageNode) => !existingReferenceIds.has(imageNode.id));
       if (ordinaryImageNodes.length > availableSlots) {
-        showToast(`当前视频模型最多使用 ${referenceLimit} 个参考素材，已自动截取`);
+        showToast(`当前视频模式最多使用 ${referenceLimit} 张参考图片，已自动截取`);
         ordinaryImageNodes = ordinaryImageNodes.slice(0, availableSlots);
       }
     } else if (target.type === "task" && isSeedreamImageModelName(target.model)) {
@@ -15467,7 +15905,7 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
             ? `TT Image 2.5 最多使用 ${ttImage25ReferenceLimit} 张参考图`
           : target.type === "task" && isGrokBuildImageModelName(target.model)
             ? "Grok 官方图片编辑最多使用 7 张参考图"
-            : `当前视频模型最多使用 ${videoReferenceLimit(target.model)} 个参考素材`;
+            : `当前视频模式最多使用 ${videoReferenceLimit(target.model, videoModeForNode(target))} 张参考图片`;
       showToast(availableSlots ? "这些图片已经添加为参考素材" : limitMessage);
       return false;
     }
@@ -15486,6 +15924,7 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
     if (target.type === "video-task") {
       target.arkAssetUris = nextAssetUris;
       target.arkAssetUrisText = nextAssetUris.join("\n");
+      normalizeVideoTransitionsForNode(target);
     }
     target.referenceImageNodeIds = dedupeStrings([
       ...(target.referenceImageNodeIds || []),
@@ -15529,6 +15968,17 @@ async function imageNodeToFile(node) {
   const filename = node.image.filename || `${node.id}.${extensionFromContentType(type)}`;
   const file = new File([blob], filename, { type });
   tagReferenceFile(file, node.id);
+  return file;
+}
+
+async function videoNodeToFile(node) {
+  const response = await fetch(node.video.url);
+  if (!response.ok) throw new Error("画布视频读取失败");
+  const blob = await response.blob();
+  const type = blob.type || "video/mp4";
+  const filename = node.video.filename || `${node.id}.mp4`;
+  const file = new File([blob], filename, { type });
+  tagVideoReferenceFile(file, node.id);
   return file;
 }
 
@@ -15623,6 +16073,117 @@ async function convertImageNodeFormat(nodeId, targetFormat, control) {
   }
 }
 
+async function upscaleImageNode(nodeId, resolutionType, control) {
+  const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "image");
+  const resolution = String(resolutionType || "").trim().toLowerCase();
+  if (!node?.image?.url || !["2k", "4k", "8k"].includes(resolution) || imageUpscaleTasks.has(nodeId)) return null;
+
+  const projectId = currentProjectId;
+  imageUpscaleTasks.add(nodeId);
+  setImageUpscaleControlBusy(control, true);
+  try {
+    const sourceFile = await imageNodeToFile(node);
+    const formData = new FormData();
+    formData.append("projectId", projectId);
+    formData.append("resolutionType", resolution);
+    formData.append("image", sourceFile);
+    const response = await fetch("/api/dreamina/upscale", { method: "POST", body: formData });
+    const data = await readJsonResponse(response);
+    if (!response.ok || data.parseError) throw new Error(data.error || "即梦图片超清失败");
+    const result = (data.images || [])[0];
+    if (!result?.url) throw new Error("超清完成，但没有取得结果图片");
+    if (currentProjectId !== projectId) throw new Error("超清期间已切换画布，请返回原画布后重试");
+
+    const liveSource = canvasState.nodes.find((item) => item.id === nodeId && item.type === "image");
+    if (!liveSource) throw new Error("原图片已被删除，未创建超清节点");
+    const dimensions = dreaminaUpscaleDimensions(liveSource, result, resolution);
+    const sourceBounds = mediaNodeWorldBounds(liveSource);
+    const resultFormat = normalizeCanvasImageFormat(fileExtension(result.filename || ""))
+      || normalizeCanvasImageFormat(liveSource.image?.format)
+      || "png";
+    const asset = {
+      url: result.url,
+      filename: result.filename || `dreamina-upscale-${resolution}.png`,
+      originalName: result.filename || `dreamina-upscale-${resolution}.png`,
+      contentType: contentTypeFromFormat(resultFormat)
+    };
+    const upscaledNode = createLocalImageNode(
+      asset,
+      dimensions,
+      sourceBounds.x + sourceBounds.width + 32,
+      sourceBounds.y
+    );
+    upscaledNode.sourceTaskId = liveSource.sourceTaskId || "";
+    upscaledNode.storyNodeId = liveSource.storyNodeId || "";
+    upscaledNode.storyEpisodeId = liveSource.storyEpisodeId || "";
+    upscaledNode.storyItemId = liveSource.storyItemId || "";
+    upscaledNode.storyOutputKind = liveSource.storyOutputKind || "";
+    upscaledNode.storyAnalysisVersion = liveSource.storyAnalysisVersion || "";
+    upscaledNode.upscaledFromNodeId = liveSource.id;
+    upscaledNode.image = {
+      ...clonePlainValue(liveSource.image || {}),
+      id: createId(),
+      type: "file",
+      url: result.url,
+      filename: result.filename || asset.filename,
+      sourceUrl: "",
+      contentHash: "",
+      model: "dreamina-image-upscale",
+      size: `${dimensions.width}x${dimensions.height}`,
+      width: dimensions.width,
+      height: dimensions.height,
+      format: resultFormat,
+      outputFormat: resultFormat,
+      upscale: {
+        provider: "dreamina-cli",
+        resolutionType: resolution,
+        sourceNodeId: liveSource.id,
+        sourceFilename: liveSource.image?.filename || sourceFile.name
+      },
+      createdAt: new Date().toISOString()
+    };
+    upscaledNode.sourceImageKey = result.filename || result.url;
+
+    canvasState.nodes.push(upscaledNode);
+    selectedNodeIds.clear();
+    selectedNodeIds.add(upscaledNode.id);
+    renderCanvas();
+    saveCanvasState();
+    updateCanvasMeta();
+    showToast(`已生成 ${resolution.toUpperCase()} 超清图片，原图已保留`);
+    return upscaledNode;
+  } catch (error) {
+    showToast(error.message || "即梦图片超清失败");
+    return null;
+  } finally {
+    imageUpscaleTasks.delete(nodeId);
+    setImageUpscaleControlBusy(control, false);
+    const liveNode = canvasState.nodes.find((item) => item.id === nodeId);
+    if (liveNode && selectedNodeIds.has(nodeId) && !control?.isConnected) updateNode(liveNode);
+  }
+}
+
+function dreaminaUpscaleDimensions(sourceNode, result, resolution) {
+  const resultWidth = Number(result?.width);
+  const resultHeight = Number(result?.height);
+  if (resultWidth > 0 && resultHeight > 0) return { width: resultWidth, height: resultHeight };
+  const sourceWidth = Math.max(1, Number(sourceNode?.originalWidth) || 512);
+  const sourceHeight = Math.max(1, Number(sourceNode?.originalHeight) || 512);
+  const targetLongSide = { "2k": 2048, "4k": 4096, "8k": 8192 }[resolution] || 4096;
+  const scale = targetLongSide / Math.max(sourceWidth, sourceHeight);
+  return {
+    width: Math.max(1, Math.round(sourceWidth * scale)),
+    height: Math.max(1, Math.round(sourceHeight * scale))
+  };
+}
+
+function setImageUpscaleControlBusy(control, busy) {
+  if (!control) return;
+  control.disabled = busy;
+  const placeholder = control.options?.[0];
+  if (placeholder) placeholder.textContent = busy ? "超清中…" : "超清";
+}
+
 function setImageFormatControlBusy(control, busy) {
   if (!control) return;
   control.disabled = busy;
@@ -15682,6 +16243,20 @@ function tagReferenceFile(file, sourceImageNodeId) {
     });
   } catch {
     file.sourceImageNodeId = sourceImageNodeId;
+  }
+  return file;
+}
+
+function tagVideoReferenceFile(file, sourceVideoNodeId) {
+  if (!file || !sourceVideoNodeId) return file;
+  try {
+    Object.defineProperty(file, "sourceVideoNodeId", {
+      configurable: true,
+      enumerable: false,
+      value: sourceVideoNodeId
+    });
+  } catch {
+    file.sourceVideoNodeId = sourceVideoNodeId;
   }
   return file;
 }
@@ -17389,7 +17964,14 @@ function duplicateNode(nodeId) {
       copy.outputAnchorY = copy.y;
     }
     const storedFiles = fileStore.get(nodeId);
-    if (storedFiles) fileStore.set(copy.id, storedFiles);
+    if (storedFiles) {
+      fileStore.set(copy.id, {
+        images: [...(storedFiles.images || [])],
+        videos: [...(storedFiles.videos || [])],
+        audios: [...(storedFiles.audios || [])],
+        mask: storedFiles.mask || null
+      });
+    }
   }
   if (node.type === "chatgpt") {
     copy.interactive = false;
@@ -17418,6 +18000,8 @@ function copySelectedNodesToClipboard() {
     if (stored) {
       nodeClipboard.files.set(node.id, {
         images: [...(stored.images || [])],
+        videos: [...(stored.videos || [])],
+        audios: [...(stored.audios || [])],
         mask: stored.mask || null
       });
     }
@@ -17446,6 +18030,8 @@ function pasteNodesFromClipboard() {
     if (stored && (copy.type === "task" || copy.type === "video-task" || copy.type === "midjourney-task")) {
       fileStore.set(copy.id, {
         images: [...(stored.images || [])],
+        videos: [...(stored.videos || [])],
+        audios: [...(stored.audios || [])],
         mask: stored.mask || null
       });
     }
@@ -17500,6 +18086,9 @@ function preparePastedNode(source, idMap, offset, createdAt) {
 
   if (Array.isArray(copy.referenceImageNodeIds)) {
     copy.referenceImageNodeIds = dedupeStrings(copy.referenceImageNodeIds.map((id) => idMap.get(id) || id));
+  }
+  if (Array.isArray(copy.referenceVideoNodeIds)) {
+    copy.referenceVideoNodeIds = dedupeStrings(copy.referenceVideoNodeIds.map((id) => idMap.get(id) || id));
   }
 
   if (Array.isArray(copy.promptNoteNodeIds)) {
@@ -18346,6 +18935,9 @@ function migrateVideoTaskNode(node) {
   const extraParams = isPlainObject(node.extraParams) ? node.extraParams : {};
   const promptNoteNodeIds = dedupeStrings(node.promptNoteNodeIds || []);
   const model = isSupportedVideoModelName(node.model) ? node.model : dreaminaVideoDefaultModel;
+  const videoMode = isDreaminaVideoModelName(model)
+    ? normalizeDreaminaVideoMode(node.videoMode)
+    : dreaminaVideoDefaultMode;
   const arkAssetUris = dedupeStrings([
     ...(Array.isArray(node.arkAssetUris) ? node.arkAssetUris : []),
     ...parseArkAssetUriText(node.arkAssetUrisText || "")
@@ -18357,24 +18949,33 @@ function migrateVideoTaskNode(node) {
     provider: videoTaskProvider(model),
     prompt: node.prompt || "",
     model,
-    n: String(node.n || dreaminaVideoDefaultDuration),
-    size: videoRatioOptionsForModel(model).some(([value]) => value === node.size) ? node.size : dreaminaVideoDefaultRatio,
-    quality: videoResolutionOptionsForModel(model).some(([value]) => value === node.quality) ? node.quality : dreaminaVideoDefaultResolution,
+    n: normalizeVideoDurationForModel(node.n || dreaminaVideoDefaultDuration, model, videoMode),
+    size: videoRatioOptionsForModel(model, videoMode).some(([value]) => value === node.size)
+      ? node.size
+      : videoRatioOptionsForModel(model, videoMode)[0]?.[0] || dreaminaVideoDefaultRatio,
+    quality: videoResolutionOptionsForModel(model, videoMode).some(([value]) => value === node.quality) ? node.quality : dreaminaVideoDefaultResolution,
     format: "mp4",
     baseUrl: videoTaskBaseUrl(model),
     endpointPath: videoTaskEndpoint(model),
     mode: "video",
+    videoMode,
+    videoTransitions: Array.isArray(node.videoTransitions) ? clonePlainValue(node.videoTransitions) : [],
     extraParams,
     extraParamsText: node.extraParamsText || JSON.stringify(extraParams, null, 2),
     arkAssetUris,
     arkAssetUrisText: arkAssetUris.join("\n"),
     referenceMentionAliases: isPlainObject(node.referenceMentionAliases) ? clonePlainValue(node.referenceMentionAliases) : {},
     cachedImages: node.cachedImages || [],
+    cachedVideos: node.cachedVideos || [],
+    cachedAudios: node.cachedAudios || [],
     referenceImageNodeIds: dedupeStrings(node.referenceImageNodeIds || []),
+    referenceVideoNodeIds: dedupeStrings(node.referenceVideoNodeIds || []),
     promptNoteNodeIds,
     promptNotePlacements: normalizePromptNotePlacements(node.promptNotePlacements, promptNoteNodeIds),
     cacheStatus: node.cacheStatus || "pending",
     sessionFiles: node.sessionFiles || [],
+    sessionVideoFiles: node.sessionVideoFiles || [],
+    sessionAudioFiles: node.sessionAudioFiles || [],
     videos: dedupeNodeVideos(node.videos || []),
     status: node.status === "running" ? "idle" : node.status || "idle",
     error: node.error || "",

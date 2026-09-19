@@ -1,6 +1,6 @@
 {
   "name": "yunwu-image-canvas",
-  "version": "1.1.7",
+  "version": "1.1.8",
   "private": true,
   "type": "module",
   "main": "electron-main.cjs",
@@ -16,6 +16,7 @@
     "test:assistant-behavior": "node tools/test-assistant-behavior.mjs",
     "test:midjourney": "node tools/test-midjourney-integration.mjs",
     "test:grok-build": "node tools/test-grok-build-integration.mjs",
+    "test:dreamina": "node tools/test-dreamina-integration.mjs",
     "build:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-installer.ps1"
   },
   "engines": {

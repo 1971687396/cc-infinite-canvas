@@ -10,7 +10,9 @@ import {
   dreaminaSupportsImageEdit,
   dreaminaVideoDurationRange,
   dreaminaVideoImageReferenceLimit,
+  dreaminaVideoModes,
   dreaminaVideoResolutionTypes,
+  dreaminaVideoReferenceLimits,
   effectiveImageProtocol,
   extractDreaminaModelVersions,
   extractDreaminaVideoModelVersions,
@@ -19,6 +21,7 @@ import {
   isGptImage25Size,
   isTtImage25Model,
   normalizeBananaImageParameters,
+  normalizeDreaminaVideoMode,
   normalizeGptImage25Quality,
   normalizeGptImage25Size,
   normalizeSeedreamProMode,
@@ -178,5 +181,24 @@ assert.deepEqual(dreaminaVideoResolutionTypes("seedance2.0_vip"), ["720p", "1080
 assert.deepEqual(dreaminaVideoResolutionTypes("seedance2.0fast_vip"), ["720p"]);
 assert.equal(dreaminaVideoImageReferenceLimit("seedance2.5"), 30);
 assert.equal(dreaminaVideoImageReferenceLimit("seedance2.0fast"), 9);
+assert.equal(normalizeDreaminaVideoMode("frames2video"), dreaminaVideoModes.FRAMES);
+assert.equal(normalizeDreaminaVideoMode("ref2video"), dreaminaVideoModes.MULTIMODAL);
+assert.equal(normalizeDreaminaVideoMode("unknown"), dreaminaVideoModes.AUTO);
+assert.deepEqual(dreaminaVideoResolutionTypes("seedance2.0fast", "multiframe"), ["720p", "1080p"]);
+assert.deepEqual(dreaminaVideoDurationRange("seedance2.5", "multiframe"), { min: 1, max: 8 });
+assert.deepEqual(dreaminaVideoReferenceLimits("seedance2.5", "multimodal"), {
+  images: 30,
+  videos: 10,
+  audios: 10,
+  total: 50,
+  minImages: 0
+});
+assert.deepEqual(dreaminaVideoReferenceLimits("seedance2.0fast", "frames"), {
+  images: 2,
+  videos: 0,
+  audios: 0,
+  total: 2,
+  minImages: 2
+});
 
-console.log(`Image model profile tests passed (${cases.length + bananaCases.length + gptImage25Cases.length + 56} cases).`);
+console.log(`Image model profile tests passed (${cases.length + bananaCases.length + gptImage25Cases.length + 64} cases).`);

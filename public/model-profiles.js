@@ -102,6 +102,15 @@ export const dreaminaVideoModelVersions = Object.freeze([
   "seedance2.0fast_vip"
 ]);
 
+export const dreaminaVideoModes = Object.freeze({
+  AUTO: "auto",
+  TEXT: "text",
+  IMAGE: "image",
+  FRAMES: "frames",
+  MULTIFRAME: "multiframe",
+  MULTIMODAL: "multimodal"
+});
+
 const bananaImageRatios = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"];
 
 function compactModelName(value) {
@@ -314,21 +323,63 @@ export function extractDreaminaVideoModelVersions(text) {
   )].sort(compareDreaminaVideoModelVersions);
 }
 
-export function dreaminaVideoDurationRange(modelVersion) {
+export function normalizeDreaminaVideoMode(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/[_\s]+/gu, "-");
+  const aliases = {
+    auto: dreaminaVideoModes.AUTO,
+    text: dreaminaVideoModes.TEXT,
+    text2video: dreaminaVideoModes.TEXT,
+    image: dreaminaVideoModes.IMAGE,
+    image2video: dreaminaVideoModes.IMAGE,
+    frames: dreaminaVideoModes.FRAMES,
+    frames2video: dreaminaVideoModes.FRAMES,
+    "first-last": dreaminaVideoModes.FRAMES,
+    multiframe: dreaminaVideoModes.MULTIFRAME,
+    multiframe2video: dreaminaVideoModes.MULTIFRAME,
+    multimodal: dreaminaVideoModes.MULTIMODAL,
+    multimodal2video: dreaminaVideoModes.MULTIMODAL,
+    ref2video: dreaminaVideoModes.MULTIMODAL
+  };
+  return aliases[normalized] || dreaminaVideoModes.AUTO;
+}
+
+export function dreaminaVideoDurationRange(modelVersion, mode = dreaminaVideoModes.AUTO) {
+  if (normalizeDreaminaVideoMode(mode) === dreaminaVideoModes.MULTIFRAME) return { min: 1, max: 8 };
   return canonicalDreaminaVideoModelVersion(modelVersion) === "seedance2.5"
     ? { min: 4, max: 30 }
     : { min: 4, max: 15 };
 }
 
-export function dreaminaVideoResolutionTypes(modelVersion) {
+export function dreaminaVideoResolutionTypes(modelVersion, mode = dreaminaVideoModes.AUTO) {
+  if (normalizeDreaminaVideoMode(mode) === dreaminaVideoModes.MULTIFRAME) return ["720p", "1080p"];
   const canonical = canonicalDreaminaVideoModelVersion(modelVersion);
   if (canonical === "seedance2.5") return ["480p", "720p", "1080p"];
   if (canonical === "seedance2.0_vip") return ["720p", "1080p", "4k"];
   return ["720p"];
 }
 
+export function dreaminaVideoReferenceLimits(modelVersion, mode = dreaminaVideoModes.MULTIMODAL) {
+  const normalizedMode = normalizeDreaminaVideoMode(mode);
+  if (normalizedMode === dreaminaVideoModes.TEXT) {
+    return { images: 0, videos: 0, audios: 0, total: 0, minImages: 0 };
+  }
+  if (normalizedMode === dreaminaVideoModes.IMAGE) {
+    return { images: 1, videos: 0, audios: 0, total: 1, minImages: 1 };
+  }
+  if (normalizedMode === dreaminaVideoModes.FRAMES) {
+    return { images: 2, videos: 0, audios: 0, total: 2, minImages: 2 };
+  }
+  if (normalizedMode === dreaminaVideoModes.MULTIFRAME) {
+    return { images: 20, videos: 0, audios: 0, total: 20, minImages: 2 };
+  }
+  if (canonicalDreaminaVideoModelVersion(modelVersion) === "seedance2.5") {
+    return { images: 30, videos: 10, audios: 10, total: 50, minImages: 0 };
+  }
+  return { images: 9, videos: 3, audios: 3, total: 12, minImages: 0 };
+}
+
 export function dreaminaVideoImageReferenceLimit(modelVersion) {
-  return canonicalDreaminaVideoModelVersion(modelVersion) === "seedance2.5" ? 30 : 9;
+  return dreaminaVideoReferenceLimits(modelVersion).images;
 }
 
 export function bananaImageProfile(...values) {

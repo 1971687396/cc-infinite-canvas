@@ -7,6 +7,7 @@ export const seedreamImageProfiles = Object.freeze({
 
 export const seedreamProModes = Object.freeze({
   STANDARD: "standard",
+  INTERACTIVE: "interactive",
   FUSION: "fusion",
   LAYERS: "layers"
 });
@@ -109,6 +110,15 @@ export const dreaminaVideoModes = Object.freeze({
   FRAMES: "frames",
   MULTIFRAME: "multiframe",
   MULTIMODAL: "multimodal"
+});
+
+export const arkVideoModes = Object.freeze({
+  AUTO: "auto",
+  TEXT: "text",
+  REFERENCE: "reference",
+  FRAMES: "frames",
+  EDIT: "edit",
+  EXTEND: "extend"
 });
 
 const bananaImageRatios = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"];
@@ -341,6 +351,65 @@ export function normalizeDreaminaVideoMode(value) {
     ref2video: dreaminaVideoModes.MULTIMODAL
   };
   return aliases[normalized] || dreaminaVideoModes.AUTO;
+}
+
+export function normalizeArkVideoMode(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/[_\s]+/gu, "-");
+  const aliases = {
+    auto: arkVideoModes.AUTO,
+    text: arkVideoModes.TEXT,
+    text2video: arkVideoModes.TEXT,
+    reference: arkVideoModes.REFERENCE,
+    ref: arkVideoModes.REFERENCE,
+    ref2video: arkVideoModes.REFERENCE,
+    multimodal: arkVideoModes.REFERENCE,
+    multimodal2video: arkVideoModes.REFERENCE,
+    frames: arkVideoModes.FRAMES,
+    frames2video: arkVideoModes.FRAMES,
+    "first-last": arkVideoModes.FRAMES,
+    "first-last-frame": arkVideoModes.FRAMES,
+    edit: arkVideoModes.EDIT,
+    videoedit: arkVideoModes.EDIT,
+    "video-edit": arkVideoModes.EDIT,
+    extend: arkVideoModes.EXTEND,
+    extension: arkVideoModes.EXTEND,
+    videoextend: arkVideoModes.EXTEND,
+    "video-extend": arkVideoModes.EXTEND
+  };
+  return aliases[normalized] || arkVideoModes.AUTO;
+}
+
+export function isArkSeedance25Model(...values) {
+  return values.flat(Infinity).some((value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    return normalized === "ark-seedance-2.5"
+      || /(?:^|[-_/])seedance[-_]?2(?:\.|-)?5(?:[-_/]|$)/u.test(normalized)
+      || normalized.includes("doubao-seedance-2-5-260628");
+  });
+}
+
+export function arkVideoReferenceLimits(model, mode = arkVideoModes.AUTO) {
+  const normalizedMode = normalizeArkVideoMode(mode);
+  if (normalizedMode === arkVideoModes.TEXT) {
+    return { images: 0, videos: 0, audios: 0, total: 0, minImages: 0, minVideos: 0 };
+  }
+  if (normalizedMode === arkVideoModes.FRAMES) {
+    return { images: 2, videos: 0, audios: 0, total: 2, minImages: 1, minVideos: 0 };
+  }
+  if (!isArkSeedance25Model(model)) {
+    return { images: 9, videos: 0, audios: 0, total: 9, minImages: 0, minVideos: 0 };
+  }
+  if (normalizedMode === arkVideoModes.EXTEND) {
+    return { images: 30, videos: 1, audios: 10, total: 41, minImages: 0, minVideos: 1 };
+  }
+  return {
+    images: 30,
+    videos: 10,
+    audios: 10,
+    total: 50,
+    minImages: 0,
+    minVideos: normalizedMode === arkVideoModes.EDIT ? 1 : 0
+  };
 }
 
 export function dreaminaVideoDurationRange(modelVersion, mode = dreaminaVideoModes.AUTO) {

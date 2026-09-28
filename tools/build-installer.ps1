@@ -460,11 +460,15 @@ New-Item -ItemType Directory -Path (Join-Path $payloadRoot "tools") -Force | Out
 
 $files = @(
   "server.js",
+  "agent-control-client.js",
+  "agent-control-runtime.js",
+  "agent-mcp-server.js",
   "midjourney-api.js",
   "grok-build-bridge.js",
   "package.json",
   "package-lock.json",
   "README.md",
+  "CHANGELOG.md",
   "SETUP.md",
   ".env.local.example",
   "YunwuCanvas.cmd",

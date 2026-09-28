@@ -29,8 +29,19 @@ $appRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $appRoot
 
 $node = Get-Command node -ErrorAction SilentlyContinue
-if (-not $node) {
-  Write-Host "Node.js 18 or newer is required to run cc无限画布." -ForegroundColor Yellow
+$nodeMajor = 0
+if ($node) {
+  try {
+    $nodeVersion = & $node.Source --version
+    if ($nodeVersion -match '^v(\d+)\.') {
+      $nodeMajor = [int]$matches[1]
+    }
+  } catch {
+    $nodeMajor = 0
+  }
+}
+if (-not $node -or $nodeMajor -lt 20) {
+  Write-Host "Node.js 20 or newer is required to run cc无限画布." -ForegroundColor Yellow
   Write-Host "Install Node.js, then run YunwuCanvas.cmd again."
   Read-Host "Press Enter to close"
   exit 1

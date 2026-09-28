@@ -6,7 +6,7 @@ import path from "node:path";
 export const grokBuildImageModel = "grok-build-image";
 export const grokBuildVideoModel = "grok-build-video";
 export const grokBuildAssistantPrefix = "grok-build-chat:";
-export const grokBuildDefaultChatModel = "grok-4.5";
+export const grokBuildDefaultChatModel = "grok-4.6";
 export const grokBuildImageRatios = new Set(["auto", "1:1", "16:9", "9:16", "3:2", "2:3"]);
 export const grokBuildVideoRatios = new Set(["1:1", "16:9", "9:16", "3:2", "2:3"]);
 
@@ -78,14 +78,18 @@ export async function grokBuildStatus(options = {}) {
     allowFailure: true
   });
   const output = `${modelsResult.stdout}\n${modelsResult.stderr}`;
-  const models = parseGrokModels(output);
-  const loggedIn = modelsResult.code === 0 && (models.length > 0 || /you are logged in/iu.test(output));
+  const catalog = parseGrokModelCatalog(output);
+  const authRejected = /you are not authenticated|not logged in|please (?:log|sign) in|authentication required/iu.test(output);
+  const loggedIn = modelsResult.code === 0
+    && !authRejected
+    && (catalog.models.length > 0 || /you are logged in/iu.test(output));
   return {
     installed: true,
     loggedIn,
     version,
     executable,
-    models: loggedIn ? models : [],
+    models: loggedIn ? catalog.models : [],
+    defaultModel: loggedIn ? catalog.defaultModel : "",
     error: loggedIn ? "" : compactGrokError(output) || "Grok Build 尚未登录。"
   };
 }
@@ -96,13 +100,7 @@ export async function launchGrokBuildAction(action, options = {}) {
 
   let command;
   if (action === "install") {
-    command = executable
-      ? `& ${powershellQuote(executable)} update --stable`
-      : [
-          "$npm = Get-Command npm.cmd -ErrorAction SilentlyContinue",
-          "if (-not $npm) { throw '未找到 npm，请先安装 Node.js 18 或更高版本。' }",
-          "& $npm.Source install -g @xai-official/grok"
-        ].join("; ");
+    command = grokBuildInstallCommand(executable);
   } else if (action === "login") {
     command = `& ${powershellQuote(executable)} login --device-auth`;
   } else if (action === "relogin") {
@@ -155,7 +153,21 @@ export async function launchGrokBuildAction(action, options = {}) {
   return { started: true, action, executable: executable || "npm.cmd" };
 }
 
-export async function runGrokBuildAssistant({ messages, model, proxyUrl, signal, timeoutMs = 300000 }) {
+export function grokBuildInstallCommand(executable = "", platform = process.platform) {
+  if (platform !== "win32") {
+    return executable
+      ? `& ${powershellQuote(executable)} update --stable`
+      : "npm install -g @xai-official/grok@latest";
+  }
+  return [
+    "$npm = Get-Command npm.cmd -ErrorAction SilentlyContinue",
+    executable
+      ? `if ($npm) { & $npm.Source install -g @xai-official/grok@latest; if ($LASTEXITCODE -ne 0) { throw 'npm 更新 Grok Build 失败。' } } else { & ${powershellQuote(executable)} update --stable; if ($LASTEXITCODE -ne 0) { throw 'Grok Build 自更新失败，请安装 Node.js 20 或更高版本后重试。' } }`
+      : "if (-not $npm) { throw '未找到 npm，请先安装 Node.js 20 或更高版本。' }; & $npm.Source install -g @xai-official/grok@latest; if ($LASTEXITCODE -ne 0) { throw 'npm 安装 Grok Build 失败。' }"
+  ].join("; ");
+}
+
+export async function runGrokBuildAssistant({ messages, model, proxyUrl, signal, cwd, useMemory = false, timeoutMs = 300000 }) {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cc-grok-chat-"));
   try {
     const promptFile = path.join(tempDir, "prompt.txt");
@@ -166,6 +178,8 @@ export async function runGrokBuildAssistant({ messages, model, proxyUrl, signal,
       model: model || grokBuildDefaultChatModel,
       proxyUrl,
       signal,
+      cwd,
+      useMemory,
       timeoutMs,
       media: false
     });
@@ -186,7 +200,7 @@ export async function runGrokBuildImage({ prompt, ratio, count = 1, references =
       await writeFile(promptFile, buildGrokImageInstruction(prompt, ratio, referencePaths), "utf8");
       runs.push(await runGrokHeadless({
         promptFile,
-        model: grokBuildDefaultChatModel,
+        model: "",
         proxyUrl,
         signal,
         timeoutMs,
@@ -219,7 +233,7 @@ export async function runGrokBuildVideo({ prompt, ratio, duration, resolution, r
     await writeFile(promptFile, buildGrokVideoInstruction(prompt, ratio, duration, resolution, referencePaths), "utf8");
     const result = await runGrokHeadless({
       promptFile,
-      model: grokBuildDefaultChatModel,
+      model: "",
       proxyUrl,
       signal,
       timeoutMs,
@@ -250,14 +264,23 @@ export async function persistGrokMedia(files, destinationDir, prefix) {
   return saved;
 }
 
-async function runGrokHeadless({ promptFile, model, proxyUrl, signal, timeoutMs, media, cwd = process.cwd() }) {
+async function runGrokHeadless({ promptFile, model, proxyUrl, signal, timeoutMs, media, useMemory = false, cwd = process.cwd() }) {
   const executable = await findGrokExecutable();
   if (!executable) throw new Error("尚未安装 Grok Build CLI，请先在设置中安装。");
-  const args = [
+  const args = buildGrokHeadlessArgs({ promptFile, model, media, useMemory });
+  const result = await runGrokProcess(executable, args, { timeoutMs, proxyUrl, signal, cwd });
+  const data = parseGrokJson(result.stdout);
+  if (!data || typeof data !== "object") throw new Error("Grok Build 返回了无法识别的结果。");
+  if (data.type === "error" || data.error) throw new Error(data.message || data.error?.message || data.error || "Grok Build 执行失败。");
+  return data;
+}
+
+export function buildGrokHeadlessArgs({ promptFile, model = "", media = false, useMemory = false }) {
+  return [
     "--prompt-file", promptFile,
     "--agent", "general-purpose",
-    "--model", model || grokBuildDefaultChatModel,
-    "--no-memory",
+    ...(model ? ["--model", model] : []),
+    ...(useMemory ? [] : ["--no-memory"]),
     "--no-plan",
     "--disable-web-search",
     media ? "--always-approve" : "--permission-mode",
@@ -265,11 +288,6 @@ async function runGrokHeadless({ promptFile, model, proxyUrl, signal, timeoutMs,
     "--output-format", "json",
     "--no-auto-update"
   ];
-  const result = await runGrokProcess(executable, args, { timeoutMs, proxyUrl, signal, cwd });
-  const data = parseGrokJson(result.stdout);
-  if (!data || typeof data !== "object") throw new Error("Grok Build 返回了无法识别的结果。");
-  if (data.type === "error" || data.error) throw new Error(data.message || data.error?.message || data.error || "Grok Build 执行失败。");
-  return data;
 }
 
 async function runGrokProcess(executable, args, options = {}) {
@@ -358,13 +376,19 @@ function parseGrokVersion(output) {
   return String(output || "").match(/\bgrok\s+v?(\d+\.\d+\.\d+)/iu)?.[1] || "";
 }
 
-function parseGrokModels(output) {
+export function parseGrokModelCatalog(output) {
+  const text = String(output || "");
   const models = [];
-  for (const line of String(output || "").split(/\r?\n/u)) {
-    const match = stripAnsi(line).match(/^\s*\*\s+([^\s(]+)(?:\s+\(default\))?/u);
-    if (match?.[1] && !models.includes(match[1])) models.push(match[1]);
+  let defaultModel = stripAnsi(text).match(/^\s*Default model:\s*([^\s(]+)/imu)?.[1] || "";
+  for (const line of text.split(/\r?\n/u)) {
+    const match = stripAnsi(line).match(/^\s*([*-])\s+([^\s(]+)(?:\s+\(default\))?/u);
+    if (!match?.[2]) continue;
+    if (!models.includes(match[2])) models.push(match[2]);
+    if (!defaultModel && match[1] === "*") defaultModel = match[2];
   }
-  return models;
+  if (defaultModel && !models.includes(defaultModel)) models.unshift(defaultModel);
+  if (!defaultModel) defaultModel = models[0] || "";
+  return { models, defaultModel };
 }
 
 function parseGrokJson(output) {

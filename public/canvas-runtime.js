@@ -1,5 +1,39 @@
 export const seedreamLayerLayoutVersion = 3;
 
+export function seedreamCoordinateTagForAction(action, width, height) {
+  const sourceWidth = positiveNumber(width, 1);
+  const sourceHeight = positiveNumber(height, 1);
+  const normalizeX = (value) => normalizedSeedreamCoordinate(value, sourceWidth);
+  const normalizeY = (value) => normalizedSeedreamCoordinate(value, sourceHeight);
+
+  if (action?.tool === "point") {
+    const point = coordinatePoint(action.point);
+    return point ? `<point>${normalizeX(point.x)} ${normalizeY(point.y)}</point>` : "";
+  }
+
+  if (action?.tool === "bbox") {
+    const start = coordinatePoint(action.start);
+    const end = coordinatePoint(action.end);
+    if (!start || !end) return "";
+    const left = Math.min(start.x, end.x);
+    const top = Math.min(start.y, end.y);
+    const right = Math.max(start.x, end.x);
+    const bottom = Math.max(start.y, end.y);
+    return `<bbox>${normalizeX(left)} ${normalizeY(top)} ${normalizeX(right)} ${normalizeY(bottom)}</bbox>`;
+  }
+
+  return "";
+}
+
+export function seedreamCoordinatePromptForActions(actions, width, height, imageIndex = 0) {
+  const tags = (Array.isArray(actions) ? actions : [])
+    .map((action) => seedreamCoordinateTagForAction(action, width, height))
+    .filter(Boolean);
+  if (!tags.length) return "";
+  const number = Math.max(1, Math.trunc(Number(imageIndex) || 0) + 1);
+  return `图 ${number} 精准编辑坐标：${tags.join(" ")}`;
+}
+
 export function normalizeCanvasImageFormat(value) {
   const normalized = String(value || "")
     .trim()
@@ -204,6 +238,17 @@ export function normalizeLayerBoundingBox(value) {
 function positiveNumber(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : fallback;
+}
+
+function coordinatePoint(point) {
+  const x = Number(point?.x);
+  const y = Number(point?.y);
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+}
+
+function normalizedSeedreamCoordinate(value, extent) {
+  const ratio = finiteNumber(value, 0) / positiveNumber(extent, 1);
+  return Math.round(Math.max(0, Math.min(1, ratio)) * 999);
 }
 
 function finiteNumber(value, fallback) {

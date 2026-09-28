@@ -80,15 +80,18 @@
 设置页提供独立的“火山方舟 API”区域。填写一个方舟 API Key 后，Seedream 与 Seedance 模型会优先共用该 Key；仍可在通用模型连接中为单个模型覆盖专用 Key。
 
 - Seedream 5.0 Pro、5.0 Lite、4.5、4.0 直接进入统一生图节点，文生图与多参考图编辑都调用方舟 `POST /api/v3/images/generations`
-- Seedream 会按模型切换 1K/2K/3K/4K 与常用画面尺寸；5.0 Pro 支持 PNG/JPEG 输出，其余型号支持顺序组图生成
+- Seedream 会按模型切换 1K/1.5K/2K/3K/4K 与常用画面尺寸；5.0 Pro 支持 PNG/JPEG、标准/快速提示词优化与单图透明背景，其余型号支持顺序组图生成
+- Seedream 5.0 Pro 提供创建、编辑、精准编辑、多图融合和智能拆图层模式；精准编辑可在参考图上添加红色可见标记，或用定位点/坐标框自动生成 0–999 归一化坐标提示词
 - Seedance 2.0、Fast、Mini、2.5 直接进入现有视频节点，调用 `POST /api/v3/contents/generations/tasks` 并自动轮询任务状态
-- Seedance 2.0 可选 480p、720p、1080p、4K；Fast、Mini 与 2.5 仅显示文档支持的 480p、720p
-- 视频节点支持原声音频、常用比例/自适应比例，以及最多 9 张画布或本地参考图片；Seedance 2.5 时长可选到 30 秒，其余模型为 4-15 秒
+- Seedance 2.0 可选 480p、720p、1080p、4K；Seedance 2.5 可选 480p、720p、1080p，Fast 与 Mini 使用 480p、720p
+- Seedance 2.5 提供文生视频、全模态参考、首尾帧、视频编辑和视频延长模式；编辑模式自动使用 `duration=-1`，首尾帧、编辑和延长自动使用自适应比例
+- Seedance 2.5 全模态参考最多支持 30 张图片、10 个视频、10 个音频且总计不超过 50 个素材；编辑、延长默认使用 MOV，也可切换 MP4
+- Seedance 2.5 时长可选到 30 秒，其余方舟视频模型为 4-15 秒；Seedance 2.0 Mini 使用正式模型 ID `doubao-seedance-2-0-mini-260615`
 - “虚拟人像入库”节点以角色为单位选择或新建 AIGC 素材组，再进入选图模式点击画布图片；也可将图片连接点直接拖到节点，成功后为原图添加“方舟素材”标记
 - 同一节点只管理一个角色的不同角度、表情与妆造，不同角色使用不同节点和素材组；角色组可跨设备查询与复用
 - 仍保留公网源地址的图片可直接提交；只有本地缓存的图片会先上传到配置的 TOS 存储桶，再进入方舟素材库
 - 入库节点通过 `ListAssetGroups` 选择角色组，“素材库”再通过 `ListAssets` 同步该角色素材；在新设备上下载到当前画布缓存后会自动恢复 `asset://` 标记，无需重复入库，也可将云端素材身份绑定到当前唯一选中的同一张本地图片
-- 带标记的图片连到方舟视频节点时会自动使用认证素材；普通参考图与虚拟人像素材合计最多 9 个，提示词输入 `@` 可从可视标签中精确引用已添加素材
+- 带标记的图片连到方舟视频节点时会自动使用认证素材；素材数量随所选模式和模型校验，提示词输入 `@` 可从可视标签中精确引用已添加素材
 - 方舟返回的视频临时 URL 会立即下载到当前画布 `outputs/`，避免 24 小时后链接失效
 - 专属设置页可修改 Base URL，以及每个模型实际发送的 Model ID 或推理接入点 ID；控制台 ID 与内置版本不同时无需改代码
 
@@ -167,6 +170,60 @@ curl -s https://jimeng.jianying.com/cli | bash
 - 如果停电导致磁盘工程条目缺失，启动时会重新扫描浏览器快照并把画布写回缓存和画布列表；磁盘与浏览器同时有记录时优先恢复保存时间较新的版本
 - `.env.local`、`cache/`、`outputs/` 都已加入 `.gitignore`
 
+## Agent 后台控制接口（MCP + 本地 HTTP）
+
+项目内置一套只监听 `127.0.0.1` 的 Agent Control API，并通过标准 MCP stdio 暴露给 Codex、Claude Code、DSH 及其他支持 MCP 的 Agent。Agent 可以在不打开画布页面的情况下读取/创建工程、查询/新增/修改/删除节点、导入本地素材，并调用画布中已经配置好的生图或视频模型。
+
+- MCP 入口：`agent-mcp-server.js`
+- 本地 REST 入口：`http://127.0.0.1:<实际端口>/api/agent/v1`
+- OpenAPI：`GET /api/agent/v1/openapi.json`
+- 令牌首次启动时自动生成在 `缓存目录/agent-control-token`；运行时端口和令牌文件位置记录在 `缓存目录/agent-control.json`
+- MCP 在画布未启动时会隐藏启动本地后台服务；不开放 Shell、PowerShell 或任意文件写入接口
+- Agent 修改带持久化修订号；正在打开的画布约 1.2 秒内自动同步。浏览器旧状态随后保存时，服务端会重新合并 Agent 的新增、修改和删除，避免覆盖后台结果
+
+在当前项目目录执行下面任一命令即可配置。路径包含空格时必须保留引号：
+
+```powershell
+# Codex（当前用户的 CLI / IDE 共用此配置）
+codex mcp add cc-infinite-canvas -- node "D:\Infinite canvas\agent-mcp-server.js"
+
+# Claude Code；--scope user 让所有项目都能使用
+claude mcp add --scope user cc-infinite-canvas -- node "D:\Infinite canvas\agent-mcp-server.js"
+```
+
+DSH 或其他 MCP 客户端可以导入等价的 stdio 配置：
+
+```json
+{
+  "mcpServers": {
+    "cc-infinite-canvas": {
+      "command": "node",
+      "args": ["D:\\Infinite canvas\\agent-mcp-server.js"]
+    }
+  }
+}
+```
+
+当前提供的 MCP 工具：
+
+- `canvas_status`、`list_canvas_projects`、`get_canvas_project`
+- `create_canvas_project`、`update_canvas_project`
+- `list_canvas_nodes`、`add_canvas_nodes`、`update_canvas_node`、`delete_canvas_nodes`
+- `import_canvas_asset`、`generate_canvas_media`
+
+直接调用 REST 时，在请求头中使用 `Authorization: Bearer <agent-control-token>`。如需自行固定令牌或关闭 MCP 自动启动，可在 `.env.local` / MCP 环境中设置：
+
+```ini
+CC_CANVAS_AGENT_TOKEN=请使用独立的高强度随机令牌
+CC_CANVAS_AGENT_AUTO_START=0
+```
+
+Agent 接口的进程级集成测试（包含令牌校验、工程竞态合并、素材上传和真实 MCP 握手）：
+
+```bash
+npm run test:agent-control
+```
+
 ## 配置
 
 可以在页面顶部“设置”里填写并保存，也可以手动创建 `.env.local`，按下面的键名填写：
@@ -199,11 +256,14 @@ YUNWU_MODEL_KEY_DEEPSEEK_V4_PRO=
 CC_CANVAS_CACHE_DIR=D:\ccCanvasCache
 CC_CANVAS_UPDATE_REPO=1971687396/cc-infinite-canvas
 CC_CANVAS_PHOTOSHOP_BRIDGE_ENABLED=0
+CC_CANVAS_AGENT_TOKEN=
 DREAMINA_CLI_PATH=C:\Users\你的用户名\bin\dreamina.exe
 PORT=3000
 ```
 
 ## 版本更新
+
+当前版本为 **v1.1.9**：新增 Agent/MCP 后台控制，升级方舟视频模式、Seedream 5.0 Pro 精准编辑与 Grok 模型同步/项目记忆。完整更新内容见 [CHANGELOG.md](CHANGELOG.md)。发布附件仅提供 Windows 安装包。
 
 应用当前版本来自 `package.json`，默认检查 `1971687396/cc-infinite-canvas` 的 GitHub Releases。发布新版本时：
 
@@ -250,7 +310,7 @@ npm run test:midjourney
 npm run build:installer
 ```
 
-安装程序会输出到 `dist/YunwuImageCanvasSetup.exe`。安装时可以自定义安装位置和文件缓存位置，二者都不允许选择磁盘根目录。如果目标电脑没有 Node.js 18+，安装器会联网从 Node.js 官方源下载并安装最新 LTS 版。安装完成后会创建启动快捷方式和卸载程序；卸载时可以选择是否同时删除文件缓存。打包时会排除 `.env.local`、`cache/`、`outputs/` 和 `node_modules/`，不会把本地密钥或工程缓存打进安装包。
+安装程序会输出到 `dist/YunwuImageCanvasSetup.exe`。安装时可以自定义安装位置和文件缓存位置，二者都不允许选择磁盘根目录。如果目标电脑没有 Node.js 20+，安装器会联网从 Node.js 官方源下载并安装最新 LTS 版。安装完成后会创建启动快捷方式和卸载程序；卸载时可以选择是否同时删除文件缓存。打包时会排除 `.env.local`、`cache/`、`outputs/` 和 `node_modules/`，不会把本地密钥或工程缓存打进安装包。
 
 ## 返回兼容
 

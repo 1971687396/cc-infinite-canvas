@@ -1,4 +1,6 @@
 import {
+  arkVideoModes,
+  arkVideoReferenceLimits,
   bananaImageProfile,
   bananaImageProfiles,
   canonicalDreaminaModelVersion,
@@ -16,7 +18,9 @@ import {
   gptImage25Profile,
   gptImage25Profiles,
   isGptImage25Size,
+  isArkSeedance25Model,
   normalizeBananaImageParameters,
+  normalizeArkVideoMode,
   normalizeDreaminaVideoMode,
   normalizeSeedreamProMode,
   normalizeTtImage25AspectRatio,
@@ -46,6 +50,7 @@ import {
   reorderLayerItemsByZ,
   resolveSeedreamLayerAnchor,
   resolveSeedreamLayerPlacement,
+  seedreamCoordinatePromptForActions,
   restoreNodesPreservingActiveGenerations,
   seedreamLayerLayoutVersion
 } from "./canvas-runtime.js";
@@ -255,6 +260,7 @@ const selectionLayerBackwardButton = document.querySelector("#selectionLayerBack
 const selectionLayerForwardButton = document.querySelector("#selectionLayerForwardButton");
 const selectionLayerTopButton = document.querySelector("#selectionLayerTopButton");
 const seedreamFusionSelectionButton = document.querySelector("#seedreamFusionSelectionButton");
+const seedreamInteractiveSelectionButton = document.querySelector("#seedreamInteractiveSelectionButton");
 const seedreamLayerSelectionButton = document.querySelector("#seedreamLayerSelectionButton");
 const sendSelectionToPhotoshopButton = document.querySelector("#sendSelectionToPhotoshopButton");
 const settingsDialog = document.querySelector("#settingsDialog");
@@ -376,6 +382,8 @@ const assistantModelSelect = document.querySelector("#assistantModelSelect");
 const assistantModelIcon = document.querySelector("#assistantModelIcon");
 const assistantAutoAttachReferencesToggle = document.querySelector("#assistantAutoAttachReferencesToggle");
 const assistantAutoGenerateToggle = document.querySelector("#assistantAutoGenerateToggle");
+const assistantProjectMemoryOption = document.querySelector("#assistantProjectMemoryOption");
+const assistantProjectMemoryToggle = document.querySelector("#assistantProjectMemoryToggle");
 const assistantInput = document.querySelector("#assistantInput");
 const assistantSendButton = document.querySelector("#assistantSendButton");
 const assistantStopButton = document.querySelector("#assistantStopButton");
@@ -490,6 +498,12 @@ const backgroundOptions = [
   ["transparent", "transparent"]
 ];
 
+const seedreamProBackgroundOptions = [
+  ["", "不传（默认）"],
+  ["opaque", "不透明"],
+  ["transparent", "透明 PNG（单图编辑）"]
+];
+
 const ttImage25BackgroundOptions = [
   ["opaque", "opaque（不透明）"],
   ["transparent", "transparent（透明 PNG）"],
@@ -509,7 +523,7 @@ const grokDefaultSize = "960x960";
 const grokBuildImageModel = "grok-build-image";
 const grokBuildVideoModel = "grok-build-video";
 const grokBuildAssistantPrefix = "grok-build-chat:";
-const grokBuildDefaultChatModel = "grok-4.5";
+const grokBuildDefaultChatModel = "grok-4.6";
 const grokBuildImageRatioOptions = ["1:1", "16:9", "9:16", "3:2", "2:3"].map((ratio) => [ratio, `${ratio}（Grok 官方 1K）`]);
 const geminiBananaImageModel = "gemini-3.1-flash-image-preview";
 const geminiBananaImageAlias = "banana2";
@@ -536,7 +550,7 @@ const arkDefaultApiModels = {
   "ark-seedream-4.0": "doubao-seedream-4-0-250828",
   "ark-seedance-2.0": "doubao-seedance-2-0-260128",
   "ark-seedance-2.0-fast": "doubao-seedance-2-0-fast-260128",
-  "ark-seedance-2.0-mini": "doubao-seedance-2-0-mini",
+  "ark-seedance-2.0-mini": "doubao-seedance-2-0-mini-260615",
   "ark-seedance-2.5": "doubao-seedance-2-5-260628"
 };
 const arkVideoModelOptions = [
@@ -665,16 +679,26 @@ const dreaminaVideoModeOptions = [
   [dreaminaVideoModes.MULTIFRAME, "智能多帧"],
   [dreaminaVideoModes.MULTIMODAL, "全能参考"]
 ];
+const arkVideoModeOptions = [
+  [arkVideoModes.AUTO, "自动（按参考素材判断）"],
+  [arkVideoModes.TEXT, "文生视频"],
+  [arkVideoModes.REFERENCE, "全模态参考"],
+  [arkVideoModes.FRAMES, "首尾帧"],
+  [arkVideoModes.EDIT, "视频编辑"],
+  [arkVideoModes.EXTEND, "视频延长"]
+];
 const arkVideoRatioOptions = [["adaptive", "自适应"], ...dreaminaVideoRatioOptions];
 const grokBuildVideoRatioOptions = ["16:9", "9:16", "1:1", "3:2", "2:3"].map((ratio) => [ratio, ratio]);
 const customVideoResolutionOptions = [["720p", "720p"], ["1080p", "1080p（VIP）"]];
 const arkVideoFullResolutionOptions = [["480p", "480p"], ["720p", "720p"], ["1080p", "1080p"], ["4k", "4K（10bit H.265）"]];
 const arkVideoCompactResolutionOptions = [["480p", "480p"], ["720p", "720p"]];
+const arkVideo25ResolutionOptions = [["480p", "480p"], ["720p", "720p"], ["1080p", "1080p"]];
+const arkVideoOutputFormatOptions = [["mp4", "MP4"], ["mov", "MOV（编辑/延长推荐）"]];
 const grokBuildVideoResolutionOptions = [["480p", "480p"], ["720p", "720p"]];
 const arkOptimizeOptions = [["standard", "标准"], ["fast", "快速"]];
 const arkStandardOptimizeOptions = [["standard", "标准"]];
 const arkSeedreamSizes = {
-  "ark-seedream-5.0-pro": buildArkImageSizeOptions(["1K", "2K"], ["2K"], "pro"),
+  "ark-seedream-5.0-pro": buildArkImageSizeOptions(["1K", "1.5K", "2K"], ["2K"], "pro"),
   "ark-seedream-5.0-lite": buildArkImageSizeOptions(["2K", "3K", "4K"], ["2K", "3K", "4K"]),
   "ark-seedream-4.5": buildArkImageSizeOptions(["2K", "4K"], ["2K", "4K"]),
   "ark-seedream-4.0": buildArkImageSizeOptions(["1K", "2K", "4K"], ["1K", "2K", "4K"], "seedream4")
@@ -732,7 +756,7 @@ let projectList = [];
 let batchDeleteSelectedProjectIds = new Set();
 const storyAnalysisControllers = new Map();
 let dreaminaStatus = { installed: false, loggedIn: false };
-let grokBuildStatusState = { installed: false, loggedIn: false, models: [] };
+let grokBuildStatusState = { installed: false, loggedIn: false, models: [], defaultModel: "" };
 let assistantMessages = [];
 let assistantSkills = [];
 let assistantBuiltInSkills = [];
@@ -752,6 +776,9 @@ let photoshopBridgeImporting = false;
 let photoshopReferenceSelectionRequest = null;
 let photoshopReferenceSelectionBusy = false;
 let recoveryNoticeShown = false;
+let agentSyncPollTimer = 0;
+let agentSyncRevision = 0;
+let agentSyncInFlight = false;
 let settingsConnectionDrafts = {};
 let settingsConnectionKeyDrafts = {};
 let settingsConnectionClearKeys = new Set();
@@ -769,6 +796,8 @@ let mediaQualityUpgradeTimer = 0;
 let canvasState = {
   nodes: [],
   viewport: { x: 120, y: 90, zoom: 1 },
+  grokProjectMemory: false,
+  agentRevision: 0,
   nextZ: 1
 };
 
@@ -799,6 +828,7 @@ async function init() {
   await refreshProjectList();
   const preferredProjectId = localStorage.getItem(currentProjectStorageKey) || projectList[0]?.id || "default";
   await loadProjectById(preferredProjectId, { initial: true });
+  startAgentCanvasSync();
   applyPhotoshopBridgeAvailability();
   refreshDreaminaStatus();
   refreshGrokBuildStatus();
@@ -865,6 +895,7 @@ assistantMessagesEl?.addEventListener("contextmenu", handleAssistantMessageConte
 assistantModelSelect?.addEventListener("change", () => updateAssistantModelSelection(assistantModelSelect.value));
 assistantAutoAttachReferencesToggle?.addEventListener("change", updateAssistantBehaviorFromControls);
 assistantAutoGenerateToggle?.addEventListener("change", updateAssistantBehaviorFromControls);
+assistantProjectMemoryToggle?.addEventListener("change", updateGrokProjectMemoryFromControl);
 settingsConnectionModel?.addEventListener("change", () => {
   if (settingsConnectionModel.value === "__custom__") {
     settingsCustomModelRow.hidden = false;
@@ -1061,6 +1092,7 @@ selectionLayerBackwardButton?.addEventListener("click", () => moveSelectedImageL
 selectionLayerForwardButton?.addEventListener("click", () => moveSelectedImageLayers("forward"));
 selectionLayerTopButton?.addEventListener("click", () => moveSelectedImageLayers("front"));
 seedreamFusionSelectionButton?.addEventListener("click", createSeedreamFusionFromSelection);
+seedreamInteractiveSelectionButton?.addEventListener("click", createSeedreamInteractiveFromSelection);
 seedreamLayerSelectionButton?.addEventListener("click", createSeedreamLayerTaskFromSelection);
 sendSelectionToPhotoshopButton?.addEventListener("click", completePhotoshopReferenceSelection);
 selectionScaleInput.addEventListener("keydown", (event) => {
@@ -1463,7 +1495,10 @@ const imageModelDefaultProfiles = {
     node.format = layerMode
       ? "png"
       : seedreamProfile === seedreamImageProfiles.PRO_5 && ["png", "jpeg"].includes(node.format) ? node.format : "png";
-    node.background = "";
+    node.background = seedreamProfile === seedreamImageProfiles.PRO_5 && !layerMode
+      ? normalizeSeedreamProBackground(node.background)
+      : "";
+    if (node.background === "transparent") node.format = "png";
     node.moderation = "";
     node.baseUrl = config.arkBaseUrl || arkDefaultBaseUrl;
     node.endpointPath = arkImageEndpoint;
@@ -1480,9 +1515,14 @@ const imageModelDefaultProfiles = {
       ? seedreamLayerSizeOptions.some(([value]) => value === node.size) ? node.size : "2K"
       : compatibleArkImageSize(node.size, node.model);
     if (seedreamProfile === seedreamImageProfiles.PRO_5) node.n = "1";
-    node.quality = "";
+    node.quality = !layerMode && seedreamProfile === seedreamImageProfiles.PRO_5
+      ? ["standard", "fast"].includes(node.quality) ? node.quality : "standard"
+      : "";
     node.format = layerMode ? "png" : node.format || "png";
-    node.background = "";
+    node.background = seedreamProfile === seedreamImageProfiles.PRO_5 && !layerMode
+      ? normalizeSeedreamProBackground(node.background)
+      : "";
+    if (node.background === "transparent") node.format = "png";
     node.moderation = "";
     node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
     delete node.extraParams.response_format;
@@ -1627,6 +1667,10 @@ function isGrokBuildImageModelName(model) {
 
 function isGrokBuildVideoModelName(model) {
   return String(model || "").trim().toLowerCase() === grokBuildVideoModel;
+}
+
+function isGrokBuildAssistantModelName(model) {
+  return String(model || "").trim().toLowerCase().startsWith(grokBuildAssistantPrefix);
 }
 
 function normalizeImageModelName(model) {
@@ -1824,6 +1868,11 @@ function seedreamModeForNode(node) {
     : seedreamProModes.STANDARD;
 }
 
+function normalizeSeedreamProBackground(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return ["opaque", "transparent"].includes(normalized) ? normalized : "";
+}
+
 function seedreamReferenceLimitForNode(node) {
   return seedreamModeForNode(node) === seedreamProModes.LAYERS ? 1 : seedreamReferenceLimit(node?.model);
 }
@@ -1844,6 +1893,14 @@ function isArkVideoModelName(model) {
   const normalized = normalizeVideoModelName(model);
   return arkVideoModelOptions.some(([value]) => value === normalized)
     || videoModelConnectionForModel(normalized)?.protocol === "ark-video";
+}
+
+function isArkSeedance25VideoModel(model) {
+  return isArkVideoModelName(model) && isArkSeedance25Model(arkVideoProfileValues(model));
+}
+
+function arkVideoProfileValues(model) {
+  return [model, videoModelConnectionForModel(model)?.apiModel];
 }
 
 function dreaminaModelVersion(model) {
@@ -1974,7 +2031,13 @@ function arkOptimizeOptionsForModel(model) {
 
 function videoRatioOptionsForModel(model, mode = dreaminaVideoDefaultMode) {
   if (isGrokBuildVideoModelName(model)) return grokBuildVideoRatioOptions;
-  if (isArkVideoModelName(model)) return arkVideoRatioOptions;
+  if (isArkVideoModelName(model)) {
+    const arkMode = normalizeArkVideoMode(mode);
+    if (isArkSeedance25VideoModel(model) && [arkVideoModes.FRAMES, arkVideoModes.EDIT, arkVideoModes.EXTEND].includes(arkMode)) {
+      return [["adaptive", "自适应（当前模式固定）"]];
+    }
+    return arkVideoRatioOptions;
+  }
   const normalizedMode = normalizeDreaminaVideoMode(mode);
   if (normalizedMode === dreaminaVideoModes.MULTIFRAME) return [["auto", "跟随首图"]];
   if ([dreaminaVideoModes.IMAGE, dreaminaVideoModes.FRAMES].includes(normalizedMode)) {
@@ -1993,6 +2056,7 @@ function videoResolutionOptionsForModel(model, mode = dreaminaVideoDefaultMode) 
     ]);
   }
   if (!isArkVideoModelName(model)) return customVideoResolutionOptions;
+  if (isArkSeedance25VideoModel(model)) return arkVideo25ResolutionOptions;
   return String(model).toLowerCase() === "ark-seedance-2.0"
     ? arkVideoFullResolutionOptions
     : arkVideoCompactResolutionOptions;
@@ -2001,10 +2065,11 @@ function videoResolutionOptionsForModel(model, mode = dreaminaVideoDefaultMode) 
 function videoDurationRangeForModel(model, mode = dreaminaVideoDefaultMode) {
   if (isGrokBuildVideoModelName(model)) return { min: 6, max: 10, step: 1 };
   if (isDreaminaVideoModelName(model)) return { ...dreaminaVideoDurationRange(model, mode), step: 1 };
-  return String(model).toLowerCase() === "ark-seedance-2.5" ? { min: 4, max: 30, step: 1 } : { min: 4, max: 15, step: 1 };
+  return isArkSeedance25VideoModel(model) ? { min: 4, max: 30, step: 1 } : { min: 4, max: 15, step: 1 };
 }
 
 function normalizeVideoDurationForModel(value, model, mode = dreaminaVideoDefaultMode) {
+  if (isArkSeedance25VideoModel(model) && normalizeArkVideoMode(mode) === arkVideoModes.EDIT) return "-1";
   const range = videoDurationRangeForModel(model, mode);
   if (isGrokBuildVideoModelName(model)) {
     const options = [["6", "6 秒"], ["10", "10 秒"]];
@@ -2042,21 +2107,31 @@ function videoTaskBaseUrl(model) {
 function videoReferenceLimit(model, mode = dreaminaVideoDefaultMode) {
   if (isGrokBuildVideoModelName(model)) return 7;
   if (isDreaminaVideoModelName(model)) return dreaminaVideoReferenceLimits(model, mode).images;
+  if (isArkVideoModelName(model)) return arkVideoReferenceLimits(arkVideoProfileValues(model), mode).images;
   return 9;
 }
 
 function videoModeForNode(node) {
-  return isDreaminaVideoModelName(node?.model)
-    ? normalizeDreaminaVideoMode(node?.videoMode)
-    : dreaminaVideoModes.AUTO;
+  if (isDreaminaVideoModelName(node?.model)) return normalizeDreaminaVideoMode(node?.videoMode);
+  if (isArkSeedance25VideoModel(node?.model)) return normalizeArkVideoMode(node?.videoMode);
+  return dreaminaVideoModes.AUTO;
+}
+
+function normalizeVideoModeForModel(model, mode) {
+  if (isDreaminaVideoModelName(model)) return normalizeDreaminaVideoMode(mode);
+  if (isArkSeedance25VideoModel(model)) return normalizeArkVideoMode(mode);
+  return dreaminaVideoDefaultMode;
 }
 
 function videoReferenceLimitsForNode(node) {
   if (isDreaminaVideoModelName(node?.model)) {
     return dreaminaVideoReferenceLimits(node.model, videoModeForNode(node));
   }
+  if (isArkVideoModelName(node?.model)) {
+    return arkVideoReferenceLimits(arkVideoProfileValues(node.model), videoModeForNode(node));
+  }
   const images = videoReferenceLimit(node?.model);
-  return { images, videos: 0, audios: 0, total: images, minImages: 0 };
+  return { images, videos: 0, audios: 0, total: images, minImages: 0, minVideos: 0 };
 }
 
 function videoReferenceCountsForNode(node) {
@@ -2069,14 +2144,25 @@ function videoReferenceCountsForNode(node) {
 }
 
 function validateVideoNodeReferences(node) {
-  if (!isDreaminaVideoModelName(node?.model)) return "";
   const mode = videoModeForNode(node);
   const limits = videoReferenceLimitsForNode(node);
   const counts = videoReferenceCountsForNode(node);
-  const total = counts.images + counts.videos + counts.audios;
-  if (counts.images > limits.images || counts.videos > limits.videos || counts.audios > limits.audios || total > limits.total) {
-    return `素材数量超限：图片 ${counts.images}/${limits.images}，视频 ${counts.videos}/${limits.videos}，音频 ${counts.audios}/${limits.audios}`;
+  const assetImages = isArkVideoModelName(node?.model) ? dedupeStrings(node?.arkAssetUris || []).length : 0;
+  const imageCount = counts.images + assetImages;
+  const total = imageCount + counts.videos + counts.audios;
+  if (imageCount > limits.images || counts.videos > limits.videos || counts.audios > limits.audios || total > limits.total) {
+    return `素材数量超限：图片 ${imageCount}/${limits.images}，视频 ${counts.videos}/${limits.videos}，音频 ${counts.audios}/${limits.audios}`;
   }
+  if (isArkSeedance25VideoModel(node?.model)) {
+    if (mode === arkVideoModes.TEXT && total) return "文生视频模式不能使用参考素材";
+    if (mode === arkVideoModes.REFERENCE && !total) return "全模态参考模式至少需要 1 个参考素材";
+    if (mode === arkVideoModes.FRAMES && (imageCount < 1 || imageCount > 2)) return "首尾帧模式需要 1 张首帧，或 2 张首尾帧图片";
+    if (mode === arkVideoModes.FRAMES && (counts.videos || counts.audios)) return "首尾帧模式只接受图片参考";
+    if (mode === arkVideoModes.EDIT && counts.videos < 1) return "视频编辑模式至少需要 1 个参考视频";
+    if (mode === arkVideoModes.EXTEND && counts.videos !== 1) return "视频延长模式需要且只能使用 1 个原视频";
+    return "";
+  }
+  if (!isDreaminaVideoModelName(node?.model)) return "";
   if (mode === dreaminaVideoModes.TEXT && total) return "文生视频模式不能使用参考素材";
   if (mode === dreaminaVideoModes.IMAGE && counts.images !== 1) return "单图成片模式需要且只能使用 1 张参考图片";
   if (mode === dreaminaVideoModes.FRAMES && counts.images !== 2) return "首尾帧模式需要且只能使用 2 张参考图片";
@@ -2094,6 +2180,17 @@ function validateVideoNodeReferences(node) {
 function dreaminaVideoModeLabel(mode) {
   const normalized = normalizeDreaminaVideoMode(mode);
   return dreaminaVideoModeOptions.find(([value]) => value === normalized)?.[1] || "自动";
+}
+
+function arkVideoModeLabel(mode) {
+  const normalized = normalizeArkVideoMode(mode);
+  return arkVideoModeOptions.find(([value]) => value === normalized)?.[1] || "自动";
+}
+
+function videoModeLabelForNode(node) {
+  return isArkSeedance25VideoModel(node?.model)
+    ? arkVideoModeLabel(videoModeForNode(node))
+    : dreaminaVideoModeLabel(videoModeForNode(node));
 }
 
 function normalizeVideoTransitionsForNode(node) {
@@ -2676,6 +2773,14 @@ async function generateNode(nodeId) {
     showToast("多图融合至少需要 2 张参考图片");
     return;
   }
+  if (seedreamMode === seedreamProModes.INTERACTIVE && referenceCount < 1) {
+    showToast("精准编辑至少需要 1 张参考图片");
+    return;
+  }
+  if (node.background === "transparent" && referenceCount > 1) {
+    showToast("透明背景编辑仅支持 1 张参考图片");
+    return;
+  }
 
   if (!syncNodeExtraParams(node)) return;
 
@@ -2695,9 +2800,10 @@ async function generateNode(nodeId) {
   updateCanvasMeta();
 
   try {
+    const annotatedReferenceFiles = await prepareSeedreamAnnotatedReferenceFiles(node);
     const response = await fetch("/api/generate", {
       method: "POST",
-      ...buildNodeRequest(node),
+      ...buildNodeRequest(node, { imageFiles: annotatedReferenceFiles }),
       signal: controller.signal
     });
     const data = await response.json();
@@ -3151,14 +3257,13 @@ async function generateVideoNode(nodeId) {
     return;
   }
 
+  if (!syncNodeExtraParams(node)) return;
+  if (isArkVideoModelName(node.model) && !syncArkAssetUris(node)) return;
   const referenceError = validateVideoNodeReferences(node);
   if (referenceError) {
     showToast(referenceError);
     return;
   }
-
-  if (!syncNodeExtraParams(node)) return;
-  if (isArkVideoModelName(node.model) && !syncArkAssetUris(node)) return;
   const storedMedia = fileStore.get(node.id) || {};
   if (storedMedia.images?.length || storedMedia.videos?.length || storedMedia.audios?.length) {
     await cacheEditFiles(node.id);
@@ -3241,7 +3346,7 @@ function stopGenerationNode(nodeId) {
   return true;
 }
 
-function buildNodeRequest(node) {
+function buildNodeRequest(node, options = {}) {
   if (node.type === "video-task") {
     const storedFiles = fileStore.get(node.id);
     if (storedFiles?.images?.length || storedFiles?.videos?.length || storedFiles?.audios?.length) {
@@ -3261,6 +3366,12 @@ function buildNodeRequest(node) {
   }
 
   if (node.mode === "edit") {
+    if (Array.isArray(options.imageFiles) && options.imageFiles.length) {
+      const formData = new FormData();
+      appendNodeFields(formData, node, { includeCachedAssets: false });
+      options.imageFiles.forEach((file) => formData.append("image", file));
+      return { body: formData };
+    }
     const storedFiles = fileStore.get(node.id);
     const hasUploadedImages = Boolean(storedFiles?.images?.length);
     const hasUploadedMask = Boolean(storedFiles?.mask);
@@ -3389,7 +3500,7 @@ function normalizeNodeImage(image, node) {
 function buildGenerationSnapshot(node) {
   return {
     mode: node.mode === "edit" ? "edit" : "create",
-    videoMode: normalizeDreaminaVideoMode(node.videoMode),
+    videoMode: normalizeVideoModeForModel(node.model, node.videoMode),
     videoTransitions: clonePlainValue(node.videoTransitions || []),
     seedreamMode: seedreamModeForNode(node),
     prompt: effectivePromptForNode(node),
@@ -4343,8 +4454,9 @@ function syncArkAssetUris(node) {
     return false;
   }
   const sessionImageCount = fileStore.get(node.id)?.images?.length || 0;
-  if (uris.length + (node.cachedImages?.length || 0) + sessionImageCount > 9) {
-    showToast("方舟素材与普通参考图合计最多 9 个");
+  const imageLimit = videoReferenceLimitsForNode(node).images;
+  if (uris.length + (node.cachedImages?.length || 0) + sessionImageCount > imageLimit) {
+    showToast(`方舟素材与普通参考图合计最多 ${imageLimit} 个`);
     return false;
   }
   node.arkAssetUris = uris;
@@ -4376,9 +4488,12 @@ function fillAssistantModelSelect(select, value) {
   if (!select) return;
   const selected = String(value || assistantDefaultModel).trim() || assistantDefaultModel;
   const options = [...assistantModelOptions];
-  for (const grokModel of config.grokBuildModels || []) {
+  const grokDefaultModel = String(config.grokBuildDefaultModel || grokBuildStatusState.defaultModel || "").trim();
+  const grokModels = [...new Set([grokDefaultModel, ...(config.grokBuildModels || [])].filter(Boolean))];
+  for (const grokModel of grokModels) {
     const model = `${grokBuildAssistantPrefix}${grokModel}`;
-    options.push([model, `${grokModel}（Grok 官方账号）`]);
+    const suffix = grokModel === grokDefaultModel ? "Grok 官方账号 · 默认" : "Grok 官方账号";
+    options.push([model, `${grokModel}（${suffix}）`]);
   }
   for (const definition of config.connectionModels || []) {
     if (definition.capability !== "chat") continue;
@@ -4398,7 +4513,10 @@ function fillAssistantModelSelect(select, value) {
     select.append(option);
   }
   select.value = selected;
-  if (select === assistantModelSelect) updateAssistantModelIcon(selected);
+  if (select === assistantModelSelect) {
+    updateAssistantModelIcon(selected);
+    updateAssistantProjectMemoryControl(selected);
+  }
 }
 
 function updateAssistantModelIcon(model) {
@@ -4858,15 +4976,18 @@ function renderGrokBuildStatus(data = {}) {
   const installed = Boolean(data.installed);
   const loggedIn = Boolean(data.loggedIn);
   const models = Array.isArray(data.models) ? data.models.filter(Boolean) : [];
-  grokBuildStatusState = { ...data, installed, loggedIn, models };
+  const defaultModel = loggedIn ? String(data.defaultModel || models[0] || grokBuildDefaultChatModel).trim() : "";
+  grokBuildStatusState = { ...data, installed, loggedIn, models, defaultModel };
   grokBuildStatusText.textContent = !installed ? "未安装" : loggedIn ? "已登录" : "未登录";
   const meta = [];
   if (data.version) meta.push(`v${data.version}`);
+  if (defaultModel && loggedIn) meta.push(`默认模型 ${defaultModel}`);
   if (models.length) meta.push(`可用模型 ${models.join("、")}`);
   if (!meta.length && data.error) meta.push(data.error);
   grokBuildAccountMeta.textContent = meta.join(" · ");
   config.grokBuildLoggedIn = loggedIn;
   config.grokBuildModels = models;
+  config.grokBuildDefaultModel = defaultModel;
   renderAssistantModelSelectors();
   updateGrokBuildButtons();
 }
@@ -5469,6 +5590,7 @@ function syncAssistantBehaviorControls() {
     assistantAutoAttachReferencesToggle.checked = assistantBehavior.autoAttachReferences;
   }
   if (assistantAutoGenerateToggle) assistantAutoGenerateToggle.checked = assistantBehavior.autoGenerate;
+  updateAssistantProjectMemoryControl();
 }
 
 function updateAssistantBehaviorFromControls() {
@@ -5477,6 +5599,21 @@ function updateAssistantBehaviorFromControls() {
     autoGenerate: Boolean(assistantAutoGenerateToggle?.checked)
   };
   saveAssistantBehavior();
+}
+
+function updateAssistantProjectMemoryControl(model = config.assistantModel || assistantDefaultModel) {
+  const supported = isGrokBuildAssistantModelName(model);
+  if (assistantProjectMemoryOption) assistantProjectMemoryOption.hidden = !supported;
+  if (assistantProjectMemoryToggle) {
+    assistantProjectMemoryToggle.checked = canvasState.grokProjectMemory === true;
+    assistantProjectMemoryToggle.disabled = assistantBusy || !supported;
+  }
+}
+
+function updateGrokProjectMemoryFromControl() {
+  canvasState.grokProjectMemory = Boolean(assistantProjectMemoryToggle?.checked);
+  saveCanvasState({ history: false });
+  showToast(canvasState.grokProjectMemory ? "已为当前画布开启 Grok 项目记忆" : "已为当前画布关闭 Grok 项目记忆");
 }
 
 function closeAssistantPanel() {
@@ -6242,6 +6379,8 @@ async function sendAssistantPrompt(content, options = {}) {
       body: JSON.stringify({
         model: config.assistantModel || assistantDefaultModel,
         mode,
+        projectId: currentProjectId,
+        projectMemory: canvasState.grokProjectMemory === true,
         messages: buildAssistantRequestMessages(options.requestMessages || assistantMessages),
         context: buildAssistantContext({ compact: mode === "action_plan" })
       }),
@@ -6335,6 +6474,7 @@ function setAssistantBusy(isBusy) {
   if (assistantImportFilesButton) assistantImportFilesButton.disabled = assistantBusy;
   if (assistantImportSkillButton) assistantImportSkillButton.disabled = assistantBusy;
   if (assistantModelSelect) assistantModelSelect.disabled = assistantBusy;
+  updateAssistantProjectMemoryControl();
 }
 
 function stopAssistantResponse() {
@@ -8214,7 +8354,8 @@ function buildAssistantContext(options = {}) {
     assistantBehavior: {
       autoAttachSelectedReferences: assistantBehavior.autoAttachReferences,
       autoApplyPlans: assistantBehavior.autoGenerate,
-      autoGenerateCreatedNodes: assistantBehavior.autoGenerate
+      autoGenerateCreatedNodes: assistantBehavior.autoGenerate,
+      grokProjectMemory: canvasState.grokProjectMemory === true
     },
     selection: selected.slice(0, nodeLimit).map((node) => summarizeNodeForAssistant(node, promptLimit)),
     recentNodes: recentNodes.map((node) => summarizeNodeForAssistant(node, promptLimit))
@@ -8490,7 +8631,7 @@ function getVideoGeneration(node) {
   const model = generation.model || video.model || dreaminaVideoDefaultModel;
   return {
     prompt,
-    videoMode: normalizeDreaminaVideoMode(generation.videoMode),
+    videoMode: normalizeVideoModeForModel(model, generation.videoMode),
     videoTransitions: Array.isArray(generation.videoTransitions) ? clonePlainValue(generation.videoTransitions) : [],
     model: isSupportedVideoModelName(model) ? model : dreaminaVideoDefaultModel,
     n: String(generation.n || video.duration || dreaminaVideoDefaultDuration),
@@ -8518,9 +8659,7 @@ function applyGenerationToVideoTask(task, generation) {
   task.promptNotePlacements = {};
   task.model = generation.model || dreaminaVideoDefaultModel;
   task.provider = videoTaskProvider(task.model);
-  task.videoMode = isDreaminaVideoModelName(task.model)
-    ? normalizeDreaminaVideoMode(generation.videoMode)
-    : dreaminaVideoDefaultMode;
+  task.videoMode = normalizeVideoModeForModel(task.model, generation.videoMode);
   task.videoTransitions = Array.isArray(generation.videoTransitions) ? clonePlainValue(generation.videoTransitions) : [];
   task.n = normalizeVideoDurationForModel(generation.n || dreaminaVideoDefaultDuration, task.model, task.videoMode);
   task.size = videoRatioOptionsForModel(task.model, task.videoMode).some(([value]) => value === generation.size)
@@ -8529,12 +8668,16 @@ function applyGenerationToVideoTask(task, generation) {
   task.quality = videoResolutionOptionsForModel(task.model, task.videoMode).some(([value]) => value === generation.quality)
     ? generation.quality
     : dreaminaVideoDefaultResolution;
-  task.format = generation.format || "mp4";
+  task.format = ["mp4", "mov"].includes(String(generation.format || "").toLowerCase())
+    ? String(generation.format).toLowerCase()
+    : "mp4";
   task.baseUrl = generation.baseUrl || videoTaskBaseUrl(task.model);
   task.endpointPath = generation.endpointPath || videoTaskEndpoint(task.model);
   task.extraParams = isPlainObject(generation.extraParams) ? clonePlainValue(generation.extraParams) : {};
   task.extraParamsText = JSON.stringify(task.extraParams, null, 2);
-  task.arkAssetUris = Array.isArray(generation.arkAssetUris) ? dedupeStrings(generation.arkAssetUris).slice(0, 9) : [];
+  task.arkAssetUris = Array.isArray(generation.arkAssetUris)
+    ? dedupeStrings(generation.arkAssetUris).slice(0, arkVideoReferenceLimits(arkVideoProfileValues(task.model), task.videoMode).images)
+    : [];
   task.arkAssetUrisText = task.arkAssetUris.join("\n");
   task.referenceMentionAliases = isPlainObject(generation.referenceMentionAliases)
     ? clonePlainValue(generation.referenceMentionAliases)
@@ -8679,6 +8822,14 @@ function updateSelectionToolbar() {
     seedreamFusionSelectionButton.title = selectedImages.length > 10
       ? "Seedream 5.0 Pro 最多接收 10 张参考图，请减少选择"
       : "按画布中的位置、大小和遮挡层级制作构图稿，并创建多图融合任务";
+  }
+  if (seedreamInteractiveSelectionButton) {
+    seedreamInteractiveSelectionButton.hidden = selectedImages.length !== 1;
+    seedreamInteractiveSelectionButton.disabled = selectedImages.length !== 1 || Boolean(seedreamSelectionActionBusy);
+    seedreamInteractiveSelectionButton.textContent = seedreamSelectionActionBusy === seedreamProModes.INTERACTIVE
+      ? "正在准备编辑..."
+      : "精准编辑";
+    seedreamInteractiveSelectionButton.title = "用当前图片创建 Seedream 5.0 Pro 精准编辑任务，并打开标注工具";
   }
   if (seedreamLayerSelectionButton) {
     seedreamLayerSelectionButton.hidden = selectedImages.length !== 1;
@@ -8896,6 +9047,133 @@ async function createDrawableForCanvasComposition(blob) {
   }
 }
 
+function seedreamMarkerActions(annotation) {
+  return normalizeMaskAnnotation(annotation).actions.filter((action) => (
+    ["brush", "rect", "ellipse", "arrow"].includes(action.tool)
+  ));
+}
+
+async function prepareSeedreamAnnotatedReferenceFiles(node) {
+  if (
+    node?.type !== "task"
+    || node.mode !== "edit"
+    || seedreamImageProfileForModel(node.model) !== seedreamImageProfiles.PRO_5
+    || seedreamModeForNode(node) === seedreamProModes.LAYERS
+  ) return null;
+
+  const references = (node.cachedImages || []).slice(0, seedreamReferenceLimitForNode(node));
+  if (!references.some((reference) => seedreamMarkerActions(reference?.maskAnnotation).length)) return null;
+
+  const files = [];
+  for (const [index, reference] of references.entries()) {
+    const imageUrl = reference?.url || (reference?.path ? `/${reference.path}` : "");
+    if (!imageUrl) throw new Error(`参考图 ${index + 1} 无法读取`);
+    const response = await fetch(imageUrl);
+    if (!response.ok) throw new Error(`参考图 ${index + 1} 读取失败`);
+    const sourceBlob = await response.blob();
+    const markerActions = seedreamMarkerActions(reference.maskAnnotation);
+    if (!markerActions.length) {
+      files.push(new File(
+        [sourceBlob],
+        reference.originalName || reference.filename || `seedream-reference-${index + 1}.${extensionFromContentType(sourceBlob.type || "image/png")}`,
+        { type: sourceBlob.type || "image/png" }
+      ));
+      continue;
+    }
+
+    const decoded = await createDrawableForCanvasComposition(sourceBlob);
+    try {
+      const width = Math.max(1, Number(decoded.drawable.width || decoded.drawable.naturalWidth) || 1);
+      const height = Math.max(1, Number(decoded.drawable.height || decoded.drawable.naturalHeight) || 1);
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d", { alpha: true });
+      if (!context) throw new Error("无法创建 Seedream 标注图片");
+      context.drawImage(decoded.drawable, 0, 0, width, height);
+      markerActions.forEach((action) => drawSeedreamMarkerAction(context, action));
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+      if (!blob) throw new Error("Seedream 标注图片导出失败");
+      const baseName = convertedImageFilename(reference.originalName || reference.filename, "png") || `seedream-reference-${index + 1}.png`;
+      files.push(new File([blob], baseName.replace(/\.png$/iu, "-marked.png"), { type: "image/png" }));
+    } finally {
+      decoded.release();
+    }
+  }
+  return files;
+}
+
+function drawSeedreamMarkerAction(context, rawAction) {
+  const action = normalizeAnnotationAction(rawAction);
+  if (!action || ["point", "bbox"].includes(action.tool)) return;
+  const size = Math.max(8, Number(action.size) || 24);
+  context.save();
+  context.globalCompositeOperation = "source-over";
+  context.strokeStyle = "rgba(239, 38, 38, 0.94)";
+  context.fillStyle = "rgba(239, 38, 38, 0.24)";
+  context.lineWidth = action.tool === "brush" ? size : Math.max(4, size * 0.2);
+  context.lineCap = "round";
+  context.lineJoin = "round";
+
+  if (action.tool === "brush") {
+    const points = annotationPoints(action.points);
+    if (points.length === 1) {
+      context.beginPath();
+      context.arc(points[0].x, points[0].y, size / 2, 0, Math.PI * 2);
+      context.fillStyle = "rgba(239, 38, 38, 0.78)";
+      context.fill();
+    } else if (points.length > 1) {
+      context.beginPath();
+      context.moveTo(points[0].x, points[0].y);
+      points.slice(1).forEach((point) => context.lineTo(point.x, point.y));
+      context.stroke();
+    }
+    context.restore();
+    return;
+  }
+
+  const start = annotationPoint(action.start);
+  const end = annotationPoint(action.end);
+  if (!start || !end) {
+    context.restore();
+    return;
+  }
+  const x = Math.min(start.x, end.x);
+  const y = Math.min(start.y, end.y);
+  const width = Math.abs(end.x - start.x);
+  const height = Math.abs(end.y - start.y);
+  if (action.tool === "rect") {
+    context.fillRect(x, y, Math.max(1, width), Math.max(1, height));
+    context.strokeRect(x, y, Math.max(1, width), Math.max(1, height));
+  } else if (action.tool === "ellipse") {
+    context.beginPath();
+    context.ellipse(x + width / 2, y + height / 2, Math.max(1, width / 2), Math.max(1, height / 2), 0, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+  } else if (action.tool === "arrow") {
+    drawSeedreamMarkerArrow(context, start, end, size);
+  }
+  context.restore();
+}
+
+function drawSeedreamMarkerArrow(context, start, end, size) {
+  const angle = Math.atan2(end.y - start.y, end.x - start.x);
+  const headLength = Math.max(18, size * 1.8);
+  const headAngle = Math.PI / 7;
+  context.lineWidth = Math.max(5, size * 0.45);
+  context.beginPath();
+  context.moveTo(start.x, start.y);
+  context.lineTo(end.x, end.y);
+  context.stroke();
+  context.beginPath();
+  context.moveTo(end.x, end.y);
+  context.lineTo(end.x - headLength * Math.cos(angle - headAngle), end.y - headLength * Math.sin(angle - headAngle));
+  context.lineTo(end.x - headLength * Math.cos(angle + headAngle), end.y - headLength * Math.sin(angle + headAngle));
+  context.closePath();
+  context.fillStyle = "rgba(239, 38, 38, 0.94)";
+  context.fill();
+}
+
 async function createCanvasCompositionFile(imageNodes, sourceFiles) {
   const bounds = canvasImageSelectionBounds(imageNodes);
   if (!bounds) throw new Error("没有可用于构图的图片");
@@ -9014,6 +9292,34 @@ async function createSeedreamFusionFromSelection() {
   } catch (error) {
     markSeedreamPreparationError(task, error);
     showToast(error.message || "多图融合任务准备失败");
+  } finally {
+    seedreamSelectionActionBusy = "";
+    updateSelectionToolbar();
+  }
+}
+
+async function createSeedreamInteractiveFromSelection() {
+  if (seedreamSelectionActionBusy) return;
+  const selectedImages = selectedCanvasImageNodes();
+  if (selectedImages.length !== 1) {
+    showToast("请选择 1 张需要精准编辑的图片");
+    return;
+  }
+
+  seedreamSelectionActionBusy = seedreamProModes.INTERACTIVE;
+  updateSelectionToolbar();
+  let task = null;
+  try {
+    const sourceFile = await imageNodeToFile(selectedImages[0]);
+    task = createSeedreamTaskForCanvasSelection(seedreamProModes.INTERACTIVE, selectedImages, {
+      prompt: "请根据标记或坐标精准修改指定区域，保持未指定区域、主体身份、构图、光线与整体风格不变。"
+    });
+    await attachPreparedImageReferences(task, [sourceFile], [selectedImages[0].id]);
+    openReferenceMaskEditor(task.id, 0);
+    showToast("精准编辑任务已准备好，请标记区域后补充修改要求");
+  } catch (error) {
+    markSeedreamPreparationError(task, error);
+    showToast(error.message || "精准编辑任务准备失败");
   } finally {
     seedreamSelectionActionBusy = "";
     updateSelectionToolbar();
@@ -11119,6 +11425,8 @@ async function analyzeStoryBreakdown(nodeId) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: node.model,
+        projectId: currentProjectId,
+        projectMemory: canvasState.grokProjectMemory === true,
         script: episode.script,
         episode: {
           id: episode.id,
@@ -13646,10 +13954,12 @@ function createVideoTaskHeader(node) {
     : videoModelLabel(node.model);
   const durationLabel = mode === dreaminaVideoModes.MULTIFRAME
     ? `${multiframeTotalDuration(node)}s`
+    : isArkSeedance25VideoModel(node.model) && mode === arkVideoModes.EDIT
+      ? "跟随原视频"
     : `${node.n || dreaminaVideoDefaultDuration}s`;
   meta.textContent = [
     modelLabel,
-    isDreaminaVideoModelName(node.model) ? dreaminaVideoModeLabel(mode) : "",
+    isDreaminaVideoModelName(node.model) || isArkSeedance25VideoModel(node.model) ? videoModeLabelForNode(node) : "",
     node.size === "auto" ? "跟随首图" : node.size,
     durationLabel,
     node.quality
@@ -13667,7 +13977,12 @@ function createVideoTaskSettings(node) {
   if (videoMode === dreaminaVideoModes.MULTIFRAME && videoReferenceCountsForNode(node).images <= 2) {
     durationRange.min = 2;
   }
-  const durationField = isGrokBuildVideoModelName(node.model)
+  const durationField = isArkSeedance25VideoModel(node.model) && videoMode === arkVideoModes.EDIT
+    ? createField("时长", Object.assign(document.createElement("div"), {
+        className: "node-static-value",
+        textContent: "跟随原视频（API 固定 -1）"
+      }))
+    : isGrokBuildVideoModelName(node.model)
     ? createSelectField("时长", node, "n", [["6", "6 秒"], ["10", "10 秒"]])
     : createNumberField(
         videoMode === dreaminaVideoModes.MULTIFRAME ? "默认分段时长（秒）" : "时长（秒）",
@@ -13689,6 +14004,21 @@ function createVideoTaskSettings(node) {
         updateNode(node);
       }
     }));
+  } else if (isArkSeedance25VideoModel(node.model)) {
+    settings.append(createSelectField("生成模式", node, "videoMode", arkVideoModeOptions, {
+      onChange: (value) => {
+        node.videoMode = normalizeArkVideoMode(value);
+        if (node.videoMode === arkVideoModes.EDIT) node.n = "-1";
+        else if (Number(node.n) < 4) node.n = dreaminaVideoDefaultDuration;
+        node.n = normalizeVideoDurationForModel(node.n, node.model, node.videoMode);
+        const ratios = videoRatioOptionsForModel(node.model, node.videoMode);
+        if (!ratios.some(([ratio]) => ratio === node.size)) node.size = ratios[0]?.[0] || "adaptive";
+        const resolutions = videoResolutionOptionsForModel(node.model, node.videoMode);
+        if (!resolutions.some(([resolution]) => resolution === node.quality)) node.quality = resolutions[0]?.[0] || dreaminaVideoDefaultResolution;
+        if ([arkVideoModes.EDIT, arkVideoModes.EXTEND].includes(node.videoMode)) node.format = "mov";
+        updateNode(node);
+      }
+    }));
   }
 
   if (videoMode === dreaminaVideoModes.MULTIFRAME && isDreaminaVideoModelName(node.model)) {
@@ -13699,11 +14029,16 @@ function createVideoTaskSettings(node) {
   } else {
     settings.append(createSelectField("模型", node, "model", videoModelOptions(node.model), {
       onChange: (value) => {
+        const previousMode = node.videoMode;
         node.provider = videoTaskProvider(value);
         node.baseUrl = videoTaskBaseUrl(value);
         node.endpointPath = videoTaskEndpoint(value);
-        if (!isDreaminaVideoModelName(value)) node.videoMode = dreaminaVideoDefaultMode;
-        const nextMode = isDreaminaVideoModelName(value) ? videoModeForNode(node) : dreaminaVideoDefaultMode;
+        node.videoMode = isDreaminaVideoModelName(value)
+          ? normalizeDreaminaVideoMode(previousMode)
+          : isArkSeedance25VideoModel(value)
+            ? normalizeArkVideoMode(previousMode)
+            : dreaminaVideoDefaultMode;
+        const nextMode = videoModeForNode(node);
         node.n = normalizeVideoDurationForModel(node.n, value, nextMode);
         if (!videoResolutionOptionsForModel(value, nextMode).some(([resolution]) => resolution === node.quality)) node.quality = "720p";
         if (!videoRatioOptionsForModel(value, nextMode).some(([ratio]) => ratio === node.size)) {
@@ -13721,6 +14056,13 @@ function createVideoTaskSettings(node) {
   );
 
   if (isDreaminaVideoModelName(node.model)) settings.append(createDreaminaVideoModeHint(node));
+
+  if (isArkSeedance25VideoModel(node.model)) {
+    settings.append(
+      createSelectField("输出格式", node, "format", arkVideoOutputFormatOptions),
+      createArkVideoModeHint(node)
+    );
+  }
 
   if (isArkVideoModelName(node.model)) settings.append(createArkVideoAudioField(node));
 
@@ -13761,6 +14103,22 @@ function createDreaminaVideoModeHint(node) {
     [dreaminaVideoModes.MULTIMODAL]: "全能参考：可混合图片、视频和音频；Seedance 2.5 最多 50 个素材。"
   };
   hint.textContent = messages[mode] || messages[dreaminaVideoModes.AUTO];
+  return hint;
+}
+
+function createArkVideoModeHint(node) {
+  const hint = document.createElement("p");
+  hint.className = "seedream-mode-hint dreamina-video-mode-hint";
+  const mode = videoModeForNode(node);
+  const messages = {
+    [arkVideoModes.AUTO]: "自动模式：无素材时文生视频；有素材时按全模态参考发送。",
+    [arkVideoModes.TEXT]: "文生视频：不发送参考素材。",
+    [arkVideoModes.REFERENCE]: "全模态参考：最多 30 张图片、10 个视频、10 个音频，共 50 个素材。",
+    [arkVideoModes.FRAMES]: "首尾帧：第 1 张图为首帧，第 2 张图为尾帧；比例固定为自适应。",
+    [arkVideoModes.EDIT]: "视频编辑：至少 1 个视频；比例自适应、时长跟随原视频，默认 MOV。",
+    [arkVideoModes.EXTEND]: "视频延长：需要 1 个原视频；比例自适应，可选择延长后时长，默认 MOV。"
+  };
+  hint.textContent = messages[mode] || messages[arkVideoModes.AUTO];
   return hint;
 }
 
@@ -13817,7 +14175,12 @@ function createVideoReferenceFields(node) {
 
   const useSelected = document.createElement("button");
   useSelected.type = "button";
-  useSelected.textContent = isDreaminaVideoModelName(node.model) && [dreaminaVideoModes.AUTO, dreaminaVideoModes.MULTIMODAL].includes(mode)
+  const acceptsCanvasVideo = (
+    isDreaminaVideoModelName(node.model) && [dreaminaVideoModes.AUTO, dreaminaVideoModes.MULTIMODAL].includes(mode)
+  ) || (
+    isArkSeedance25VideoModel(node.model) && [arkVideoModes.AUTO, arkVideoModes.REFERENCE, arkVideoModes.EDIT, arkVideoModes.EXTEND].includes(mode)
+  );
+  useSelected.textContent = acceptsCanvasVideo
     ? "使用选中图片/视频"
     : "使用选中图片";
   useSelected.addEventListener("click", () => useSelectedCanvasMediaAsVideoReference(node.id));
@@ -13839,7 +14202,7 @@ function createVideoReferenceFields(node) {
   if (limits.total) contents.push(referenceActions);
   contents.push(createVideoReferenceThumbnails(node), createVideoReferenceSummary(node));
   if (mode === dreaminaVideoModes.MULTIFRAME) contents.push(createVideoTransitionFields(node));
-  if (isArkVideoModelName(node.model)) contents.push(createArkAssetUriField(node));
+  if (isArkVideoModelName(node.model) && limits.images) contents.push(createArkAssetUriField(node));
   panel.append(...contents);
   return panel;
 }
@@ -13850,8 +14213,10 @@ async function addVideoReferenceFiles(node, kind, incomingFiles) {
   const limits = videoReferenceLimitsForNode(node);
   const limit = limits[kind] || 0;
   const counts = videoReferenceCountsForNode(node);
-  const total = counts.images + counts.videos + counts.audios;
-  const remainingForKind = Math.max(0, limit - (counts[kind] || 0));
+  const assetImages = isArkVideoModelName(node.model) ? dedupeStrings(node.arkAssetUris || []).length : 0;
+  const total = counts.images + counts.videos + counts.audios + assetImages;
+  const kindCount = (counts[kind] || 0) + (kind === "images" ? assetImages : 0);
+  const remainingForKind = Math.max(0, limit - kindCount);
   const remainingTotal = Math.max(0, limits.total - total);
   const accepted = files.slice(0, Math.min(remainingForKind, remainingTotal));
   if (accepted.length < files.length) {
@@ -13976,7 +14341,7 @@ function createVideoReferenceSummary(node) {
     ? `${counts.images} 张图片 · ${counts.videos} 个视频 · ${counts.audios} 个音频${assets ? ` · ${assets} 个虚拟人像素材` : ""}`
     : videoModeForNode(node) === dreaminaVideoModes.AUTO
       ? "未选择参考素材时将使用文生视频。"
-      : `当前为${dreaminaVideoModeLabel(videoModeForNode(node))}模式。`;
+      : `当前为${videoModeLabelForNode(node)}模式。`;
   return summary;
 }
 
@@ -14129,6 +14494,8 @@ function createTaskHeader(node) {
     ? "shuffle"
     : seedreamMode === seedreamProModes.LAYERS
       ? "object"
+      : seedreamMode === seedreamProModes.INTERACTIVE
+        ? "mask"
       : node.mode === "edit" ? "image-edit" : "image-generate";
   titleWrap.append(createNodeIcon(titleIcon, "task-title-icon"));
 
@@ -14138,6 +14505,8 @@ function createTaskHeader(node) {
     ? "Seedream 多图融合"
     : seedreamMode === seedreamProModes.LAYERS
       ? "Seedream 智能拆图层"
+      : seedreamMode === seedreamProModes.INTERACTIVE
+        ? "Seedream 精准编辑"
       : providerForModel(node.model) === "dreamina"
     ? "即梦生图"
     : providerForModel(node.model) === "ark"
@@ -14152,6 +14521,7 @@ function createTaskHeader(node) {
   modeTabs.append(createModeButton(node, "create", "创建"), createModeButton(node, "edit", "编辑"));
   if (seedreamImageProfileForModel(node.model) === seedreamImageProfiles.PRO_5) {
     modeTabs.append(
+      createSeedreamModeButton(node, seedreamProModes.INTERACTIVE, "精准编辑", "mask"),
       createSeedreamModeButton(node, seedreamProModes.FUSION, "多图融合", "shuffle"),
       createSeedreamModeButton(node, seedreamProModes.LAYERS, "拆图层", "object")
     );
@@ -14177,6 +14547,8 @@ function createPromptField(node) {
     ? "输入视频提示词，输入 @ 精确引用已添加素材"
     : seedreamModeForNode(node) === seedreamProModes.LAYERS
       ? "可选：描述希望分离的主体、文字或装饰元素；留空则自动拆分"
+      : seedreamModeForNode(node) === seedreamProModes.INTERACTIVE
+        ? "描述要修改的内容；点击参考图可添加红色标记、定位点或坐标框"
       : seedreamModeForNode(node) === seedreamProModes.FUSION
         ? "描述图 1、图 2 等参考图要如何融合"
         : "输入这个节点的提示词";
@@ -14413,6 +14785,20 @@ function videoReferenceDisplayName(value, fallbackIndex) {
 
 function requestPromptForNode(node) {
   const prompt = effectivePromptForNode(node);
+  if (node?.type === "task" && seedreamImageProfileForModel(node.model) === seedreamImageProfiles.PRO_5) {
+    const coordinates = (node.cachedImages || [])
+      .map((image, index) => {
+        const annotation = normalizeMaskAnnotation(image?.maskAnnotation);
+        return seedreamCoordinatePromptForActions(
+          annotation.actions,
+          annotation.width,
+          annotation.height,
+          index
+        );
+      })
+      .filter(Boolean);
+    return [prompt, ...coordinates].filter(Boolean).join("\n");
+  }
   if (node?.type !== "video-task") return prompt;
   let expanded = prompt;
   for (const option of videoReferenceMentionOptions(node)) {
@@ -14533,7 +14919,15 @@ function createDebugPanel(node) {
       );
     }
     if (seedreamProfile === seedreamImageProfiles.PRO_5 && !layerMode) {
-      advancedGrid.append(createSelectField("格式", node, "format", [["png", "png"], ["jpeg", "jpeg"]]));
+      advancedGrid.append(
+        createSelectField("格式", node, "format", [["png", "png"], ["jpeg", "jpeg"]]),
+        createSelectField("背景", node, "background", seedreamProBackgroundOptions, {
+          onChange: (value) => {
+            if (value === "transparent") node.format = "png";
+            updateNode(node);
+          }
+        })
+      );
     }
     if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
   } else if (isSeedreamImageModelName(node.model)) {
@@ -14541,8 +14935,26 @@ function createDebugPanel(node) {
     const layerMode = seedreamModeForNode(node) === seedreamProModes.LAYERS;
     settings.append(modelField, createSelectField("尺寸", node, "size", sizeOptionsForTaskNode(node)));
     if (!layerMode) {
-      settings.append(createNumberField("数量", node, "n", { min: 1, max: seedreamProfile === seedreamImageProfiles.PRO_5 ? 1 : 15 }));
-      advancedGrid.append(createSelectField("格式", node, "format", formatOptions));
+      settings.append(
+        createNumberField("数量", node, "n", { min: 1, max: seedreamProfile === seedreamImageProfiles.PRO_5 ? 1 : 15 }),
+        ...(seedreamProfile === seedreamImageProfiles.PRO_5
+          ? [createSelectField("提示词优化", node, "quality", arkOptimizeOptions)]
+          : [])
+      );
+      advancedGrid.append(createSelectField(
+        "格式",
+        node,
+        "format",
+        seedreamProfile === seedreamImageProfiles.PRO_5 ? [["png", "png"], ["jpeg", "jpeg"]] : formatOptions
+      ));
+      if (seedreamProfile === seedreamImageProfiles.PRO_5) {
+        advancedGrid.append(createSelectField("背景", node, "background", seedreamProBackgroundOptions, {
+          onChange: (value) => {
+            if (value === "transparent") node.format = "png";
+            updateNode(node);
+          }
+        }));
+      }
     }
     if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
   } else if (usesBananaImageParameters(node.model)) {
@@ -14860,7 +15272,9 @@ function createSeedreamAssetHint(node) {
     ? node.cachedImages?.[0]?.canvasComposition
       ? `${autoDetected}画布多图融合：图 1 是按当前位置、大小与遮挡层级生成的构图稿，后续图片用于补充原图细节。中转站是否支持由其上游决定。`
       : `${autoDetected}多图融合：按“图 1、图 2…”顺序使用 2–10 张参考图，输出一张融合结果。中转站是否支持由其上游决定。`
-    : `${autoDetected}智能拆图层：只发送第 1 张图片并启用 layer_decomposition，结果会按坐标和层级还原为可独立编辑的透明 PNG 图层。`;
+    : mode === seedreamProModes.INTERACTIVE
+      ? `${autoDetected}精准编辑：点击参考图可画红色标记，或添加 0–999 归一化定位点／坐标框；生成时会自动转换为 Seedream 可识别的参考图和提示词。`
+      : `${autoDetected}智能拆图层：只发送第 1 张图片并启用 layer_decomposition，结果会按坐标和层级还原为可独立编辑的透明 PNG 图层。`;
   return hint;
 }
 
@@ -14899,7 +15313,9 @@ function createReferenceThumbnails(node, options = {}) {
     if (options.editable !== false) {
       button.title = image.canvasComposition
         ? "画布构图稿：记录所选图片的位置、大小和遮挡关系"
-        : "放大标注局部重绘区域";
+        : seedreamImageProfileForModel(node.model) === seedreamImageProfiles.PRO_5
+          ? "放大并添加 Seedream 可识别的标记或坐标"
+          : "放大标注局部重绘区域";
       button.addEventListener("click", () => openReferenceMaskEditor(node.id, index));
     } else {
       button.tabIndex = -1;
@@ -14959,6 +15375,7 @@ function createAnnotationSvgElement(action) {
   const strokeWidth = Math.max(3, size * 0.18);
   const fill = "rgba(230, 64, 48, 0.36)";
   const stroke = "rgba(230, 64, 48, 0.86)";
+  const coordinateStroke = "rgba(45, 212, 191, 0.96)";
 
   if (action.tool === "brush") {
     const points = annotationPoints(action.points);
@@ -14981,6 +15398,35 @@ function createAnnotationSvgElement(action) {
     return polyline;
   }
 
+  if (action.tool === "point") {
+    const point = annotationPoint(action.point);
+    if (!point) return null;
+    const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    circle.setAttribute("cx", point.x);
+    circle.setAttribute("cy", point.y);
+    circle.setAttribute("r", Math.max(8, size * 0.35));
+    circle.setAttribute("fill", "rgba(45, 212, 191, 0.24)");
+    circle.setAttribute("stroke", coordinateStroke);
+    circle.setAttribute("stroke-width", Math.max(3, size * 0.16));
+    const horizontal = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    horizontal.setAttribute("x1", point.x - size * 0.6);
+    horizontal.setAttribute("y1", point.y);
+    horizontal.setAttribute("x2", point.x + size * 0.6);
+    horizontal.setAttribute("y2", point.y);
+    horizontal.setAttribute("stroke", coordinateStroke);
+    horizontal.setAttribute("stroke-width", Math.max(2, size * 0.1));
+    const vertical = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    vertical.setAttribute("x1", point.x);
+    vertical.setAttribute("y1", point.y - size * 0.6);
+    vertical.setAttribute("x2", point.x);
+    vertical.setAttribute("y2", point.y + size * 0.6);
+    vertical.setAttribute("stroke", coordinateStroke);
+    vertical.setAttribute("stroke-width", Math.max(2, size * 0.1));
+    group.append(circle, horizontal, vertical);
+    return group;
+  }
+
   const start = annotationPoint(action.start);
   const end = annotationPoint(action.end);
   if (!start || !end) return null;
@@ -14989,15 +15435,16 @@ function createAnnotationSvgElement(action) {
   const width = Math.abs(end.x - start.x);
   const height = Math.abs(end.y - start.y);
 
-  if (action.tool === "rect") {
+  if (["rect", "bbox"].includes(action.tool)) {
     const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
     rect.setAttribute("x", x);
     rect.setAttribute("y", y);
     rect.setAttribute("width", Math.max(1, width));
     rect.setAttribute("height", Math.max(1, height));
-    rect.setAttribute("fill", fill);
-    rect.setAttribute("stroke", stroke);
+    rect.setAttribute("fill", action.tool === "bbox" ? "rgba(45, 212, 191, 0.12)" : fill);
+    rect.setAttribute("stroke", action.tool === "bbox" ? coordinateStroke : stroke);
     rect.setAttribute("stroke-width", strokeWidth);
+    if (action.tool === "bbox") rect.setAttribute("stroke-dasharray", `${Math.max(8, size * 0.5)} ${Math.max(5, size * 0.3)}`);
     return rect;
   }
 
@@ -15051,7 +15498,11 @@ function normalizeAnnotationAction(action) {
     const points = annotationPoints(action.points);
     return points.length ? { tool, size, points } : null;
   }
-  if (["rect", "ellipse", "arrow"].includes(tool)) {
+  if (tool === "point") {
+    const point = annotationPoint(action.point);
+    return point ? { tool, size, point } : null;
+  }
+  if (["rect", "ellipse", "arrow", "bbox"].includes(tool)) {
     const start = annotationPoint(action.start);
     const end = annotationPoint(action.end);
     return start && end ? { tool, size, start, end } : null;
@@ -15113,6 +15564,8 @@ function removeReferenceImage(nodeId, index) {
 function openReferenceMaskEditor(nodeId, imageIndex) {
   const node = canvasState.nodes.find((item) => item.id === nodeId);
   const imageRef = node?.cachedImages?.[imageIndex];
+  const seedreamPrecisionEditor = seedreamImageProfileForModel(node?.model) === seedreamImageProfiles.PRO_5
+    && seedreamModeForNode(node) !== seedreamProModes.LAYERS;
   const imageUrl = imageRef?.url || (imageRef?.path ? `/${imageRef.path}` : "");
   if (!node || !imageUrl) {
     showToast("参考图还没有缓存完成");
@@ -15129,7 +15582,7 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
   toolbar.className = "mask-editor-toolbar";
 
   const title = document.createElement("strong");
-  title.textContent = "局部重绘标注";
+  title.textContent = seedreamPrecisionEditor ? "Seedream 精准编辑标注" : "局部重绘标注";
 
   const toolGroup = document.createElement("div");
   toolGroup.className = "mask-editor-tools";
@@ -15137,7 +15590,8 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
     ["brush", "画笔"],
     ["rect", "框"],
     ["ellipse", "圈"],
-    ["arrow", "箭头"]
+    ["arrow", "箭头"],
+    ...(seedreamPrecisionEditor ? [["point", "定位点"], ["bbox", "坐标框"]] : [])
   ];
   let activeTool = "brush";
   const toolButtons = tools.map(([tool, label]) => {
@@ -15301,6 +15755,10 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
       drawBrushAction(context, normalized, target, preview);
       return;
     }
+    if (["point", "bbox"].includes(normalized.tool)) {
+      if (target !== "mask") drawCoordinateAction(context, normalized, preview);
+      return;
+    }
     if (target === "mask") eraseShapeFromMask(normalized);
     else drawShape(context, normalized, preview);
   };
@@ -15332,6 +15790,49 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
     context.restore();
   };
 
+  const drawCoordinateAction = (context, action, preview = false) => {
+    const size = Math.max(8, Number(action.size) || 24);
+    context.save();
+    context.globalCompositeOperation = "source-over";
+    context.strokeStyle = preview ? "rgba(45, 212, 191, 0.58)" : "rgba(45, 212, 191, 0.96)";
+    context.fillStyle = preview ? "rgba(45, 212, 191, 0.08)" : "rgba(45, 212, 191, 0.14)";
+    context.lineWidth = Math.max(3, size * 0.16);
+    context.lineCap = "round";
+    context.lineJoin = "round";
+
+    if (action.tool === "point") {
+      const point = annotationPoint(action.point);
+      if (point) {
+        const radius = Math.max(8, size * 0.35);
+        context.beginPath();
+        context.arc(point.x, point.y, radius, 0, Math.PI * 2);
+        context.fill();
+        context.stroke();
+        context.beginPath();
+        context.moveTo(point.x - size * 0.6, point.y);
+        context.lineTo(point.x + size * 0.6, point.y);
+        context.moveTo(point.x, point.y - size * 0.6);
+        context.lineTo(point.x, point.y + size * 0.6);
+        context.stroke();
+      }
+      context.restore();
+      return;
+    }
+
+    const start = annotationPoint(action.start);
+    const end = annotationPoint(action.end);
+    if (start && end) {
+      const x = Math.min(start.x, end.x);
+      const y = Math.min(start.y, end.y);
+      const width = Math.abs(end.x - start.x);
+      const height = Math.abs(end.y - start.y);
+      context.setLineDash([Math.max(8, size * 0.5), Math.max(5, size * 0.3)]);
+      context.fillRect(x, y, Math.max(1, width), Math.max(1, height));
+      context.strokeRect(x, y, Math.max(1, width), Math.max(1, height));
+    }
+    context.restore();
+  };
+
   const drawShape = (context, shape, preview = false) => {
     if (!shape?.start || !shape?.end) return;
     const x = Math.min(shape.start.x, shape.end.x);
@@ -15348,7 +15849,9 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
     context.lineCap = "round";
     context.lineJoin = "round";
 
-    if (shape.tool === "rect") {
+    if (shape.tool === "bbox") {
+      drawCoordinateAction(context, shape, preview);
+    } else if (shape.tool === "rect") {
       context.beginPath();
       context.rect(x, y, Math.max(1, width), Math.max(1, height));
       context.fill();
@@ -15418,7 +15921,7 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
 
   const drawShapePreview = (event) => {
     previewContext.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
-    drawShape(previewContext, shapeFromEvent(event), true);
+    drawAnnotationAction(previewContext, shapeFromEvent(event), "overlay", true);
   };
 
   const commitShape = (event) => {
@@ -15427,8 +15930,8 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
     const distance = Math.hypot(shape.end.x - shape.start.x, shape.end.y - shape.start.y);
     if (distance < 2) return;
     previewContext.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
-    drawShape(overlayContext, shape);
-    eraseShapeFromMask(shape);
+    drawAnnotationAction(overlayContext, shape, "overlay");
+    drawAnnotationAction(maskContext, shape, "mask");
     annotationActions.push(shape);
     hasMarks = true;
     wasCleared = false;
@@ -15439,8 +15942,23 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
 
   overlayCanvas.addEventListener("pointerdown", (event) => {
     event.preventDefault();
-    isDrawing = true;
     startPoint = pointFromEvent(event);
+    if (activeTool === "point") {
+      const action = normalizeAnnotationAction({
+        tool: "point",
+        point: startPoint,
+        size: Number(brush.value)
+      });
+      if (action) {
+        annotationActions.push(action);
+        drawAnnotationAction(overlayContext, action, "overlay");
+        hasMarks = true;
+        wasCleared = false;
+      }
+      startPoint = null;
+      return;
+    }
+    isDrawing = true;
     overlayCanvas.setPointerCapture?.(event.pointerId);
     if (activeTool === "brush") {
       currentAction = { tool: "brush", size: Number(brush.value), points: [] };
@@ -15481,6 +15999,31 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
 
     save.disabled = true;
     save.textContent = "保存中";
+    if (seedreamPrecisionEditor) {
+      const actions = annotationActions.map(normalizeAnnotationAction).filter(Boolean);
+      imageRef.maskAnnotation = actions.length
+        ? {
+            version: 1,
+            width: overlayCanvas.width,
+            height: overlayCanvas.height,
+            actions: clonePlainValue(actions)
+          }
+        : null;
+      const stored = fileStore.get(node.id) || {};
+      delete stored.mask;
+      if (stored.images?.length || stored.videos?.length || stored.audios?.length) fileStore.set(node.id, stored);
+      else fileStore.delete(node.id);
+      node.sessionMask = "";
+      node.cachedMask = null;
+      node.cacheStatus = node.cachedImages?.length ? "ready" : "pending";
+      updateNode(node);
+      saveCanvasState();
+      closeEditor();
+      showToast(actions.length
+        ? "Seedream 标记已保存；生成时会自动写入参考图和坐标提示词"
+        : "Seedream 精准编辑标记已清空");
+      return;
+    }
     maskCanvas.toBlob(async (blob) => {
       if (!blob) {
         save.disabled = false;
@@ -15754,7 +16297,7 @@ async function useSelectedCanvasMediaAsVideoReference(targetNodeId) {
       return;
     }
   } else if (videoNodes.length) {
-    showToast(`${dreaminaVideoModeLabel(videoModeForNode(target))}模式不接受视频参考`);
+    showToast(`${videoModeLabelForNode(target)}模式不接受视频参考`);
   }
   if (addedImages || addedVideos) showToast(`已添加 ${addedImages} 张图片和 ${addedVideos} 个视频参考`);
 }
@@ -18935,9 +19478,7 @@ function migrateVideoTaskNode(node) {
   const extraParams = isPlainObject(node.extraParams) ? node.extraParams : {};
   const promptNoteNodeIds = dedupeStrings(node.promptNoteNodeIds || []);
   const model = isSupportedVideoModelName(node.model) ? node.model : dreaminaVideoDefaultModel;
-  const videoMode = isDreaminaVideoModelName(model)
-    ? normalizeDreaminaVideoMode(node.videoMode)
-    : dreaminaVideoDefaultMode;
+  const videoMode = normalizeVideoModeForModel(model, node.videoMode);
   const arkAssetUris = dedupeStrings([
     ...(Array.isArray(node.arkAssetUris) ? node.arkAssetUris : []),
     ...parseArkAssetUriText(node.arkAssetUrisText || "")
@@ -18954,7 +19495,7 @@ function migrateVideoTaskNode(node) {
       ? node.size
       : videoRatioOptionsForModel(model, videoMode)[0]?.[0] || dreaminaVideoDefaultRatio,
     quality: videoResolutionOptionsForModel(model, videoMode).some(([value]) => value === node.quality) ? node.quality : dreaminaVideoDefaultResolution,
-    format: "mp4",
+    format: ["mp4", "mov"].includes(String(node.format || "").toLowerCase()) ? String(node.format).toLowerCase() : "mp4",
     baseUrl: videoTaskBaseUrl(model),
     endpointPath: videoTaskEndpoint(model),
     mode: "video",
@@ -19240,9 +19781,11 @@ async function loadProjectById(projectId, options = {}) {
   const localState = readLocalCanvasState(currentProjectId);
   const selectedState = chooseLatestProjectState(diskState, localState);
   const state = selectedState.state || createEmptyProject(currentProjectId);
+  canvasState.grokProjectMemory = state.grokProjectMemory === true;
   currentProjectName = state.name || projectList.find((project) => project.id === currentProjectId)?.name || "未命名画布";
   projectNameInput.value = currentProjectName;
   applySavedState({ ...state, id: currentProjectId, name: currentProjectName });
+  agentSyncRevision = Math.max(0, Number(state.agentRevision) || 0);
 
   renderCanvas();
   const repairedLayerGroups = await repairExistingSeedreamLayerLayouts();
@@ -19478,8 +20021,10 @@ function createNewProject(options = {}) {
   canvasState = {
     nodes: [],
     viewport: { x: 120, y: 90, zoom: 1 },
+    grokProjectMemory: false,
     nextZ: 1
   };
+  updateAssistantProjectMemoryControl();
   assistantMessages = [];
   localStorage.setItem(currentProjectStorageKey, currentProjectId);
   projectNameInput.value = currentProjectName;
@@ -19531,6 +20076,8 @@ function createEmptyProject(id) {
     name: id === "default" ? "默认画布" : "未命名画布",
     nodes: [],
     viewport: { x: 120, y: 90, zoom: 1 },
+    grokProjectMemory: false,
+    agentRevision: 0,
     nextZ: 1
   };
 }
@@ -19543,6 +20090,74 @@ async function loadDiskProjectState(projectId = currentProjectId) {
     return data.project || null;
   } catch {
     return null;
+  }
+}
+
+function startAgentCanvasSync() {
+  window.clearInterval(agentSyncPollTimer);
+  agentSyncPollTimer = window.setInterval(() => {
+    void pollAgentCanvasChanges();
+  }, 1200);
+  void pollAgentCanvasChanges();
+}
+
+async function pollAgentCanvasChanges() {
+  if (agentSyncInFlight || isLoadingProject || !currentProjectId) return;
+  agentSyncInFlight = true;
+  const projectId = currentProjectId;
+  try {
+    const response = await fetch(`/api/agent/v1/sync?projectId=${encodeURIComponent(projectId)}`, {
+      cache: "no-store"
+    });
+    if (!response.ok) return;
+    const status = await response.json();
+    const revision = Math.max(0, Number(status.revision) || 0);
+    if (revision === agentSyncRevision) return;
+
+    window.clearTimeout(saveTimer);
+    saveTimer = 0;
+    const localCheckpoint = serializeCanvasState();
+    writeLocalProjectSnapshot(localCheckpoint, projectId);
+    await persistDiskProject(localCheckpoint, projectId, { updateList: false });
+    const diskState = await loadDiskProjectState(projectId);
+    if (currentProjectId !== projectId || !diskState) return;
+    if ((Number(diskState.agentRevision) || 0) < revision) return;
+
+    const previousSnapshot = createHistorySnapshot();
+    const selectedBefore = new Set(selectedNodeIds);
+    pushUndoSnapshot(previousSnapshot);
+    isRestoringHistory = true;
+    try {
+      currentProjectName = diskState.name || currentProjectName || "未命名画布";
+      projectNameInput.value = currentProjectName;
+      applySavedState(diskState, { preserveActiveGenerations: true });
+      agentSyncRevision = Math.max(revision, Number(diskState.agentRevision) || 0);
+      selectedNodeIds.clear();
+      const existingIds = new Set(canvasState.nodes.map((node) => node.id));
+      for (const nodeId of selectedBefore) {
+        if (existingIds.has(nodeId)) selectedNodeIds.add(nodeId);
+      }
+      renderCanvas();
+      applyViewport();
+      const snapshot = { ...serializeCanvasState(), savedAt: diskState.savedAt || new Date().toISOString() };
+      writeLocalProjectSnapshot(snapshot, projectId);
+      upsertProjectSummary({
+        id: projectId,
+        name: currentProjectName,
+        savedAt: diskState.savedAt || "",
+        nodeCount: canvasState.nodes.length,
+        agentRevision: agentSyncRevision
+      });
+      renderProjectSelect();
+      lastHistorySnapshot = createHistorySnapshot();
+    } finally {
+      isRestoringHistory = false;
+    }
+    showToast("Agent 已在后台更新当前画布");
+  } catch {
+    // The normal canvas workflow keeps working when the optional Agent API is unavailable.
+  } finally {
+    agentSyncInFlight = false;
   }
 }
 
@@ -19586,7 +20201,14 @@ function applySavedState(saved, options = {}) {
       zoom: normalizeZoom(saved.viewport.zoom)
     };
   }
+  if (typeof saved.grokProjectMemory === "boolean") {
+    canvasState.grokProjectMemory = saved.grokProjectMemory;
+  }
+  if (Number.isFinite(Number(saved.agentRevision))) {
+    canvasState.agentRevision = Math.max(0, Number(saved.agentRevision) || 0);
+  }
   canvasState.nextZ = Math.max(1, Number(saved.nextZ) || 1, ...canvasState.nodes.map((node) => Number(node.z) || 1));
+  updateAssistantProjectMemoryControl();
 }
 
 function undoCanvasChange() {
@@ -19657,6 +20279,7 @@ function createHistorySnapshot() {
     name: currentProjectName,
     nodes: serializeCanvasNodes(),
     viewport: { ...canvasState.viewport },
+    agentRevision: canvasState.agentRevision,
     nextZ: canvasState.nextZ
   });
 }
@@ -19700,6 +20323,8 @@ function serializeCanvasState() {
     savedAt: new Date().toISOString(),
     nodes: serializeCanvasNodes(),
     viewport: { ...canvasState.viewport },
+    grokProjectMemory: canvasState.grokProjectMemory === true,
+    agentRevision: canvasState.agentRevision,
     nextZ: canvasState.nextZ
   };
 }

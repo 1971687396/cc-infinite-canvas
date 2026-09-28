@@ -4600,6 +4600,11 @@ body.assistant-open .minimap-dock {
   background: color-mix(in srgb, var(--accent) 8%, var(--panel));
 }
 
+.seedream-mode-hint.mode-interactive {
+  border-left-color: #2dd4bf;
+  background: color-mix(in srgb, #2dd4bf 9%, var(--panel));
+}
+
 .node-field {
   display: grid;
   gap: 5px;
@@ -5545,6 +5550,14 @@ pre {
   background: var(--panel);
   padding: 6px 8px;
   cursor: pointer;
+}
+
+.assistant-project-memory-toggle {
+  grid-column: 1 / -1;
+}
+
+.assistant-project-memory-toggle[hidden] {
+  display: none;
 }
 
 .assistant-behavior-toggle > span {

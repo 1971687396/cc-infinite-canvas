@@ -209,6 +209,13 @@
                 </span>
                 <input id="assistantAutoGenerateToggle" type="checkbox" role="switch" />
               </label>
+              <label id="assistantProjectMemoryOption" class="assistant-behavior-toggle assistant-project-memory-toggle" title="仅对当前画布启用 Grok Build 跨会话记忆；生图和视频生成始终不使用记忆" hidden>
+                <span>
+                  <strong>Grok 项目记忆</strong>
+                  <small>同一画布跨会话复用</small>
+                </span>
+                <input id="assistantProjectMemoryToggle" type="checkbox" role="switch" />
+              </label>
             </div>
             <button id="assistantAnalyzeButton" type="button" class="secondary compact">
               <span class="assistant-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12h4l2-6 3 12 2-6h3"/><path d="M4 19h16"/></svg></span>
@@ -288,6 +295,7 @@
         <button id="selectionLayerTopButton" type="button" title="置于所有图片顶层（Shift + ]）">置顶</button>
       </div>
       <button id="seedreamFusionSelectionButton" type="button" class="selection-ai-action" hidden>多图融合</button>
+      <button id="seedreamInteractiveSelectionButton" type="button" class="selection-ai-action" hidden>精准编辑</button>
       <button id="seedreamLayerSelectionButton" type="button" class="selection-ai-action" hidden>智能拆图层</button>
       <button id="sendSelectionToPhotoshopButton" type="button" hidden>作为 PS 参考图</button>
     </div>

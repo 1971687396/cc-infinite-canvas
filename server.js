@@ -1,6 +1,6 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createReadStream, createWriteStream, readFileSync } from "node:fs";
@@ -37,6 +37,8 @@ import {
   runGrokBuildVideo
 } from "./grok-build-bridge.js";
 import {
+  arkVideoModes,
+  arkVideoReferenceLimits,
   canonicalDreaminaModelVersion,
   canonicalDreaminaVideoModelVersion,
   dreaminaImageModelVersions,
@@ -53,6 +55,8 @@ import {
   gptImage25Profile,
   gptImage25Profiles,
   isTtImage25Model,
+  isArkSeedance25Model,
+  normalizeArkVideoMode,
   normalizeGptImage25Quality,
   normalizeGptImage25Size,
   normalizeDreaminaVideoMode,
@@ -74,6 +78,12 @@ import {
   storyAssetMemoryForPrompt,
   storyAssetReuseModes
 } from "./public/story-runtime.js";
+import {
+  createAgentNode,
+  mediaNodesFromGeneration,
+  nodeMatchesQuery,
+  patchAgentNode
+} from "./agent-control-runtime.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -129,7 +139,7 @@ const arkImageModels = [
 const arkVideoModels = [
   { model: "ark-seedance-2.0", label: "Seedance 2.0", apiModel: "doubao-seedance-2-0-260128" },
   { model: "ark-seedance-2.0-fast", label: "Seedance 2.0 Fast", apiModel: "doubao-seedance-2-0-fast-260128" },
-  { model: "ark-seedance-2.0-mini", label: "Seedance 2.0 Mini", apiModel: "doubao-seedance-2-0-mini" },
+  { model: "ark-seedance-2.0-mini", label: "Seedance 2.0 Mini", apiModel: "doubao-seedance-2-0-mini-260615" },
   { model: "ark-seedance-2.5", label: "Seedance 2.5", apiModel: "doubao-seedance-2-5-260628" }
 ];
 const arkModelDefinitions = [...arkImageModels, ...arkVideoModels];
@@ -221,6 +231,8 @@ const photoshopReferenceSelectionLimit = 15;
 const photoshopReferenceSelectionTtlMs = 15 * 60 * 1000;
 const photoshopBridgeEvents = new EventEmitter();
 const projectWriteQueues = new Map();
+const agentProjectStates = new Map();
+const agentMutationHistoryLimit = 100;
 const imageThumbnailSizes = new Set([64, 256, 1024]);
 const imageThumbnailPromises = new Map();
 
@@ -264,6 +276,9 @@ const config = {
   photoshopBridgeEnabled: parseEnvBoolean(process.env.CC_CANVAS_PHOTOSHOP_BRIDGE_ENABLED, false)
 };
 config.modelConnections = loadModelConnections();
+
+const agentRuntimeDescriptorFile = path.resolve(process.env.CC_CANVAS_AGENT_DESCRIPTOR || path.join(config.cacheDir, "agent-control.json"));
+let agentControlTokenPromise = null;
 
 const mimeTypes = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -369,6 +384,14 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/update/download") {
       return await handleUpdateDownload(res, url);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/agent/v1/sync") {
+      return await handleAgentSyncStatus(res, url);
+    }
+
+    if (url.pathname.startsWith("/api/agent/v1/")) {
+      return await handleAgentControlRequest(req, res, url);
     }
 
     if (req.method === "GET" && url.pathname === "/api/projects") {
@@ -513,6 +536,9 @@ function logServerAddress() {
   const address = server.address();
   const activePort = typeof address === "object" && address ? address.port : config.port;
   console.log(`cc无限画布 is running at http://${serverHost}:${activePort}`);
+  void publishAgentRuntimeDescriptor(activePort).catch((error) => {
+    console.warn(`Agent control descriptor could not be written: ${error.message || error}`);
+  });
 }
 
 export { server, photoshopBridgeServer, photoshopBridgeEvents };
@@ -2452,6 +2478,10 @@ function projectAssetDir(projectId) {
   return path.join(projectDir(projectId), "assets");
 }
 
+function projectGrokMemoryDir(projectId) {
+  return path.join(projectDir(projectId), "grok-memory-workspace");
+}
+
 function projectPublicPath(projectId, kind, filename) {
   return `/project-cache/${encodeURIComponent(normalizeProjectId(projectId))}/${kind}/${encodeURIComponent(filename)}`;
 }
@@ -2826,11 +2856,16 @@ async function handleStoryAnalyze(req, res) {
 async function callStoryModel(messages, model, body, req, res) {
   if (isGrokBuildAssistantModel(model)) {
     try {
+      const useMemory = body.projectMemory === true;
+      const memoryDir = useMemory ? projectGrokMemoryDir(body.projectId || "default") : "";
+      if (memoryDir) await mkdir(memoryDir, { recursive: true });
       const result = await runGrokBuildAssistant({
         messages,
         model: grokBuildAssistantModelId(model),
         proxyUrl: config.grokBuildProxyUrl,
         signal: requestAbortSignal(req, res),
+        cwd: memoryDir || undefined,
+        useMemory,
         timeoutMs: assistantRequestTimeoutMs(grokBuildAssistantModelId(model), "story_analyze")
       });
       const content = sanitizeOptionalText(result.text);
@@ -3312,6 +3347,10 @@ async function handleAssistantChat(req, res, options = {}) {
 async function handleGrokBuildAssistantChat(res, { body, messages, mode, model }) {
   const context = normalizeAssistantContext(body.context);
   const assistantMessages = buildAssistantMessages(messages, context, mode);
+  const useMemory = body.projectMemory === true && mode !== "photoshop_agent";
+  const projectId = normalizeProjectId(body.projectId || context.project?.id || "default");
+  const memoryDir = useMemory ? projectGrokMemoryDir(projectId) : "";
+  if (memoryDir) await mkdir(memoryDir, { recursive: true });
   const abortController = new AbortController();
   const abortOnClose = () => {
     if (!res.writableEnded) abortController.abort(new Error("Grok 官方助手请求已停止。"));
@@ -3323,6 +3362,8 @@ async function handleGrokBuildAssistantChat(res, { body, messages, mode, model }
       model: grokBuildAssistantModelId(model),
       proxyUrl: config.grokBuildProxyUrl,
       signal: abortController.signal,
+      cwd: memoryDir || undefined,
+      useMemory,
       timeoutMs: assistantRequestTimeoutMs(grokBuildAssistantModelId(model), mode)
     });
     const content = sanitizeOptionalText(result.text);
@@ -3335,6 +3376,7 @@ async function handleGrokBuildAssistantChat(res, { body, messages, mode, model }
         photoshopPlan: parsedPhotoshopPlan.plan,
         model,
         usage: result.usage || null,
+        projectMemory: useMemory,
         requestId: result.requestId || "",
         sessionId: result.sessionId || ""
       });
@@ -3346,6 +3388,7 @@ async function handleGrokBuildAssistantChat(res, { body, messages, mode, model }
       plan: parsedAssistantPlan.plan,
       model,
       usage: result.usage || null,
+      projectMemory: useMemory,
       requestId: result.requestId || "",
       sessionId: result.sessionId || ""
     });
@@ -4473,7 +4516,616 @@ function removeAssistantPlanRanges(text, ranges) {
     .trim();
 }
 
-async function handleListProjects(res) {
+async function publishAgentRuntimeDescriptor(activePort) {
+  const tokenFile = agentTokenFile();
+  await ensureAgentControlToken();
+  const descriptor = {
+    version: 1,
+    pid: process.pid,
+    host: serverHost,
+    port: Number(activePort),
+    baseUrl: `http://${serverHost}:${Number(activePort)}`,
+    tokenFile,
+    startedAt: new Date().toISOString()
+  };
+  await mkdir(path.dirname(agentRuntimeDescriptorFile), { recursive: true });
+  await writeTextAtomic(
+    agentRuntimeDescriptorFile,
+    `${agentRuntimeDescriptorFile}.${process.pid}.pending`,
+    JSON.stringify(descriptor, null, 2)
+  );
+}
+
+function agentTokenFile() {
+  return path.resolve(process.env.CC_CANVAS_AGENT_TOKEN_FILE || path.join(config.cacheDir, "agent-control-token"));
+}
+
+async function ensureAgentControlToken() {
+  if (agentControlTokenPromise) return await agentControlTokenPromise;
+  agentControlTokenPromise = (async () => {
+    const tokenFile = agentTokenFile();
+    const configured = String(process.env.CC_CANVAS_AGENT_TOKEN || "").trim();
+    let token = configured;
+    if (!token) {
+      try {
+        token = String(await readFile(tokenFile, "utf8")).trim();
+      } catch {
+        // A token is generated below on first use.
+      }
+    }
+    if (!token) token = randomBytes(32).toString("base64url");
+    await mkdir(path.dirname(tokenFile), { recursive: true });
+    await writeFile(tokenFile, `${token}\n`, { encoding: "utf8", mode: 0o600 });
+    return token;
+  })();
+  return await agentControlTokenPromise;
+}
+
+function agentRequestToken(req) {
+  const authorization = String(req.headers.authorization || "");
+  if (/^Bearer\s+/i.test(authorization)) return authorization.replace(/^Bearer\s+/i, "").trim();
+  return String(req.headers["x-cc-canvas-agent"] || "").trim();
+}
+
+async function authorizeAgentRequest(req, res) {
+  const expected = await ensureAgentControlToken();
+  const received = agentRequestToken(req);
+  const receivedHash = createHash("sha256").update(received).digest("hex");
+  const expectedHash = createHash("sha256").update(expected).digest("hex");
+  if (received && receivedHash === expectedHash) return true;
+  res.setHeader("WWW-Authenticate", 'Bearer realm="cc-infinite-canvas-agent"');
+  sendJson(res, 401, { error: "Agent control token is missing or invalid." });
+  return false;
+}
+
+async function handleAgentSyncStatus(res, url) {
+  const projectId = normalizeProjectId(url.searchParams.get("projectId") || "default");
+  const state = await ensureAgentProjectState(projectId);
+  sendJson(res, 200, {
+    projectId,
+    revision: state.revision,
+    changedAt: state.changedAt || ""
+  });
+}
+
+async function handleAgentControlRequest(req, res, url) {
+  if (!(await authorizeAgentRequest(req, res))) return;
+  const parts = url.pathname
+    .slice("/api/agent/v1/".length)
+    .split("/")
+    .filter(Boolean)
+    .map((value) => decodeURIComponent(value));
+
+  if (req.method === "GET" && parts.length === 1 && parts[0] === "status") {
+    const address = server.address();
+    const activePort = typeof address === "object" && address ? address.port : config.port;
+    return sendJson(res, 200, {
+      ok: true,
+      service: "cc-infinite-canvas-agent-control",
+      apiVersion: "v1",
+      appVersion: config.version,
+      endpoint: `http://${serverHost}:${activePort}/api/agent/v1`,
+      transport: ["local-http", "mcp-stdio"],
+      capabilities: [
+        "projects.read", "projects.write", "nodes.read", "nodes.write", "assets.import", "media.generate", "canvas.live-sync"
+      ]
+    });
+  }
+
+  if (req.method === "GET" && parts.length === 1 && parts[0] === "openapi.json") {
+    return sendJson(res, 200, agentOpenApiDocument(url));
+  }
+
+  if (parts[0] !== "projects") return sendJson(res, 404, { error: "Unknown Agent Control API route." });
+
+  if (req.method === "GET" && parts.length === 1) {
+    const data = await collectProjectSummaries();
+    return sendJson(res, 200, data);
+  }
+
+  if (req.method === "POST" && parts.length === 1) {
+    const body = await readJsonBody(req, { maxBytes: 256 * 1024 });
+    return await handleAgentCreateProject(res, body);
+  }
+
+  if (parts.length < 2) return sendJson(res, 404, { error: "Agent project route was not found." });
+  const projectId = normalizeProjectId(parts[1]);
+
+  if (req.method === "GET" && parts.length === 2) {
+    const project = await readAgentProject(projectId);
+    if (!project) return sendJson(res, 404, { error: `Canvas project ${projectId} was not found.` });
+    const includeNodes = url.searchParams.get("includeNodes") !== "false";
+    return sendJson(res, 200, {
+      project: includeNodes ? project : { ...project, nodes: undefined },
+      summary: projectSummary(project)
+    });
+  }
+
+  if (req.method === "PATCH" && parts.length === 2) {
+    const body = await readJsonBody(req, { maxBytes: 256 * 1024 });
+    return await handleAgentPatchProject(res, projectId, body);
+  }
+
+  if (parts[2] === "nodes") {
+    if (req.method === "GET" && parts.length === 3) return await handleAgentListNodes(res, projectId, url);
+    if (req.method === "POST" && parts.length === 3) return await handleAgentAddNodes(req, res, projectId);
+    if (req.method === "DELETE" && parts.length === 3) return await handleAgentDeleteNodes(req, res, projectId);
+    if (req.method === "GET" && parts.length === 4) return await handleAgentGetNode(res, projectId, parts[3]);
+    if (req.method === "PATCH" && parts.length === 4) return await handleAgentPatchNode(req, res, projectId, parts[3]);
+    if (req.method === "DELETE" && parts.length === 4) return await handleAgentDeleteNode(res, projectId, parts[3]);
+  }
+
+  if (req.method === "POST" && parts.length === 3 && parts[2] === "assets") {
+    return await handleAgentAssetUpload(req, res, projectId);
+  }
+
+  if (req.method === "POST" && parts.length === 3 && parts[2] === "generate") {
+    return await handleAgentGenerate(req, res, projectId);
+  }
+
+  return sendJson(res, 404, { error: "Agent Control API route was not found." });
+}
+
+async function handleAgentCreateProject(res, body) {
+  const requestedId = sanitizeOptionalText(body.id) || `canvas-agent-${new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14)}-${randomUUID().slice(0, 6)}`;
+  const projectId = normalizeProjectId(requestedId);
+  let created;
+  try {
+    created = await queueProjectWrite(projectId, async () => {
+      const existing = await readRecoverableProject(projectId, { repair: false });
+      if (existing?.project && body.overwrite !== true) {
+        const error = new Error(`Canvas project ${projectId} already exists.`);
+        error.status = 409;
+        throw error;
+      }
+      const project = normalizeProjectRecord({
+        id: projectId,
+        name: sanitizeOptionalText(body.name) || "Agent 画布",
+        nodes: [],
+        viewport: isPlainObject(body.viewport) ? body.viewport : { x: 120, y: 90, zoom: 1 },
+        grokProjectMemory: body.grokProjectMemory === true,
+        nextZ: 1,
+        agentRevision: Number(existing?.project?.agentRevision) || 0
+      }, projectId);
+      project.agentRevision += 1;
+      project.savedAt = new Date().toISOString();
+      await writeProjectRecordAtomic(projectId, project);
+      recordAgentMutation(project, { fields: ["name", "viewport", "grokProjectMemory"], upsertedIds: [], deletedIds: [] });
+      return project;
+    });
+  } catch (error) {
+    return sendJson(res, Number(error.status) || 500, { error: error.message || "Unable to create canvas project." });
+  }
+  sendJson(res, 201, { ok: true, project: created, summary: projectSummary(created) });
+}
+
+async function handleAgentPatchProject(res, projectId, body) {
+  try {
+    const result = await mutateAgentProject(projectId, (project) => {
+      const fields = [];
+      if (body.name !== undefined) {
+        project.name = sanitizeOptionalText(body.name) || project.name;
+        fields.push("name");
+      }
+      if (isPlainObject(body.viewport)) {
+        project.viewport = {
+          x: finiteAgentNumber(body.viewport.x, project.viewport?.x || 120),
+          y: finiteAgentNumber(body.viewport.y, project.viewport?.y || 90),
+          zoom: Math.min(4, Math.max(0.05, finiteAgentNumber(body.viewport.zoom, project.viewport?.zoom || 1)))
+        };
+        fields.push("viewport");
+      }
+      if (typeof body.grokProjectMemory === "boolean") {
+        project.grokProjectMemory = body.grokProjectMemory;
+        fields.push("grokProjectMemory");
+      }
+      return { fields, upsertedIds: [], deletedIds: [] };
+    });
+    sendJson(res, 200, { ok: true, project: result.project, summary: projectSummary(result.project) });
+  } catch (error) {
+    sendJson(res, Number(error.status) || 500, { error: error.message || "Unable to update canvas project." });
+  }
+}
+
+async function handleAgentListNodes(res, projectId, url) {
+  const project = await readAgentProject(projectId);
+  if (!project) return sendJson(res, 404, { error: `Canvas project ${projectId} was not found.` });
+  const types = String(url.searchParams.get("types") || "").split(",").filter(Boolean);
+  const search = url.searchParams.get("search") || "";
+  const offset = Math.max(0, Number.parseInt(url.searchParams.get("offset") || "0", 10) || 0);
+  const limit = Math.min(500, Math.max(1, Number.parseInt(url.searchParams.get("limit") || "200", 10) || 200));
+  const matched = project.nodes.filter((node) => nodeMatchesQuery(node, { types, search }));
+  sendJson(res, 200, {
+    projectId,
+    nodes: matched.slice(offset, offset + limit),
+    total: matched.length,
+    offset,
+    limit,
+    agentRevision: project.agentRevision || 0
+  });
+}
+
+async function handleAgentGetNode(res, projectId, nodeId) {
+  const project = await readAgentProject(projectId);
+  if (!project) return sendJson(res, 404, { error: `Canvas project ${projectId} was not found.` });
+  const node = project.nodes.find((item) => item.id === nodeId);
+  if (!node) return sendJson(res, 404, { error: `Canvas node ${nodeId} was not found.` });
+  sendJson(res, 200, { projectId, node, agentRevision: project.agentRevision || 0 });
+}
+
+async function handleAgentAddNodes(req, res, projectId) {
+  const body = await readJsonBody(req, { maxBytes: 8 * 1024 * 1024 });
+  const specs = Array.isArray(body.nodes)
+    ? body.nodes
+    : Array.isArray(body.specs)
+      ? body.specs
+      : body.node
+        ? [body.node]
+        : [body];
+  if (!specs.length) return sendJson(res, 400, { error: "At least one node is required." });
+  if (specs.length > 100) return sendJson(res, 400, { error: "A single request can add at most 100 nodes." });
+
+  try {
+    let createdNodes = [];
+    const result = await mutateAgentProject(projectId, (project) => {
+      const ids = new Set(project.nodes.map((node) => node.id));
+      let nextZ = Math.max(Number(project.nextZ) || 1, ...project.nodes.map((node) => Number(node.z) || 1)) + 1;
+      createdNodes = specs.map((spec) => {
+        const node = createAgentNode(spec, agentNodeContext(nextZ));
+        if (ids.has(node.id)) {
+          const error = new Error(`Canvas node ${node.id} already exists.`);
+          error.status = 409;
+          throw error;
+        }
+        ids.add(node.id);
+        nextZ = Math.max(nextZ + 1, Number(node.z) + 1);
+        return node;
+      });
+      project.nodes.push(...createdNodes);
+      project.nextZ = Math.max(Number(project.nextZ) || 1, nextZ - 1);
+      return { fields: ["nextZ"], upsertedIds: createdNodes.map((node) => node.id), deletedIds: [] };
+    });
+    sendJson(res, 201, {
+      ok: true,
+      projectId,
+      nodes: createdNodes,
+      summary: projectSummary(result.project),
+      agentRevision: result.project.agentRevision
+    });
+  } catch (error) {
+    sendJson(res, Number(error.status) || 500, { error: error.message || "Unable to add canvas nodes." });
+  }
+}
+
+async function handleAgentPatchNode(req, res, projectId, nodeId) {
+  const body = await readJsonBody(req, { maxBytes: 4 * 1024 * 1024 });
+  const patch = isPlainObject(body.patch) ? body.patch : body;
+  try {
+    let updatedNode;
+    const result = await mutateAgentProject(projectId, (project) => {
+      const index = project.nodes.findIndex((node) => node.id === nodeId);
+      if (index < 0) {
+        const error = new Error(`Canvas node ${nodeId} was not found.`);
+        error.status = 404;
+        throw error;
+      }
+      updatedNode = patchAgentNode(project.nodes[index], patch);
+      project.nodes[index] = updatedNode;
+      project.nextZ = Math.max(Number(project.nextZ) || 1, Number(updatedNode.z) || 1);
+      return { fields: ["nextZ"], upsertedIds: [nodeId], deletedIds: [] };
+    });
+    sendJson(res, 200, { ok: true, projectId, node: updatedNode, agentRevision: result.project.agentRevision });
+  } catch (error) {
+    sendJson(res, Number(error.status) || 500, { error: error.message || "Unable to update canvas node." });
+  }
+}
+
+async function handleAgentDeleteNode(res, projectId, nodeId) {
+  return await deleteAgentNodeIds(res, projectId, [nodeId]);
+}
+
+async function handleAgentDeleteNodes(req, res, projectId) {
+  const body = await readJsonBody(req, { maxBytes: 256 * 1024 });
+  const ids = Array.isArray(body.ids) ? body.ids : [];
+  return await deleteAgentNodeIds(res, projectId, ids);
+}
+
+async function deleteAgentNodeIds(res, projectId, values) {
+  const ids = [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))].slice(0, 500);
+  if (!ids.length) return sendJson(res, 400, { error: "At least one node id is required." });
+  try {
+    let deletedIds = [];
+    const result = await mutateAgentProject(projectId, (project) => {
+      const requested = new Set(ids);
+      deletedIds = project.nodes.filter((node) => requested.has(node.id)).map((node) => node.id);
+      project.nodes = project.nodes.filter((node) => !requested.has(node.id));
+      if (!deletedIds.length) {
+        const error = new Error("None of the requested canvas nodes were found.");
+        error.status = 404;
+        throw error;
+      }
+      return { fields: [], upsertedIds: [], deletedIds };
+    });
+    sendJson(res, 200, { ok: true, projectId, deletedIds, agentRevision: result.project.agentRevision });
+  } catch (error) {
+    sendJson(res, Number(error.status) || 500, { error: error.message || "Unable to delete canvas nodes." });
+  }
+}
+
+async function handleAgentAssetUpload(req, res, projectId) {
+  const contentType = req.headers["content-type"] || "";
+  if (!contentType.includes("multipart/form-data")) {
+    return sendJson(res, 400, { error: "Agent asset import expects multipart/form-data." });
+  }
+  const body = await readMultipartBody(req, contentType);
+  const files = Array.isArray(body.files) ? body.files : [];
+  const assets = [];
+  await mkdir(projectAssetDir(projectId), { recursive: true });
+  for (const file of files.slice(0, 32)) {
+    if (!["image", "mask", "video", "audio"].includes(file.name)) continue;
+    const saved = await saveUploadedAsset(file, projectId);
+    assets.push({
+      field: file.name,
+      filename: saved.filename,
+      originalName: file.filename,
+      contentType: file.contentType,
+      path: `canvases/${projectId}/assets/${saved.filename}`,
+      url: projectPublicPath(projectId, "assets", saved.filename)
+    });
+  }
+  sendJson(res, 201, { ok: true, projectId, assets });
+}
+
+async function handleAgentGenerate(req, res, projectId) {
+  const body = await readJsonBody(req, { maxBytes: 8 * 1024 * 1024 });
+  const generationRequest = sanitizeAgentGenerationRequest(body.request || body, projectId);
+  const generationResult = await requestLocalGeneration(generationRequest);
+  if (!generationResult.ok) return sendJson(res, generationResult.status, generationResult.data);
+
+  let placement = null;
+  if (body.placeOnCanvas !== false) {
+    const isVideo = generationRequest.mode === "video" || Array.isArray(generationResult.data.videos);
+    const position = agentGenerationPosition(body, projectId);
+    try {
+      let taskNode;
+      let mediaNodes = [];
+      const mutation = await mutateAgentProject(projectId, (project) => {
+        const nextZ = Math.max(Number(project.nextZ) || 1, ...project.nodes.map((node) => Number(node.z) || 1)) + 1;
+        const spec = {
+          kind: isVideo ? "video_task" : "image_task",
+          ...generationRequest,
+          x: position.x ?? agentDefaultPlacement(project).x,
+          y: position.y ?? agentDefaultPlacement(project).y,
+          z: nextZ,
+          data: {
+            status: "done",
+            durationMs: generationResult.data.durationMs || null,
+            images: generationResult.data.images || [],
+            videos: generationResult.data.videos || []
+          }
+        };
+        taskNode = createAgentNode(spec, agentNodeContext(nextZ));
+        mediaNodes = mediaNodesFromGeneration(taskNode, generationResult.data, { nextZ: nextZ + 1 });
+        project.nodes.push(taskNode, ...mediaNodes);
+        project.nextZ = Math.max(nextZ, ...mediaNodes.map((node) => Number(node.z) || nextZ));
+        return {
+          fields: ["nextZ"],
+          upsertedIds: [taskNode.id, ...mediaNodes.map((node) => node.id)],
+          deletedIds: []
+        };
+      });
+      placement = {
+        taskNode,
+        mediaNodes,
+        agentRevision: mutation.project.agentRevision
+      };
+    } catch (error) {
+      return sendJson(res, Number(error.status) || 500, {
+        error: `Generation succeeded but the canvas result could not be placed: ${error.message || error}`,
+        generation: safeAgentGenerationResult(generationResult.data, body.includeRaw === true)
+      });
+    }
+  }
+
+  sendJson(res, 200, {
+    ok: true,
+    projectId,
+    generation: safeAgentGenerationResult(generationResult.data, body.includeRaw === true),
+    placement
+  });
+}
+
+function sanitizeAgentGenerationRequest(input, projectId) {
+  const body = isPlainObject(input) ? JSON.parse(JSON.stringify(input)) : {};
+  for (const key of ["apiKeyOverride", "baseUrl", "endpointPath", "connectionOverride", "placeOnCanvas", "includeRaw", "x", "y"]) {
+    delete body[key];
+  }
+  body.projectId = projectId;
+  body.mode = ["create", "edit", "video"].includes(body.mode) ? body.mode : "create";
+  body.model = normalizeModelAlias(body.model || config.defaultModel);
+  body.prompt = String(body.prompt || "").slice(0, 100000);
+  body.n = String(body.n || "1");
+  body.size = String(body.size || "auto");
+  body.quality = String(body.quality || "");
+  body.format = String(body.format || (body.mode === "video" ? "mp4" : "png"));
+  if (!isPlainObject(body.extraParams)) body.extraParams = {};
+  return body;
+}
+
+async function requestLocalGeneration(body) {
+  const address = server.address();
+  const activePort = typeof address === "object" && address ? address.port : config.port;
+  try {
+    const response = await fetch(`http://${serverHost}:${activePort}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30 * 60 * 1000)
+    });
+    const text = await response.text();
+    const data = tryParseJson(text) || { error: text || `Generation failed with HTTP ${response.status}.` };
+    return { ok: response.ok, status: response.status, data };
+  } catch (error) {
+    return { ok: false, status: 502, data: { error: `Canvas generation service failed: ${error.message || error}` } };
+  }
+}
+
+function safeAgentGenerationResult(data, includeRaw) {
+  if (includeRaw) return data;
+  const { raw: _raw, ...safe } = isPlainObject(data) ? data : {};
+  return safe;
+}
+
+function agentGenerationPosition(body) {
+  const placement = isPlainObject(body.placement) ? body.placement : body;
+  return {
+    x: Number.isFinite(Number(placement.x)) ? Number(placement.x) : null,
+    y: Number.isFinite(Number(placement.y)) ? Number(placement.y) : null
+  };
+}
+
+function agentDefaultPlacement(project) {
+  const count = project.nodes.length;
+  return {
+    x: (count % 4) * 720,
+    y: Math.floor(count / 4) * 540
+  };
+}
+
+function agentNodeContext(nextZ) {
+  return {
+    nextZ,
+    defaultModel: config.defaultModel,
+    defaultVideoModel: "dreamina-video-seedance2.0fast",
+    baseUrl: config.baseUrl,
+    imageEndpoint: config.imageEndpoint,
+    editEndpoint: config.editEndpoint
+  };
+}
+
+async function mutateAgentProject(projectId, mutate) {
+  return await queueProjectWrite(projectId, async () => {
+    const current = await readRecoverableProject(projectId, { repair: false });
+    if (!current?.project) {
+      const error = new Error(`Canvas project ${projectId} was not found.`);
+      error.status = 404;
+      throw error;
+    }
+    const project = normalizeProjectRecord(current.project, projectId);
+    const mutation = await mutate(project) || {};
+    project.agentRevision = Math.max(0, Number(project.agentRevision) || 0) + 1;
+    project.savedAt = new Date().toISOString();
+    await writeProjectRecordAtomic(projectId, project);
+    recordAgentMutation(project, mutation);
+    return { project, mutation };
+  });
+}
+
+async function readAgentProject(projectId) {
+  const result = await readRecoverableProject(projectId, { repair: true });
+  return result?.project || null;
+}
+
+function recordAgentMutation(project, mutation = {}) {
+  const projectId = normalizeProjectId(project.id);
+  const previous = agentProjectStates.get(projectId) || { revision: 0, changedAt: "", mutations: [] };
+  const revision = Number(project.agentRevision) || previous.revision + 1;
+  const entry = {
+    revision,
+    upsertedIds: [...new Set((mutation.upsertedIds || []).map(String))],
+    deletedIds: [...new Set((mutation.deletedIds || []).map(String))],
+    fields: [...new Set((mutation.fields || []).map(String))]
+  };
+  const mutations = [...previous.mutations.filter((item) => item.revision < revision), entry].slice(-agentMutationHistoryLimit);
+  agentProjectStates.set(projectId, { revision, changedAt: project.savedAt, mutations });
+}
+
+async function ensureAgentProjectState(projectId) {
+  const id = normalizeProjectId(projectId);
+  if (agentProjectStates.has(id)) return agentProjectStates.get(id);
+  const project = await readAgentProject(id).catch(() => null);
+  const state = {
+    revision: Math.max(0, Number(project?.agentRevision) || 0),
+    changedAt: project?.savedAt || "",
+    mutations: []
+  };
+  agentProjectStates.set(id, state);
+  return state;
+}
+
+function mergeAgentChangesIntoProject(projectId, incoming, current) {
+  const incomingRevision = Math.max(0, Number(incoming.agentRevision) || 0);
+  const currentRevision = Math.max(0, Number(current.agentRevision) || 0);
+  if (incomingRevision >= currentRevision) return incoming;
+  const state = agentProjectStates.get(projectId);
+  const changes = state?.mutations?.filter((mutation) => mutation.revision > incomingRevision) || [];
+  const currentNodes = new Map(current.nodes.map((node) => [node.id, node]));
+  const mergedNodes = new Map(incoming.nodes.map((node) => [node.id, node]));
+
+  if (changes.length) {
+    for (const change of changes) {
+      for (const nodeId of change.deletedIds) mergedNodes.delete(nodeId);
+      for (const nodeId of change.upsertedIds) {
+        if (currentNodes.has(nodeId)) mergedNodes.set(nodeId, currentNodes.get(nodeId));
+      }
+      for (const field of change.fields) {
+        if (["name", "viewport", "grokProjectMemory", "nextZ"].includes(field)) incoming[field] = current[field];
+      }
+    }
+  } else {
+    for (const [nodeId, node] of currentNodes) {
+      if (!mergedNodes.has(nodeId)) mergedNodes.set(nodeId, node);
+    }
+  }
+
+  incoming.nodes = [...mergedNodes.values()];
+  incoming.agentRevision = currentRevision;
+  incoming.nextZ = Math.max(Number(incoming.nextZ) || 1, Number(current.nextZ) || 1);
+  return incoming;
+}
+
+function agentOpenApiDocument(url) {
+  const origin = `${url.protocol}//${url.host}`;
+  return {
+    openapi: "3.1.0",
+    info: { title: "cc Infinite Canvas Agent Control API", version: "1.0.0" },
+    servers: [{ url: `${origin}/api/agent/v1` }],
+    security: [{ bearerAuth: [] }],
+    components: {
+      securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } }
+    },
+    paths: {
+      "/status": { get: { summary: "Read Agent Control API capabilities", responses: { "200": { description: "OK" } } } },
+      "/projects": {
+        get: { summary: "List canvas projects", responses: { "200": { description: "OK" } } },
+        post: { summary: "Create a canvas project", responses: { "201": { description: "Created" } } }
+      },
+      "/projects/{projectId}": {
+        get: { summary: "Read a canvas project", parameters: [{ name: "projectId", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "OK" } } },
+        patch: { summary: "Update project metadata", parameters: [{ name: "projectId", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "OK" } } }
+      },
+      "/projects/{projectId}/nodes": {
+        get: { summary: "List and search canvas nodes", responses: { "200": { description: "OK" } } },
+        post: { summary: "Add high-level or raw canvas nodes", responses: { "201": { description: "Created" } } },
+        delete: { summary: "Delete canvas nodes by id", responses: { "200": { description: "OK" } } }
+      },
+      "/projects/{projectId}/nodes/{nodeId}": {
+        get: { summary: "Read one canvas node", responses: { "200": { description: "OK" } } },
+        patch: { summary: "Patch one canvas node", responses: { "200": { description: "OK" } } },
+        delete: { summary: "Delete one canvas node", responses: { "200": { description: "OK" } } }
+      },
+      "/projects/{projectId}/assets": { post: { summary: "Import image, video or audio assets with multipart/form-data", responses: { "201": { description: "Created" } } } },
+      "/projects/{projectId}/generate": { post: { summary: "Run a configured image or video model and optionally place results on canvas", responses: { "200": { description: "OK" } } } }
+    }
+  };
+}
+
+function finiteAgentNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+async function collectProjectSummaries() {
   const projects = [];
   const recoveredProjects = [];
   const unrecoverableProjects = [];
@@ -4496,6 +5148,7 @@ async function handleListProjects(res) {
           name: sanitizeOptionalText(project.name) || id,
           savedAt: project.savedAt || "",
           nodeCount: Array.isArray(project.nodes) ? project.nodes.length : 0,
+          agentRevision: Math.max(0, Number(project.agentRevision) || 0),
           recovered: result.recovered
         });
         if (result.recovered) recoveredProjects.push(id);
@@ -4515,7 +5168,8 @@ async function handleListProjects(res) {
         id: "default",
         name: sanitizeOptionalText(project.name) || "默认画布",
         savedAt: project.savedAt || "",
-        nodeCount: Array.isArray(project.nodes) ? project.nodes.length : 0
+        nodeCount: Array.isArray(project.nodes) ? project.nodes.length : 0,
+        agentRevision: Math.max(0, Number(project.agentRevision) || 0)
       });
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
@@ -4523,7 +5177,11 @@ async function handleListProjects(res) {
   }
 
   projects.sort((a, b) => String(b.savedAt).localeCompare(String(a.savedAt)));
-  sendJson(res, 200, { projects, recoveredProjects, unrecoverableProjects, cacheDir: config.cacheDir });
+  return { projects, recoveredProjects, unrecoverableProjects, cacheDir: config.cacheDir };
+}
+
+async function handleListProjects(res) {
+  sendJson(res, 200, await collectProjectSummaries());
 }
 
 async function handleGetProject(res, url) {
@@ -4552,11 +5210,22 @@ async function handleGetProject(res, url) {
 async function handleSaveProject(req, res, url) {
   const project = await readJsonBody(req, { maxBytes: 8 * 1024 * 1024 });
   const projectId = normalizeProjectId(project.id || url.searchParams.get("projectId") || "default");
-  const safeProject = normalizeProjectRecord(project, projectId);
-  safeProject.savedAt = new Date().toISOString();
+  let safeProject = normalizeProjectRecord(project, projectId);
 
-  await queueProjectWrite(projectId, () => writeProjectRecordAtomic(projectId, safeProject));
-  sendJson(res, 200, { ok: true, project: projectSummary(safeProject), savedAt: safeProject.savedAt });
+  await queueProjectWrite(projectId, async () => {
+    const current = await readRecoverableProject(projectId, { repair: false });
+    if (current?.project) {
+      safeProject = mergeAgentChangesIntoProject(projectId, safeProject, current.project);
+    }
+    safeProject.savedAt = new Date().toISOString();
+    await writeProjectRecordAtomic(projectId, safeProject);
+  });
+  sendJson(res, 200, {
+    ok: true,
+    project: projectSummary(safeProject),
+    savedAt: safeProject.savedAt,
+    agentRevision: safeProject.agentRevision || 0
+  });
 }
 
 async function handleDeleteProject(res, url) {
@@ -4583,6 +5252,7 @@ async function deleteProjectData(projectId) {
   if (queue) await queue.catch(() => {});
   await rm(directory, { recursive: true, force: true });
   if (id === "default") await rm(projectCacheFile, { force: true });
+  agentProjectStates.delete(id);
 }
 
 async function readRecoverableProject(projectId, options = {}) {
@@ -4690,6 +5360,8 @@ function normalizeProjectRecord(project, fallbackId) {
     id,
     name: sanitizeOptionalText(project?.name) || "未命名画布",
     savedAt: project?.savedAt || new Date().toISOString(),
+    agentRevision: Math.max(0, Number(project?.agentRevision) || 0),
+    grokProjectMemory: project?.grokProjectMemory === true,
     nodes: Array.isArray(project?.nodes) ? project.nodes : [],
     viewport: isPlainObject(project?.viewport) ? project.viewport : { x: 120, y: 90, zoom: 1 },
     nextZ: Number(project?.nextZ) || 1
@@ -4701,7 +5373,8 @@ function projectSummary(project) {
     id: project.id,
     name: project.name,
     savedAt: project.savedAt,
-    nodeCount: Array.isArray(project.nodes) ? project.nodes.length : 0
+    nodeCount: Array.isArray(project.nodes) ? project.nodes.length : 0,
+    agentRevision: Math.max(0, Number(project.agentRevision) || 0)
   };
 }
 
@@ -5373,19 +6046,31 @@ async function handleCreate(res, body, prompt) {
   }
 
   const projectId = normalizeProjectId(body.projectId || "default");
-  const extraParams = isPlainObject(body.extraParams) ? body.extraParams : {};
+  const parsedExtraParams = isPlainObject(body.extraParams) ? body.extraParams : {};
+  const seedreamProfile = seedreamImageProfile(requestedModel, connection.apiModel);
+  const seedreamProModel = seedreamProfile === seedreamImageProfiles.PRO_5;
+  const extraParams = seedreamProModel ? sanitizeSeedreamProExtraParams(parsedExtraParams) : parsedExtraParams;
   const ttImage25 = isTtImage25Request(requestedModel, connection);
   const ttBackground = ttImage25 ? normalizeTtImage25Background(body.background) : body.background;
+  const seedreamBackground = seedreamProModel ? normalizeSeedreamProBackground(body.background) : "";
+  const seedreamFormat = seedreamProModel && ["png", "jpeg"].includes(String(body.format || "").toLowerCase())
+    ? seedreamBackground === "transparent" ? "png" : String(body.format).toLowerCase()
+    : undefined;
+  const seedreamOptimizeMode = seedreamProModel ? normalizeArkOptimizeMode(body.quality, seedreamProfile) : "";
   let payload = pruneEmpty({
+    ...extraParams,
     model: connection.apiModel,
     prompt,
-    n: ttImage25 ? 1 : Number(body.n || 1),
-    size: ttImage25 ? ttImage25OpenAiSize(body) : body.size,
-    quality: body.quality,
+    n: ttImage25 || seedreamProModel ? 1 : Number(body.n || 1),
+    size: ttImage25
+      ? ttImage25OpenAiSize(body)
+      : seedreamProModel ? normalizeArkImageSize(body.size, seedreamProfile) : body.size,
+    quality: seedreamProModel ? undefined : body.quality,
     version: ttImage25 ? normalizeTtImage25Version(body.ttImageVersion) : undefined,
-    background: ttBackground,
-    format: ttImage25 && ttBackground === "transparent" ? "png" : body.format || body.outputFormat,
-    ...extraParams
+    background: seedreamProModel ? seedreamBackground : ttBackground,
+    output_format: seedreamFormat,
+    optimize_prompt_options: seedreamOptimizeMode ? { mode: seedreamOptimizeMode } : undefined,
+    format: seedreamProModel ? undefined : ttImage25 && ttBackground === "transparent" ? "png" : body.format || body.outputFormat
   });
   if (ttImage25) {
     payload.n = 1;
@@ -5544,16 +6229,24 @@ async function handleArkImageGenerate(res, body, prompt, imageFiles = [], suppli
     return sendJson(res, 500, { error: missingKeyMessage(modelName) });
   }
 
-  const extraParams = parseExtraParamsValue(body.extraParams);
+  const rawExtraParams = parseExtraParamsValue(body.extraParams);
   const count = Math.min(15, Math.max(1, Number.parseInt(body.n, 10) || 1));
   const seedreamProfile = seedreamImageProfile(modelName, connection.apiModel) || modelName;
   const proModel = seedreamProfile === seedreamImageProfiles.PRO_5;
+  const extraParams = proModel ? sanitizeSeedreamProExtraParams(rawExtraParams) : rawExtraParams;
   const seedreamMode = seedreamProModeForRequest(body, connection);
   const layerDecomposition = seedreamMode === seedreamProModes.LAYERS;
   const supportsSequential = !proModel;
   const optimizeMode = layerDecomposition ? "" : normalizeArkOptimizeMode(body.quality, seedreamProfile);
   const selectedImages = imageFiles.slice(0, layerDecomposition ? 1 : arkImageReferenceLimit(seedreamProfile));
-  const payload = pruneEmpty({
+  const background = proModel && !layerDecomposition ? normalizeSeedreamProBackground(body.background) : "";
+  if (background === "transparent" && selectedImages.length > 1) {
+    return sendJson(res, 400, { error: "Seedream 5.0 Pro 透明背景编辑仅支持 1 张参考图片。" });
+  }
+  const requestedFormat = proModel && ["png", "jpeg"].includes(String(body.format || "").toLowerCase())
+    ? String(body.format).toLowerCase()
+    : "";
+  const corePayload = {
     model: connection.apiModel,
     prompt,
     image: selectedImages.length
@@ -5565,15 +6258,16 @@ async function handleArkImageGenerate(res, body, prompt, imageFiles = [], suppli
       ? normalizeSeedreamLayerSize(body.size)
       : normalizeArkImageSize(body.size, seedreamProfile),
     response_format: "url",
-    watermark: false,
+    watermark: extraParams.watermark ?? false,
     optimize_prompt_options: optimizeMode ? { mode: optimizeMode } : undefined,
-    output_format: proModel && ["png", "jpeg"].includes(String(body.format || "").toLowerCase())
-      ? String(body.format).toLowerCase()
-      : undefined,
+    output_format: background === "transparent" ? "png" : requestedFormat || undefined,
+    background: background || undefined,
     sequential_image_generation: supportsSequential && count > 1 ? "auto" : undefined,
-    sequential_image_generation_options: supportsSequential && count > 1 ? { max_images: count } : undefined,
-    ...extraParams
-  });
+    sequential_image_generation_options: supportsSequential && count > 1 ? { max_images: count } : undefined
+  };
+  const payload = pruneEmpty(proModel
+    ? { ...extraParams, ...corePayload }
+    : { ...corePayload, ...extraParams });
   if (layerDecomposition) {
     payload.image = fileToDataUrl(selectedImages[0]);
     payload.size = normalizeSeedreamLayerSize(body.size);
@@ -5628,8 +6322,12 @@ async function handleMediaGenerateImage(res, body, prompt, imageFiles = [], supp
     return sendJson(res, 500, { error: missingKeyMessage(modelName) });
   }
 
-  const extraParams = parseExtraParamsValue(body.extraParams);
-  const nestedParams = isPlainObject(extraParams.params) ? extraParams.params : {};
+  const parsedExtraParams = parseExtraParamsValue(body.extraParams);
+  const seedreamProfile = seedreamImageProfile(modelName, connection.apiModel);
+  const proModel = seedreamProfile === seedreamImageProfiles.PRO_5;
+  const extraParams = proModel ? sanitizeSeedreamProExtraParams(parsedExtraParams) : parsedExtraParams;
+  const rawNestedParams = isPlainObject(parsedExtraParams.params) ? parsedExtraParams.params : {};
+  const nestedParams = proModel ? sanitizeSeedreamProExtraParams(rawNestedParams) : rawNestedParams;
   const topLevelParams = { ...extraParams };
   delete topLevelParams.params;
   const seedreamMode = seedreamProModeForRequest(body, connection);
@@ -5641,6 +6339,16 @@ async function handleMediaGenerateImage(res, body, prompt, imageFiles = [], supp
     ? { size: normalizeSeedreamLayerSize(body.size), aspectRatio: "" }
     : normalizeMediaGenerateSizing(body.size);
   const references = imageFiles.slice(0, layerDecomposition ? 1 : ttImage25 ? 16 : 10).map(fileToDataUrl);
+  const background = proModel && !layerDecomposition ? normalizeSeedreamProBackground(body.background) : "";
+  if (background === "transparent" && references.length > 1) {
+    return sendJson(res, 400, { error: "Seedream 5.0 Pro 透明背景编辑仅支持 1 张参考图片。" });
+  }
+  const outputFormat = proModel && ["png", "jpeg"].includes(String(body.format || "").toLowerCase())
+    ? background === "transparent" ? "png" : String(body.format).toLowerCase()
+    : undefined;
+  const optimizeMode = proModel && !layerDecomposition
+    ? normalizeArkOptimizeMode(body.quality, seedreamProfile)
+    : "";
   const modelParams = ttImage25
     ? {
         version: normalizeTtImage25Version(body.ttImageVersion),
@@ -5651,7 +6359,16 @@ async function handleMediaGenerateImage(res, body, prompt, imageFiles = [], supp
         background: normalizeTtImage25Background(body.background),
         images: references.length ? references : undefined
       }
-    : {
+    : proModel
+      ? {
+          size: sizing.size,
+          aspect_ratio: sizing.aspectRatio,
+          images: references.length ? references : undefined,
+          output_format: layerDecomposition ? "png" : outputFormat,
+          background: background || undefined,
+          optimize_prompt_options: optimizeMode ? { mode: optimizeMode } : undefined
+        }
+      : {
         size: sizing.size,
         aspect_ratio: sizing.aspectRatio,
         images: references.length ? references : undefined
@@ -5660,10 +6377,9 @@ async function handleMediaGenerateImage(res, body, prompt, imageFiles = [], supp
     ...topLevelParams,
     model: connection.apiModel,
     prompt,
-    params: pruneEmpty({
-      ...modelParams,
-      ...nestedParams
-    })
+    params: pruneEmpty(proModel
+      ? { ...nestedParams, ...modelParams }
+      : { ...modelParams, ...nestedParams })
   });
   if (layerDecomposition) {
     payload.params.images = references;
@@ -5984,9 +6700,9 @@ function waitForMediaGeneratePoll(delayMs, signal) {
 
 function normalizeMediaGenerateSizing(value) {
   const requested = String(value || "").trim().toUpperCase();
-  if (/^[12]K$/u.test(requested)) return { size: requested, aspectRatio: "" };
+  if (["1K", "1.5K", "2K"].includes(requested)) return { size: requested, aspectRatio: "" };
 
-  const compound = requested.match(/^(\d+):(\d+)\|([12]K)$/u);
+  const compound = requested.match(/^(\d+):(\d+)\|(1K|1\.5K|2K)$/u);
   if (compound) return { size: compound[3], aspectRatio: `${compound[1]}:${compound[2]}` };
 
   const dimensions = requested.match(/^(\d{3,5})X(\d{3,5})$/u);
@@ -6040,6 +6756,34 @@ function normalizeSeedreamLayerSize(value) {
   return ["1K", "1.5K", "2K"].includes(requested) ? requested : "2K";
 }
 
+function normalizeSeedreamProBackground(value) {
+  const requested = String(value || "").trim().toLowerCase();
+  return ["opaque", "transparent"].includes(requested) ? requested : "";
+}
+
+function sanitizeSeedreamProExtraParams(value) {
+  const params = isPlainObject(value) ? { ...value } : {};
+  for (const key of [
+    "model",
+    "prompt",
+    "image",
+    "images",
+    "size",
+    "n",
+    "response_format",
+    "output_format",
+    "background",
+    "optimize_prompt_options",
+    "layer_decomposition",
+    "sequential_image_generation",
+    "sequential_image_generation_options",
+    "stream",
+    "tools",
+    "tool_choice"
+  ]) delete params[key];
+  return params;
+}
+
 function normalizeArkOptimizeMode(value, model) {
   const requested = String(value || "").trim().toLowerCase();
   if (!requested) return "";
@@ -6054,7 +6798,7 @@ function normalizeArkImageSize(value, model) {
   const requested = String(value || "").trim().toUpperCase();
   const normalizedModel = seedreamImageProfile(model) || normalizeModelAlias(model);
   const tiers = normalizedModel === seedreamImageProfiles.PRO_5
-    ? new Set(["1K", "2K"])
+    ? new Set(["1K", "1.5K", "2K"])
     : normalizedModel === seedreamImageProfiles.LITE_5
       ? new Set(["2K", "3K", "4K"])
       : normalizedModel === seedreamImageProfiles.V4_5
@@ -6241,10 +6985,12 @@ async function handleEdit(res, body) {
   const images = [...uploadedImages, ...cachedImages];
   const modelName = body.model || config.defaultModel;
   const connection = resolvedConnection(modelName, body, "edit");
+  const seedreamProfile = seedreamImageProfile(modelName, connection.apiModel);
+  const seedreamProModel = seedreamProfile === seedreamImageProfiles.PRO_5;
   const seedreamMode = seedreamProModeForRequest(body, connection);
   let requestImages = images;
   if (seedreamMode === seedreamProModes.LAYERS) requestImages = images.slice(0, 1);
-  else if (seedreamMode === seedreamProModes.FUSION) requestImages = images.slice(0, 10);
+  else if (seedreamProModel) requestImages = images.slice(0, 10);
   else if (isTtImage25Request(modelName, connection)) requestImages = images.slice(0, 16);
   else if (isGrokImagineJsonImageModel(connection.apiModel)) requestImages = images.slice(0, grokImagineReferenceLimit);
   else if ((isGrokImageModel(modelName) || isGrokImageModel(connection.apiModel)) && !isGrokBuildImageModel(modelName)) requestImages = images.slice(0, 1);
@@ -6255,6 +7001,12 @@ async function handleEdit(res, body) {
   }
   if (seedreamMode === seedreamProModes.FUSION && requestImages.length < 2) {
     return sendJson(res, 400, { error: "Seedream 5.0 Pro 多图融合至少需要 2 张参考图片。" });
+  }
+  const seedreamBackground = seedreamProModel && seedreamMode !== seedreamProModes.LAYERS
+    ? normalizeSeedreamProBackground(body.background)
+    : "";
+  if (seedreamBackground === "transparent" && requestImages.length > 1) {
+    return sendJson(res, 400, { error: "Seedream 5.0 Pro 透明背景编辑仅支持 1 张参考图片。" });
   }
 
   if (isGrokBuildImageModel(modelName)) {
@@ -6284,26 +7036,39 @@ async function handleEdit(res, body) {
     form.append("image", new Blob([image.data], { type: image.contentType }), image.filename);
   }
 
-  if (mask?.data?.length) {
+  if (mask?.data?.length && !seedreamProModel) {
     form.append("mask", new Blob([mask.data], { type: mask.contentType }), mask.filename);
   }
 
-  const extraParams = parseExtraParamsValue(body.extraParams);
+  const parsedExtraParams = parseExtraParamsValue(body.extraParams);
+  const extraParams = seedreamProModel ? sanitizeSeedreamProExtraParams(parsedExtraParams) : parsedExtraParams;
   const ttImage25 = isTtImage25Request(modelName, connection);
   const ttBackground = ttImage25 ? normalizeTtImage25Background(body.background) : body.background;
+  const seedreamFormat = seedreamProModel && ["png", "jpeg"].includes(String(body.format || "").toLowerCase())
+    ? seedreamBackground === "transparent" ? "png" : String(body.format).toLowerCase()
+    : undefined;
+  const seedreamOptimizeMode = seedreamProModel && seedreamMode !== seedreamProModes.LAYERS
+    ? normalizeArkOptimizeMode(body.quality, seedreamProfile)
+    : "";
   const fields = pruneEmpty({
+    ...extraParams,
     model: connection.apiModel,
     prompt: body.prompt,
-    n: ttImage25 ? "1" : body.n || "1",
-    size: ttImage25 ? ttImage25OpenAiSize(body) : body.size,
-    quality: body.quality,
+    n: ttImage25 || seedreamProModel ? "1" : body.n || "1",
+    size: ttImage25
+      ? ttImage25OpenAiSize(body)
+      : seedreamMode === seedreamProModes.LAYERS
+        ? normalizeSeedreamLayerSize(body.size)
+        : seedreamProModel ? normalizeArkImageSize(body.size, seedreamProfile) : body.size,
+    quality: seedreamProModel ? undefined : body.quality,
     version: ttImage25 ? normalizeTtImage25Version(body.ttImageVersion) : undefined,
     format: gptImage25Profile(modelName, connection.apiModel, connectionDefinition(modelName)?.label)
       ? ttImage25 && ttBackground === "transparent" ? "png" : body.format || body.outputFormat
       : undefined,
-    background: ttBackground,
+    output_format: seedreamFormat,
+    optimize_prompt_options: seedreamOptimizeMode ? JSON.stringify({ mode: seedreamOptimizeMode }) : undefined,
+    background: seedreamProModel ? seedreamBackground : ttBackground,
     moderation: body.moderation,
-    ...extraParams
   });
   if (ttImage25) {
     fields.n = "1";
@@ -6660,12 +7425,18 @@ async function handleArkVideoGenerate(res, body, prompt) {
   const modelName = normalizeModelAlias(body.model);
   const projectId = normalizeProjectId(body.projectId || "default");
   const files = Array.isArray(body.files) ? body.files : [];
-  const uploadedImages = files.filter((file) => file.name === "image" && String(file.contentType || "").startsWith("image/"));
-  const cachedImages = await loadCachedAssets(parseCachedAssetRefs(body.cachedImages), projectId);
-  const arkAssetUris = parseArkAssetUris(body.arkAssetUris).slice(0, 9);
-  const imageFiles = [...cachedImages, ...uploadedImages]
-    .filter((file) => String(file.contentType || "").startsWith("image/"))
-    .slice(0, Math.max(0, 9 - arkAssetUris.length));
+  const [cachedImages, cachedVideos, cachedAudios] = await Promise.all([
+    loadCachedAssets(parseCachedAssetRefs(body.cachedImages), projectId),
+    loadCachedAssets(parseCachedAssetRefs(body.cachedVideos), projectId),
+    loadCachedAssets(parseCachedAssetRefs(body.cachedAudios), projectId)
+  ]);
+  const imageFiles = [...cachedImages, ...files.filter((file) => file.name === "image")]
+    .filter((file) => String(file.contentType || "").startsWith("image/"));
+  const videoFiles = [...cachedVideos, ...files.filter((file) => file.name === "video")]
+    .filter((file) => String(file.contentType || "").startsWith("video/"));
+  const audioFiles = [...cachedAudios, ...files.filter((file) => file.name === "audio")]
+    .filter((file) => String(file.contentType || "").startsWith("audio/"));
+  const arkAssetUris = parseArkAssetUris(body.arkAssetUris);
   const connection = resolvedConnection(modelName, body, "video");
   if (connection.protocol !== "ark-video") {
     return sendJson(res, 400, { error: `模型 ${modelName} 当前连接协议 ${connection.protocol} 不支持火山方舟视频生成。` });
@@ -6675,31 +7446,70 @@ async function handleArkVideoGenerate(res, body, prompt) {
   }
 
   const extraParams = parseExtraParamsValue(body.extraParams);
+  const profileModel = [modelName, connection.apiModel];
+  const requestedMode = isArkSeedance25Model(profileModel)
+    ? normalizeArkVideoMode(extraParams.video_mode || body.videoMode)
+    : arkVideoModes.AUTO;
+  const hasReferences = Boolean(arkAssetUris.length + imageFiles.length + videoFiles.length + audioFiles.length);
+  const videoMode = requestedMode === arkVideoModes.AUTO
+    ? hasReferences ? arkVideoModes.REFERENCE : arkVideoModes.TEXT
+    : requestedMode;
+  const referenceError = validateArkVideoReferences({
+    model: profileModel,
+    videoMode,
+    imageCount: arkAssetUris.length + imageFiles.length,
+    videoCount: videoFiles.length,
+    audioCount: audioFiles.length
+  });
+  if (referenceError) return sendJson(res, 400, { error: referenceError });
+
   const content = [{ type: "text", text: prompt }];
-  for (const assetUri of arkAssetUris) {
-    content.push({
-      type: "image_url",
-      image_url: { url: assetUri },
-      role: "reference_image"
-    });
-  }
-  for (const image of imageFiles) {
-    content.push({
-      type: "image_url",
-      image_url: { url: fileToDataUrl(image) },
-      role: "reference_image"
-    });
-  }
+  const imageUrls = [...arkAssetUris, ...imageFiles.map(fileToDataUrl)];
+  imageUrls.forEach((url, index) => content.push({
+    type: "image_url",
+    image_url: { url },
+    role: videoMode === arkVideoModes.FRAMES
+      ? index === 0 ? "first_frame" : "last_frame"
+      : "reference_image"
+  }));
+  videoFiles.forEach((file) => content.push({
+    type: "video_url",
+    video_url: { url: fileToDataUrl(file) },
+    role: "reference_video"
+  }));
+  audioFiles.forEach((file) => content.push({
+    type: "audio_url",
+    audio_url: { url: fileToDataUrl(file) },
+    role: "reference_audio"
+  }));
+
+  const outputFormat = normalizeArkVideoOutputFormat(extraParams.output_format || body.format, videoMode);
+  const requestExtras = { ...extraParams };
+  for (const key of [
+    "video_mode",
+    "resolution",
+    "ratio",
+    "duration",
+    "output_format",
+    "generate_audio",
+    "watermark",
+    "return_last_frame"
+  ]) delete requestExtras[key];
   const payload = pruneEmpty({
+    ...requestExtras,
     model: connection.apiModel,
     content,
-    resolution: normalizeArkVideoResolution(body.quality, modelName),
-    ratio: normalizeArkVideoRatio(body.size),
-    duration: normalizeArkVideoDuration(body.n, modelName),
+    resolution: normalizeArkVideoResolution(extraParams.resolution || body.quality, profileModel),
+    ratio: [arkVideoModes.FRAMES, arkVideoModes.EDIT, arkVideoModes.EXTEND].includes(videoMode)
+      ? "adaptive"
+      : normalizeArkVideoRatio(extraParams.ratio || body.size),
+    duration: videoMode === arkVideoModes.EDIT
+      ? -1
+      : normalizeArkVideoDuration(extraParams.duration || body.n, profileModel),
+    output_format: isArkSeedance25Model(profileModel) ? outputFormat : undefined,
     generate_audio: extraParams.generate_audio === undefined ? true : Boolean(extraParams.generate_audio),
     watermark: extraParams.watermark === undefined ? false : Boolean(extraParams.watermark),
-    return_last_frame: Boolean(extraParams.return_last_frame),
-    ...extraParams
+    return_last_frame: Boolean(extraParams.return_last_frame)
   });
   const startedAt = Date.now();
 
@@ -6729,6 +7539,7 @@ async function handleArkVideoGenerate(res, body, prompt) {
         provider: "volcengine-ark",
         apiUrl: connection.apiUrl,
         taskId,
+        videoMode,
         virtualHumanAssetCount: arkAssetUris.length,
         payload: { ...payload, content: summarizeArkVideoContent(content) }
       },
@@ -6741,6 +7552,30 @@ async function handleArkVideoGenerate(res, body, prompt) {
       upstream: error.data || undefined
     });
   }
+}
+
+function validateArkVideoReferences({ model, videoMode, imageCount, videoCount, audioCount }) {
+  const limits = arkVideoReferenceLimits(model, videoMode);
+  const total = imageCount + videoCount + audioCount;
+  if (imageCount > limits.images || videoCount > limits.videos || audioCount > limits.audios || total > limits.total) {
+    return `素材数量超限：图片 ${imageCount}/${limits.images}，视频 ${videoCount}/${limits.videos}，音频 ${audioCount}/${limits.audios}，总计 ${total}/${limits.total}。`;
+  }
+  if (!isArkSeedance25Model(model)) return "";
+  if (videoMode === arkVideoModes.TEXT && total) return "文生视频模式不能使用参考素材。";
+  if (videoMode === arkVideoModes.REFERENCE && !total) return "全模态参考模式至少需要 1 个参考素材。";
+  if (videoMode === arkVideoModes.FRAMES && (imageCount < 1 || imageCount > 2)) {
+    return "首尾帧模式需要 1 张首帧，或 2 张首尾帧图片。";
+  }
+  if (videoMode === arkVideoModes.FRAMES && (videoCount || audioCount)) return "首尾帧模式只接受图片参考。";
+  if (videoMode === arkVideoModes.EDIT && videoCount < 1) return "视频编辑模式至少需要 1 个参考视频。";
+  if (videoMode === arkVideoModes.EXTEND && videoCount !== 1) return "视频延长模式需要且只能使用 1 个原视频。";
+  return "";
+}
+
+function normalizeArkVideoOutputFormat(value, videoMode = arkVideoModes.AUTO) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["mp4", "mov"].includes(normalized)) return normalized;
+  return [arkVideoModes.EDIT, arkVideoModes.EXTEND].includes(videoMode) ? "mov" : "mp4";
 }
 
 function normalizeArkVideoRatio(value) {
@@ -6756,13 +7591,14 @@ function normalizeArkVideoDuration(value, model) {
 }
 
 function arkVideoDurationLimit(model) {
-  return normalizeModelAlias(model) === "ark-seedance-2.5" ? 30 : 15;
+  return isArkSeedance25Model(model) ? 30 : 15;
 }
 
 function normalizeArkVideoResolution(value, model) {
   const resolution = String(value || "720p").trim().toLowerCase();
-  const normalized = normalizeModelAlias(model);
+  const normalized = normalizeModelAlias(Array.isArray(model) ? model[0] : model);
   if (normalized === "ark-seedance-2.0" && ["480p", "720p", "1080p", "4k"].includes(resolution)) return resolution;
+  if (isArkSeedance25Model(model) && ["480p", "720p", "1080p"].includes(resolution)) return resolution;
   if (["480p", "720p"].includes(resolution)) return resolution;
   return "720p";
 }
@@ -6835,9 +7671,17 @@ async function persistArkVideo(url, projectId, taskData = {}) {
 }
 
 function summarizeArkVideoContent(content) {
-  return content.map((item) => item.type === "image_url"
-    ? { type: item.type, role: item.role, image_url: { url: "<reference image>" } }
-    : item);
+  return content.map((item) => {
+    const fields = {
+      image_url: "<reference image>",
+      video_url: "<reference video>",
+      audio_url: "<reference audio>"
+    };
+    const field = Object.keys(fields).find((key) => item.type === key);
+    return field
+      ? { type: item.type, role: item.role, [field]: { url: fields[field] } }
+      : item;
+  });
 }
 
 async function handleDreaminaVideoGenerate(res, body, prompt) {

@@ -180,7 +180,7 @@ function Test-NodeReady {
   try {
     $versionText = & $nodePath --version
     if ($versionText -match '^v(\d+)\.') {
-      return ([int]$matches[1] -ge 18)
+      return ([int]$matches[1] -ge 20)
     }
   } catch {
     return $false
@@ -201,11 +201,11 @@ function Get-NodeMsiArch {
 
 function Install-NodeLts {
   if (Test-NodeReady) {
-    Write-Host "Node.js 18+ detected."
+    Write-Host "Node.js 20+ detected."
     return
   }
 
-  Write-Host "Node.js 18+ was not found. Downloading the latest Node.js LTS installer..."
+  Write-Host "Node.js 20+ was not found. Downloading the latest Node.js LTS installer..."
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
   $arch = Get-NodeMsiArch
@@ -215,7 +215,7 @@ function Install-NodeLts {
   try {
     $versions = Invoke-RestMethod -Uri $indexUrl -UseBasicParsing
     $release = $versions | Where-Object {
-      $_.lts -and $_.files -contains $fileKey -and ([int]($_.version.TrimStart('v').Split('.')[0]) -ge 18)
+      $_.lts -and $_.files -contains $fileKey -and ([int]($_.version.TrimStart('v').Split('.')[0]) -ge 20)
     } | Select-Object -First 1
 
     if (-not $release) {
@@ -248,7 +248,7 @@ function Install-NodeLts {
   }
 
   if (-not (Test-NodeReady)) {
-    throw "Node.js installation finished, but node.exe 18+ was not detected. Restart Windows or install Node.js manually from https://nodejs.org/."
+    throw "Node.js installation finished, but node.exe 20+ was not detected. Restart Windows or install Node.js manually from https://nodejs.org/."
   }
 
   Write-Host "Node.js is ready."
@@ -378,7 +378,7 @@ try {
 
   if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
     Write-Host ""
-    Write-Host "Node.js 18 or newer is required before launching the app." -ForegroundColor Yellow
+    Write-Host "Node.js 20 or newer is required before launching the app." -ForegroundColor Yellow
   }
 } finally {
   Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue

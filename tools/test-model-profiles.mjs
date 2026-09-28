@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import {
+  arkVideoModes,
+  arkVideoReferenceLimits,
   bananaImageProfile,
   bananaImageProfiles,
   canonicalDreaminaModelVersion,
@@ -20,7 +22,9 @@ import {
   gptImage25Profiles,
   isGptImage25Size,
   isTtImage25Model,
+  isArkSeedance25Model,
   normalizeBananaImageParameters,
+  normalizeArkVideoMode,
   normalizeDreaminaVideoMode,
   normalizeGptImage25Quality,
   normalizeGptImage25Size,
@@ -62,6 +66,7 @@ assert.equal(
 );
 assert.equal(seedreamImageProfile("gpt-image-2"), "");
 assert.equal(normalizeSeedreamProMode("fusion"), seedreamProModes.FUSION);
+assert.equal(normalizeSeedreamProMode("INTERACTIVE"), seedreamProModes.INTERACTIVE);
 assert.equal(normalizeSeedreamProMode("LAYERS"), seedreamProModes.LAYERS);
 assert.equal(normalizeSeedreamProMode("unsupported"), seedreamProModes.STANDARD);
 assert.equal(seedreamProFeatureChannel("seedream-v5-pro/layer-decomposition"), true);
@@ -201,4 +206,36 @@ assert.deepEqual(dreaminaVideoReferenceLimits("seedance2.0fast", "frames"), {
   minImages: 2
 });
 
-console.log(`Image model profile tests passed (${cases.length + bananaCases.length + gptImage25Cases.length + 64} cases).`);
+assert.equal(isArkSeedance25Model("ark-seedance-2.5"), true);
+assert.equal(isArkSeedance25Model("doubao-seedance-2-5-260628"), true);
+assert.equal(isArkSeedance25Model(["custom-video", "doubao-seedance-2-5-260628"]), true);
+assert.equal(isArkSeedance25Model("ark-seedance-2.0"), false);
+assert.equal(normalizeArkVideoMode("multimodal2video"), arkVideoModes.REFERENCE);
+assert.equal(normalizeArkVideoMode("video-edit"), arkVideoModes.EDIT);
+assert.equal(normalizeArkVideoMode("extension"), arkVideoModes.EXTEND);
+assert.deepEqual(arkVideoReferenceLimits("ark-seedance-2.5", "reference"), {
+  images: 30,
+  videos: 10,
+  audios: 10,
+  total: 50,
+  minImages: 0,
+  minVideos: 0
+});
+assert.deepEqual(arkVideoReferenceLimits("ark-seedance-2.5", "frames"), {
+  images: 2,
+  videos: 0,
+  audios: 0,
+  total: 2,
+  minImages: 1,
+  minVideos: 0
+});
+assert.deepEqual(arkVideoReferenceLimits("ark-seedance-2.5", "extend"), {
+  images: 30,
+  videos: 1,
+  audios: 10,
+  total: 41,
+  minImages: 0,
+  minVideos: 1
+});
+
+console.log(`Image model profile tests passed (${cases.length + bananaCases.length + gptImage25Cases.length + 74} cases).`);

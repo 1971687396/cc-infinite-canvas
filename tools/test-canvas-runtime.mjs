@@ -6,6 +6,8 @@ import {
   reorderLayerItemsByZ,
   resolveSeedreamLayerAnchor,
   resolveSeedreamLayerPlacement,
+  seedreamCoordinatePromptForActions,
+  seedreamCoordinateTagForAction,
   restoreNodesPreservingActiveGenerations,
   seedreamLayerLayoutVersion
 } from "../public/canvas-runtime.js";
@@ -20,6 +22,26 @@ assert.equal(normalizeCanvasImageFormat("gif"), "");
 assert.equal(convertedImageFilename("character.final.png", "webp"), "character.final.webp");
 assert.equal(convertedImageFilename("C:\\art\\角色.jpeg?cache=1", "png"), "角色.png");
 assert.equal(convertedImageFilename("", "jpeg"), "canvas-image.jpg");
+
+assert.equal(
+  seedreamCoordinateTagForAction({ tool: "point", point: { x: 512, y: 256 } }, 1024, 512),
+  "<point>500 500</point>"
+);
+assert.equal(
+  seedreamCoordinateTagForAction({ tool: "bbox", start: { x: 900, y: 400 }, end: { x: 100, y: 50 } }, 1000, 500),
+  "<bbox>100 100 899 799</bbox>"
+);
+assert.equal(
+  seedreamCoordinateTagForAction({ tool: "point", point: { x: -20, y: 900 } }, 100, 100),
+  "<point>0 999</point>"
+);
+assert.equal(
+  seedreamCoordinatePromptForActions([
+    { tool: "brush", points: [{ x: 1, y: 2 }] },
+    { tool: "point", point: { x: 25, y: 75 } }
+  ], 100, 100, 1),
+  "图 2 精准编辑坐标：<point>250 749</point>"
+);
 
 const normalizedLayers = normalizeDecomposedLayerImages([
   { url: "base.png" },

@@ -9,6 +9,7 @@ const [appSource, htmlSource, serverSource] = await Promise.all([
 
 assert.match(htmlSource, /id="assistantAutoAttachReferencesToggle"/u);
 assert.match(htmlSource, /id="assistantAutoGenerateToggle"/u);
+assert.match(htmlSource, /id="assistantProjectMemoryToggle"/u);
 assert.match(appSource, /assistantBehaviorStorageKey/u);
 assert.match(appSource, /selectedReferenceImageIds/u);
 assert.match(appSource, /await useCanvasImagesAsReference\(nodeId, applyContext\.selectedReferenceImageIds\)/u);
@@ -18,7 +19,10 @@ assert.match(appSource, /skipConfirmation: true/u);
 assert.match(appSource, /if \(!options\.skipConfirmation && !window\.confirm/u);
 assert.match(appSource, /autoAttachSelectedReferences: assistantBehavior\.autoAttachReferences/u);
 assert.match(appSource, /autoApplyPlans: assistantBehavior\.autoGenerate/u);
+assert.match(appSource, /projectMemory: canvasState\.grokProjectMemory === true/u);
+assert.match(appSource, /updateGrokProjectMemoryFromControl/u);
 assert.match(serverSource, /assistantBehavior: isPlainObject\(context\.assistantBehavior\)/u);
+assert.match(serverSource, /projectMemory === true/u);
 assert.match(serverSource, /前端会把当前 selection 中的 image 节点自动添加/u);
 
 console.log("Assistant behavior integration checks passed.");

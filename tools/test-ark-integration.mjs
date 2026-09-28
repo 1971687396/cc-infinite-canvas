@@ -694,6 +694,38 @@ try {
   });
   assert.equal(migratedImage.request.payload.size, "2816x1584");
 
+  const upgradedSeedream = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+    projectId: "ark-smoke",
+    mode: "create",
+    prompt: "test Seedream 5.0 Pro upgraded parameters",
+    model: "ark-seedream-5.0-pro",
+    n: "9",
+    size: "1.5K",
+    quality: "fast",
+    background: "transparent",
+    format: "jpeg",
+    extraParams: {
+      n: 12,
+      output_format: "jpeg",
+      background: "opaque",
+      sequential_image_generation: "auto",
+      stream: true,
+      tools: [{ type: "unsupported" }],
+      watermark: true
+    }
+  });
+  const upgradedSeedreamPayload = arkImagePayloads.at(-1);
+  assert.equal(upgradedSeedream.images.length, 1);
+  assert.equal(upgradedSeedreamPayload.size, "1.5K");
+  assert.deepEqual(upgradedSeedreamPayload.optimize_prompt_options, { mode: "fast" });
+  assert.equal(upgradedSeedreamPayload.background, "transparent");
+  assert.equal(upgradedSeedreamPayload.output_format, "png");
+  assert.equal(upgradedSeedreamPayload.watermark, true);
+  assert.equal(upgradedSeedreamPayload.n, undefined);
+  assert.equal(upgradedSeedreamPayload.sequential_image_generation, undefined);
+  assert.equal(upgradedSeedreamPayload.stream, undefined);
+  assert.equal(upgradedSeedreamPayload.tools, undefined);
+
   const aggregateImage = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
     projectId: "ark-smoke",
     mode: "create",
@@ -772,6 +804,38 @@ try {
   });
   assert.equal(openAiStyleAggregateImage.images.length, 1);
   assert.equal(openAiStyleAggregateImage.request.taskId, "");
+
+  const upgradedAggregateImage = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+    projectId: "ark-smoke",
+    mode: "create",
+    prompt: "test media generate Seedream 5.0 Pro upgraded parameters",
+    model: "seedream5.0pro-aggregate",
+    n: "8",
+    size: "1.5K",
+    quality: "fast",
+    background: "opaque",
+    format: "jpeg",
+    extraParams: {
+      notify_url: "https://example.com/seedream-hook",
+      stream: true,
+      tools: [{ type: "unsupported" }],
+      params: {
+        size: "2K",
+        output_format: "png",
+        sequential_image_generation: "auto"
+      }
+    }
+  });
+  const upgradedAggregatePayload = mediaGeneratePayloads.at(-1);
+  assert.equal(upgradedAggregateImage.images.length, 1);
+  assert.equal(upgradedAggregatePayload.notify_url, "https://example.com/seedream-hook");
+  assert.equal(upgradedAggregatePayload.stream, undefined);
+  assert.equal(upgradedAggregatePayload.tools, undefined);
+  assert.equal(upgradedAggregatePayload.params.size, "1.5K");
+  assert.equal(upgradedAggregatePayload.params.output_format, "jpeg");
+  assert.equal(upgradedAggregatePayload.params.background, "opaque");
+  assert.deepEqual(upgradedAggregatePayload.params.optimize_prompt_options, { mode: "fast" });
+  assert.equal(upgradedAggregatePayload.params.sequential_image_generation, undefined);
 
   const aggregateBusinessErrorResponse = await fetch(`http://127.0.0.1:${appPort}/api/generate`, {
     method: "POST",
@@ -868,6 +932,31 @@ try {
   const edit = await postForm(`http://127.0.0.1:${appPort}/api/generate`, editForm);
   assert.equal(edit.images.length, 1);
   assert.equal(edit.request.payload.image, "<1 reference image(s)>");
+
+  const interactiveForm = new FormData();
+  appendFields(interactiveForm, {
+    projectId: "ark-smoke",
+    mode: "edit",
+    seedreamMode: "interactive",
+    prompt: "只修改 <bbox>100 120 760 880</bbox> 内的衣服颜色",
+    model: "ark-seedream-5.0-pro",
+    n: "1",
+    size: "1.5K",
+    quality: "fast",
+    background: "transparent",
+    format: "jpeg",
+    extraParams: JSON.stringify({ layer_decomposition: true, stream: true })
+  });
+  interactiveForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "interactive-reference.png");
+  const interactive = await postForm(`http://127.0.0.1:${appPort}/api/generate`, interactiveForm);
+  const interactivePayload = arkImagePayloads.at(-1);
+  assert.equal(interactive.images.length, 1);
+  assert.match(interactivePayload.prompt, /<bbox>100 120 760 880<\/bbox>/u);
+  assert.equal(interactivePayload.size, "1.5K");
+  assert.equal(interactivePayload.background, "transparent");
+  assert.equal(interactivePayload.output_format, "png");
+  assert.equal(interactivePayload.layer_decomposition, undefined);
+  assert.equal(interactivePayload.stream, undefined);
 
   const fusionForm = new FormData();
   appendFields(fusionForm, {
@@ -977,6 +1066,29 @@ try {
   assert.equal(autoFusionPayload.image.length, 2);
   assert.equal(autoFusion.images.length, 1);
 
+  const transparentMultiForm = new FormData();
+  appendFields(transparentMultiForm, {
+    projectId: "ark-smoke",
+    mode: "edit",
+    seedreamMode: "interactive",
+    prompt: "透明背景编辑",
+    model: "ark-seedream-5.0-pro",
+    n: "1",
+    size: "2K",
+    background: "transparent",
+    format: "png",
+    extraParams: "{}"
+  });
+  transparentMultiForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "transparent-1.png");
+  transparentMultiForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "transparent-2.png");
+  const transparentMultiResponse = await fetch(`http://127.0.0.1:${appPort}/api/generate`, {
+    method: "POST",
+    body: transparentMultiForm
+  });
+  const transparentMultiError = await transparentMultiResponse.json();
+  assert.equal(transparentMultiResponse.status, 400);
+  assert.match(transparentMultiError.error, /透明背景编辑仅支持 1 张参考图片/u);
+
   const videoForm = new FormData();
   appendFields(videoForm, {
     projectId: "ark-smoke",
@@ -1015,10 +1127,99 @@ try {
   });
   const video25 = await postForm(`http://127.0.0.1:${appPort}/api/generate`, video25Form);
   assert.equal(video25.request.payload.duration, 30);
-  assert.equal(video25.request.payload.resolution, "720p");
+  assert.equal(video25.request.payload.resolution, "1080p");
   assert.equal(video25.request.payload.ratio, "21:9");
+  assert.equal(video25.request.payload.output_format, "mp4");
+  assert.equal(video25.request.videoMode, "text");
   assert.equal(lastVideoPayload.model, "doubao-seedance-2-5-260628");
   assert.equal(lastVideoPayload.generate_audio, false);
+
+  const multimodal25Form = new FormData();
+  appendFields(multimodal25Form, {
+    projectId: "ark-smoke",
+    mode: "video",
+    videoMode: "reference",
+    prompt: "test seedance 2.5 multimodal reference",
+    model: "ark-seedance-2.5",
+    n: "12",
+    size: "16:9",
+    quality: "1080p",
+    format: "mp4",
+    extraParams: JSON.stringify({ generate_audio: true })
+  });
+  multimodal25Form.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "reference.png");
+  multimodal25Form.append("video", new Blob([Buffer.from("seedance-reference-video")], { type: "video/mp4" }), "reference.mp4");
+  multimodal25Form.append("audio", new Blob([Buffer.from("seedance-reference-audio")], { type: "audio/mpeg" }), "reference.mp3");
+  const multimodal25 = await postForm(`http://127.0.0.1:${appPort}/api/generate`, multimodal25Form);
+  assert.equal(multimodal25.request.videoMode, "reference");
+  assert.deepEqual(lastVideoPayload.content.slice(1).map((item) => item.role), [
+    "reference_image",
+    "reference_video",
+    "reference_audio"
+  ]);
+  assert.match(lastVideoPayload.content[1].image_url.url, /^data:image\/png;base64,/u);
+  assert.match(lastVideoPayload.content[2].video_url.url, /^data:video\/mp4;base64,/u);
+  assert.match(lastVideoPayload.content[3].audio_url.url, /^data:audio\/mpeg;base64,/u);
+
+  const frames25Form = new FormData();
+  appendFields(frames25Form, {
+    projectId: "ark-smoke",
+    mode: "video",
+    videoMode: "frames",
+    prompt: "test seedance 2.5 first and last frames",
+    model: "ark-seedance-2.5",
+    n: "8",
+    size: "16:9",
+    quality: "720p",
+    format: "mp4",
+    extraParams: "{}"
+  });
+  frames25Form.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "first.png");
+  frames25Form.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "last.png");
+  await postForm(`http://127.0.0.1:${appPort}/api/generate`, frames25Form);
+  assert.deepEqual(lastVideoPayload.content.slice(1).map((item) => item.role), ["first_frame", "last_frame"]);
+  assert.equal(lastVideoPayload.ratio, "adaptive");
+
+  const edit25Form = new FormData();
+  appendFields(edit25Form, {
+    projectId: "ark-smoke",
+    mode: "video",
+    videoMode: "edit",
+    prompt: "test seedance 2.5 video edit",
+    model: "ark-seedance-2.5",
+    n: "20",
+    size: "9:16",
+    quality: "1080p",
+    format: "mov",
+    extraParams: "{}"
+  });
+  edit25Form.append("video", new Blob([Buffer.from("seedance-edit-video")], { type: "video/mp4" }), "edit.mp4");
+  const edit25 = await postForm(`http://127.0.0.1:${appPort}/api/generate`, edit25Form);
+  assert.equal(edit25.request.videoMode, "edit");
+  assert.equal(lastVideoPayload.content[1].role, "reference_video");
+  assert.equal(lastVideoPayload.duration, -1);
+  assert.equal(lastVideoPayload.ratio, "adaptive");
+  assert.equal(lastVideoPayload.output_format, "mov");
+
+  const extend25Form = new FormData();
+  appendFields(extend25Form, {
+    projectId: "ark-smoke",
+    mode: "video",
+    videoMode: "extend",
+    prompt: "test seedance 2.5 video extension",
+    model: "ark-seedance-2.5",
+    n: "30",
+    size: "9:16",
+    quality: "1080p",
+    format: "mov",
+    extraParams: "{}"
+  });
+  extend25Form.append("video", new Blob([Buffer.from("seedance-extend-video")], { type: "video/mp4" }), "extend.mp4");
+  const extend25 = await postForm(`http://127.0.0.1:${appPort}/api/generate`, extend25Form);
+  assert.equal(extend25.request.videoMode, "extend");
+  assert.equal(lastVideoPayload.duration, 30);
+  assert.equal(lastVideoPayload.ratio, "adaptive");
+  assert.equal(lastVideoPayload.output_format, "mov");
 
   console.log(JSON.stringify({
     ok: true,
@@ -1038,6 +1239,9 @@ try {
     autoDetectedLayerChannel: autoLayerPayload.layer_decomposition,
     openAiLayerMultipart: openAiEditContentType.startsWith("multipart/form-data;"),
     sharedChannelFusionReferences: autoFusionPayload.image.length,
+    seedance25MultimodalRoles: multimodal25.request.payload.content.slice(1).map((item) => item.role),
+    seedance25EditDuration: edit25.request.payload.duration,
+    seedance25ExtendDuration: extend25.request.payload.duration,
     videoCount: video.videos.length,
     cachedVideo: video.videos[0].url
   }, null, 2));

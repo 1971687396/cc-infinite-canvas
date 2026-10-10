@@ -84,6 +84,13 @@ import {
   nodeMatchesQuery,
   patchAgentNode
 } from "./agent-control-runtime.js";
+import {
+  dreaminaSubmitId,
+  dreaminaTaskStatus,
+  isRetryableDreaminaQueryError,
+  queryDreaminaTask,
+  waitForDreaminaTask
+} from "./public/dreamina-task-runtime.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -258,7 +265,7 @@ const config = {
   arkAccessKeyId: process.env.VOLCENGINE_ACCESS_KEY_ID || "",
   arkSecretAccessKey: process.env.VOLCENGINE_SECRET_ACCESS_KEY || "",
   arkAssetProject: process.env.VOLCENGINE_ARK_ASSET_PROJECT || "default",
-  arkAssetGroupId: process.env.VOLCENGINE_ARK_ASSET_GROUP_ID || "",
+  arkAssetGroupId: String(process.env.VOLCENGINE_ARK_ASSET_GROUP_ID || "").trim(),
   tosBucket: process.env.VOLCENGINE_TOS_BUCKET || "",
   tosRegion: process.env.VOLCENGINE_TOS_REGION || arkOpenApiRegion,
   tosEndpoint: process.env.VOLCENGINE_TOS_ENDPOINT || "",
@@ -330,6 +337,10 @@ const server = http.createServer(async (req, res) => {
       return await handleArkAssetImport(req, res);
     }
 
+    if (req.method === "POST" && url.pathname === "/api/ark-assets/quick-import") {
+      return await handleArkAssetQuickImport(req, res);
+    }
+
     if (req.method === "POST" && url.pathname === "/api/ark-assets/groups") {
       return await handleArkAssetGroups(req, res);
     }
@@ -368,6 +379,10 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/dreamina/upscale") {
       return await handleDreaminaUpscale(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/dreamina/video/query") {
+      return await handleDreaminaVideoQuery(req, res);
     }
 
     if (req.method === "GET" && url.pathname === "/api/grok-build/status") {
@@ -1599,6 +1614,74 @@ async function handleArkAssetImport(req, res) {
   }
 }
 
+const arkQuickAssetGroupPromises = new Map();
+
+async function ensureArkQuickAssetGroup(projectName) {
+  if (config.arkAssetGroupId) return config.arkAssetGroupId;
+  const key = `${config.arkAccessKeyId}\0${projectName}`;
+  if (arkQuickAssetGroupPromises.has(key)) return arkQuickAssetGroupPromises.get(key);
+  const work = (async () => {
+    const name = "cc-infinite-canvas-portraits";
+    const listed = await arkOpenApiRequest("ListAssetGroups", {
+      Filter: { Name: name, GroupType: "AIGC" },
+      PageNumber: 1,
+      PageSize: 50,
+      ProjectName: projectName
+    });
+    const groups = Array.isArray(listed?.Items) ? listed.Items : [];
+    const existing = groups.find((item) => item?.Name === name && (!item?.GroupType || item.GroupType === "AIGC"));
+    if (existing?.Id) return String(existing.Id);
+    const created = await arkOpenApiRequest("CreateAssetGroup", {
+      Name: name,
+      Title: name,
+      Description: "cc无限画布快捷入库素材",
+      GroupType: "AIGC",
+      ProjectName: projectName
+    });
+    const groupId = sanitizeOptionalText(created?.Id || created?.id);
+    if (!groupId) throw new Error("方舟已响应，但未返回素材组 ID。请检查素材库权限与授权书状态。");
+    return groupId;
+  })();
+  arkQuickAssetGroupPromises.set(key, work);
+  try {
+    return await work;
+  } finally {
+    arkQuickAssetGroupPromises.delete(key);
+  }
+}
+
+async function handleArkAssetQuickImport(req, res) {
+  try {
+    requireArkAssetCredentials();
+    const body = await readJsonBody(req, { maxBytes: 42 * 1024 * 1024 });
+    const projectId = normalizeProjectId(body.projectId || "default");
+    const projectName = sanitizeOptionalText(body.projectName) || config.arkAssetProject || "default";
+    const groupId = sanitizeOptionalText(body.groupId) || await ensureArkQuickAssetGroup(projectName);
+    const prepared = await prepareArkAssetSource(body, projectId);
+    const filename = sanitizeDownloadFilename(body.filename || prepared.filename || "虚拟人像.png");
+    const result = await arkOpenApiRequest("CreateAsset", {
+      GroupId: groupId,
+      URL: prepared.url,
+      Name: filename.slice(0, 64),
+      AssetType: "Image",
+      ProjectName: projectName
+    });
+    const assetId = sanitizeOptionalText(result?.Id || result?.id);
+    if (!assetId) throw new Error("方舟已响应，但未返回 Asset ID。请检查素材库权限。");
+    sendJson(res, 200, {
+      ok: true,
+      assetId,
+      assetUri: `asset://${assetId}`,
+      status: "Processing",
+      groupId,
+      projectName,
+      sourceMode: prepared.sourceMode
+    });
+  } catch (error) {
+    sendJson(res, 500, { error: arkAssetErrorMessage(error) });
+  }
+}
+
 async function handleArkAssetGroups(req, res) {
   try {
     requireArkAssetCredentials();
@@ -2200,7 +2283,7 @@ async function handleDreaminaUpscale(req, res) {
       "image_upscale",
       `--image=${imagePath}`,
       `--resolution_type=${resolutionType}`,
-      "--poll=30"
+      "--poll=0"
     ], { timeoutMs: 90000 });
     const submitted = parseDreaminaJson(submitResult.stdout);
     const finalData = await resolveDreaminaResult(submitted, projectOutputDir(projectId));
@@ -2268,6 +2351,8 @@ async function readDreaminaStatus() {
       textImageModels,
       imageEditModels,
       videoModels,
+      userName: sanitizeOptionalText(credit?.user_name),
+      userId: sanitizeOptionalText(credit?.user_id),
       totalCredit: Number.isFinite(Number(credit?.total_credit)) ? Number(credit.total_credit) : null,
       vipLevel: String(credit?.vip_level || "")
     };
@@ -2788,7 +2873,6 @@ async function handleStoryAnalyze(req, res) {
     let content = "";
     let usage = null;
     let requestId = "";
-    let parsed = null;
     let result = null;
 
     const first = await callStoryModel(messages, model, body, req, res);
@@ -2802,10 +2886,10 @@ async function handleStoryAnalyze(req, res) {
     content = first.content || "";
     usage = first.usage || null;
     requestId = first.requestId || "";
-    parsed = tryParseAssistantJson(content);
-    result = normalizeStoryAnalysisResult(parsed, { episode, assetMemory });
+    result = parseStoryAnalysisResponse(content, { episode, assetMemory });
 
-    if (content && (!result || (!result.assets.length && !result.shots.length))) {
+    // A progress sentence has no analysis to repair; don't pay for another empty response.
+    if (!result && storyResponseHasAnalysisData(content)) {
       const repair = await callStoryModel(
         buildStoryRepairMessages(content, aspectRatio, visualStyle, episode),
         model,
@@ -2815,11 +2899,9 @@ async function handleStoryAnalyze(req, res) {
       );
       if (repair.silent) return;
       if (repair.ok) {
-        const repairedParsed = tryParseAssistantJson(repair.content);
-        const repairedResult = normalizeStoryAnalysisResult(repairedParsed, { episode, assetMemory });
-        if (repairedResult && (repairedResult.assets.length || repairedResult.shots.length)) {
+        const repairedResult = parseStoryAnalysisResponse(repair.content, { episode, assetMemory });
+        if (repairedResult) {
           content = repair.content;
-          parsed = repairedParsed;
           result = repairedResult;
           usage = repair.usage || usage;
           requestId = repair.requestId || requestId;
@@ -2828,10 +2910,14 @@ async function handleStoryAnalyze(req, res) {
     }
 
     if (!content) return sendJson(res, 502, { error: "剧本拆解模型没有返回内容。" });
-    if (!result || (!result.assets.length && !result.shots.length)) {
+    if (!result) {
       return sendJson(res, 502, {
-        error: "模型返回的剧本拆解结构无效，请重试或更换分析模型。",
-        responsePreview: content.slice(0, 2000)
+        error: storyResponseHasAnalysisData(content)
+          ? "本集拆解输出不完整或不符合资产/镜头结构，请重新拆解本集。"
+          : "模型没有返回本集的实际资产或镜头，仅返回说明文字或空结果。请重新拆解本集。",
+        responsePreview: content.slice(0, 2000),
+        model,
+        requestId
       });
     }
     const updatedAssetMemory = mergeStoryAssetMemory(assetMemory, result.assets, episode);
@@ -2866,6 +2952,7 @@ async function callStoryModel(messages, model, body, req, res) {
         signal: requestAbortSignal(req, res),
         cwd: memoryDir || undefined,
         useMemory,
+        responseSchema: storyBreakdownResponseSchema(),
         timeoutMs: assistantRequestTimeoutMs(grokBuildAssistantModelId(model), "story_analyze")
       });
       const content = sanitizeOptionalText(result.text);
@@ -3029,6 +3116,32 @@ function storyBreakdownSchemaExample() {
       }
     ]
   };
+}
+
+function storyBreakdownResponseSchema() {
+  const schemaFor = (value) => {
+    if (Array.isArray(value)) return { type: "array", items: schemaFor(value[0]) };
+    if (value && typeof value === "object") {
+      return {
+        type: "object",
+        properties: Object.fromEntries(Object.entries(value).map(([key, item]) => [key, schemaFor(item)])),
+        required: Object.keys(value),
+        additionalProperties: false
+      };
+    }
+    return { type: typeof value === "number" ? "number" : "string" };
+  };
+  const schema = schemaFor(storyBreakdownSchemaExample());
+  schema.properties.schema.enum = ["cc-story-episode-v2"];
+  schema.properties.assets.maxItems = 60;
+  schema.properties.assets.items.properties.kind.enum = ["character", "scene", "prop", "costume", "vehicle", "creature"];
+  schema.properties.assets.items.properties.reuseMode.enum = ["new", "reuse", "variant"];
+  schema.properties.shots.maxItems = 80;
+  schema.anyOf = [
+    { properties: { assets: { minItems: 1 } } },
+    { properties: { shots: { minItems: 1 } } }
+  ];
+  return schema;
 }
 
 function buildStoryAnalysisMessages({
@@ -4387,12 +4500,18 @@ function parseAssistantActionArguments(action) {
   return isPlainObject(parsed) ? parsed : null;
 }
 
-function tryParseAssistantJson(content) {
+function parseStoryAnalysisResponse(content, options = {}) {
   for (const candidate of assistantJsonCandidates(content)) {
     const parsed = tryParseStrictJson(candidate.json);
-    if (parsed) return parsed;
+    const result = normalizeStoryAnalysisResult(parsed, options);
+    // Skip unrelated JSON and empty schema examples if the answer contains the real result later.
+    if (result && (result.assets.length || result.shots.length)) return result;
   }
   return null;
+}
+
+function storyResponseHasAnalysisData(content) {
+  return /"(?:assets|shots)"\s*:\s*\[\s*(?:\{|$)/u.test(String(content || ""));
 }
 
 function tryParseStrictJson(text) {
@@ -7384,7 +7503,7 @@ async function handleDreaminaGenerate(res, body, prompt, imageFiles = []) {
       imagePaths.forEach((imagePath) => args.push(`--images=${imagePath}`));
     }
 
-    args.push("--poll=30");
+    args.push("--poll=0");
     const submitResult = await runDreamina(args, { timeoutMs: 90000 });
     const submitted = parseDreaminaJson(submitResult.stdout);
     const finalData = await resolveDreaminaResult(submitted, projectOutputDir(projectId));
@@ -7774,12 +7893,26 @@ async function handleDreaminaVideoGenerate(res, body, prompt) {
     }
     if (session !== null) args.push(`--session=${session}`);
 
-    args.push("--poll=30");
+    // Return the submission ID before attempting any progress lookups.
+    args.push("--poll=0");
     const submitResult = await runDreamina(args, { timeoutMs: 180000 });
     const submitted = parseDreaminaJson(submitResult.stdout);
+    const taskId = dreaminaSubmitId(submitted);
+    if (!taskId) throw Object.assign(new Error("即梦提交响应缺少任务编号，请先在即梦网页确认任务，勿重复提交。"), { data: submitted });
+    if (body.dreaminaAsync === true || body.dreaminaAsync === "true") {
+      return sendJson(res, 202, {
+        provider: "dreamina-cli",
+        taskId,
+        taskStatus: dreaminaTaskStatus(submitted) || "submitted",
+        pending: true,
+        durationMs: Date.now() - startedAt,
+        raw: submitted
+      });
+    }
     const finalData = await resolveDreaminaResult(submitted, projectOutputDir(projectId), {
-      attempts: 90,
-      waitMs: 4000
+      attempts: 450,
+      waitMs: 4000,
+      maxWaitMs: 30 * 60 * 1000
     });
     const videos = await dreaminaResultVideos(finalData, projectId);
     if (!videos.length) {
@@ -7811,12 +7944,52 @@ async function handleDreaminaVideoGenerate(res, body, prompt) {
   } catch (error) {
     sendJson(res, dreaminaErrorStatus(error), {
       error: dreaminaErrorMessage(error),
-      upstream: error.data || undefined
+      upstream: error.data || undefined,
+      taskId: error.taskId || dreaminaSubmitId(error.data),
+      taskFailed: error.code === "EDREAMINATASKFAILED",
+      pending: error.code === "EDREAMINAPENDING"
     });
   } finally {
     if (inputDir && isPathInside(inputDir, tmpdir())) {
       await rm(inputDir, { recursive: true, force: true }).catch(() => {});
     }
+  }
+}
+
+async function handleDreaminaVideoQuery(req, res) {
+  const body = await readJsonBody(req);
+  const projectId = normalizeProjectId(body.projectId || "default");
+  const taskId = dreaminaSubmitId(String(body.taskId || ""));
+  if (!taskId) return sendJson(res, 400, { error: "继续查询需要有效的即梦任务编号。" });
+
+  try {
+    await mkdir(projectOutputDir(projectId), { recursive: true });
+    const result = await queryDreaminaTask(
+      { submit_id: taskId, gen_status: "querying" },
+      (submitId) => queryDreaminaResult(submitId, projectOutputDir(projectId))
+    );
+    if (result.pending) {
+      return sendJson(res, 202, {
+        taskId,
+        taskStatus: dreaminaTaskStatus(result.data),
+        pending: true,
+        queryError: result.queryError,
+        message: result.queryError ? "进度查询暂时失败，正在重试；不会重新提交任务。" : "即梦任务仍在排队或生成中。",
+        raw: result.data
+      });
+    }
+
+    const videos = await dreaminaResultVideos(result.data, projectId);
+    if (!videos.length) throw Object.assign(new Error("即梦已完成，但暂时未取得可下载视频，可继续查询。"), { data: result.data });
+    return sendJson(res, 200, { taskId, taskStatus: "success", videos, raw: result.data });
+  } catch (error) {
+    return sendJson(res, dreaminaErrorStatus(error), {
+      error: dreaminaErrorMessage(error),
+      taskId,
+      taskFailed: error.code === "EDREAMINATASKFAILED",
+      retryable: isRetryableDreaminaQueryError(error),
+      upstream: error.data || undefined
+    });
   }
 }
 
@@ -7933,38 +8106,18 @@ async function writeDreaminaInputFiles(files, directory, prefix = "reference") {
 }
 
 async function resolveDreaminaResult(initialData, downloadDir, options = {}) {
-  let current = initialData;
-  const attempts = Number(options.attempts) || 48;
-  const waitMs = Number(options.waitMs) || 2500;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const status = normalizeModelName(current?.gen_status);
-    if (status === "fail" || status === "failed") {
-      const error = new Error(current?.fail_reason || "Dreamina generation failed.");
-      error.data = current;
-      throw error;
-    }
+  return await waitForDreaminaTask(initialData, (submitId) => queryDreaminaResult(submitId, downloadDir), {
+    ...options,
+    isReady: (data) => Boolean(dreaminaLocalImageEntries(data).length || dreaminaLocalVideoEntries(data).length)
+  });
+}
 
-    const submitId = String(current?.submit_id || "").trim();
-    if (!submitId) {
-      const error = new Error("Dreamina CLI response did not include submit_id.");
-      error.data = current;
-      throw error;
-    }
-
-    if (status === "success" && (dreaminaLocalImageEntries(current).length || dreaminaLocalVideoEntries(current).length)) return current;
-
-    const query = await runDreamina(
-      ["query_result", `--submit_id=${submitId}`, `--download_dir=${downloadDir}`],
-      { timeoutMs: 60000 }
-    );
-    current = parseDreaminaJson(query.stdout);
-    if (normalizeModelName(current?.gen_status) === "success") return current;
-    await delay(waitMs);
-  }
-
-  const error = new Error("Dreamina task is still running after waiting for the result.");
-  error.data = current;
-  throw error;
+async function queryDreaminaResult(submitId, downloadDir) {
+  const query = await runDreamina(
+    ["query_result", `--submit_id=${submitId}`, `--download_dir=${downloadDir}`],
+    { timeoutMs: 60000 }
+  );
+  return parseDreaminaJson(query.stdout);
 }
 
 function dreaminaLocalImageEntries(data) {

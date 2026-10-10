@@ -1572,6 +1572,29 @@ body.assistant-open .minimap-dock {
   line-height: 1.45;
 }
 
+.story-response-details {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.story-response-details summary {
+  cursor: pointer;
+}
+
+.story-response-details pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--field);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
 .story-script-input,
 .story-instructions-input {
   width: 100%;
@@ -3476,7 +3499,8 @@ body.assistant-open .minimap-dock {
   align-items: center;
   gap: 6px;
   width: max-content;
-  max-width: min(640px, 90vw);
+  max-width: min(760px, 96vw);
+  overflow-x: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #ffffff;

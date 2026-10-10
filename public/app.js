@@ -63,6 +63,7 @@ import {
   storyAssetReuseModes,
   storyScriptSignature
 } from "./story-runtime.js";
+import { dreaminaSubmitId, isRetryableDreaminaQueryError } from "./dreamina-task-runtime.js";
 
 const storageKeyPrefix = "cc-infinite-canvas-project-v1";
 const currentProjectStorageKey = "cc-infinite-canvas-current-project";
@@ -724,6 +725,8 @@ const taskModelOptions = [...baseTaskModelOptions, ...dreaminaModelOptionsForVer
 
 const fileStore = new Map();
 const arkAssetPollTimers = new Map();
+const imageArkAssetPollTimers = new Map();
+const imageArkAssetImports = new Set();
 const selectedNodeIds = new Set();
 const undoLimit = 80;
 const undoStack = [];
@@ -1356,7 +1359,9 @@ function normalizeImageArkAsset(value) {
   if (!value || typeof value !== "object") return null;
   const assetId = String(value.assetId || "").trim();
   const assetUri = normalizeArkAssetUri(value.assetUri || assetId);
-  const status = ["Active", "Processing", "Failed"].includes(value.status) ? value.status : assetUri ? "Active" : "";
+  const status = value.status
+    ? ({ active: "Active", processing: "Processing", failed: "Failed" }[String(value.status).toLowerCase()] || "Processing")
+    : assetUri ? "Active" : "";
   if (!assetId && !assetUri && !status) return null;
   return {
     assetId: assetId || assetUri.replace(/^asset:\/\//u, ""),
@@ -1364,6 +1369,8 @@ function normalizeImageArkAsset(value) {
     status,
     groupId: String(value.groupId || ""),
     projectName: String(value.projectName || "default"),
+    sourceImageKey: String(value.sourceImageKey || ""),
+    origin: value.origin === "quick" ? "quick" : "node",
     error: String(value.error || ""),
     updatedAt: value.updatedAt || new Date().toISOString()
   };
@@ -1371,7 +1378,10 @@ function normalizeImageArkAsset(value) {
 
 function activeArkAssetForImageNode(node) {
   const asset = normalizeImageArkAsset(node?.arkAsset);
-  return asset?.status === "Active" && asset.assetUri ? asset : null;
+  return asset?.status === "Active" && asset.assetUri
+    && (!asset.sourceImageKey || asset.sourceImageKey === getImageKey(node?.image))
+    && asset.projectName === (config.arkAssetProject || "default")
+    ? asset : null;
 }
 
 function syncArkAssetMarksToSourceImages(assetNode, options = {}) {
@@ -1382,6 +1392,7 @@ function syncArkAssetMarksToSourceImages(assetNode, options = {}) {
     const imageNode = canvasState.nodes.find((candidate) => candidate.id === item.sourceImageNodeId && candidate.type === "image");
     if (!imageNode) continue;
     const previous = normalizeImageArkAsset(imageNode.arkAsset);
+    if (previous?.origin === "quick" && previous.sourceImageKey === getImageKey(imageNode.image)) continue;
     const nextUri = normalizeArkAssetUri(item.assetUri || item.assetId);
     const canReuseTimestamp = previous?.assetUri === nextUri && previous?.status === item.status;
     const nextAsset = normalizeImageArkAsset({
@@ -1390,6 +1401,7 @@ function syncArkAssetMarksToSourceImages(assetNode, options = {}) {
       status: item.status,
       groupId: assetNode.groupId,
       projectName: assetNode.projectName,
+      sourceImageKey: getImageKey(imageNode.image),
       error: item.error,
       updatedAt: canReuseTimestamp ? previous.updatedAt : new Date().toISOString()
     });
@@ -1415,6 +1427,127 @@ function scheduleArkAssetStatusPoll(nodeId) {
     refreshArkAssetNodeStatus(nodeId, { silent: true });
   }, 5000);
   arkAssetPollTimers.set(nodeId, timer);
+}
+
+function scheduleImageArkAssetStatusPoll(nodeId, assetId, projectId = currentProjectId, attempt = 0) {
+  window.clearTimeout(imageArkAssetPollTimers.get(nodeId));
+  if (attempt >= 40) return;
+  const timer = window.setTimeout(() => {
+    imageArkAssetPollTimers.delete(nodeId);
+    void refreshImageArkAssetStatus(nodeId, assetId, projectId, attempt);
+  }, 5000);
+  imageArkAssetPollTimers.set(nodeId, timer);
+}
+
+async function refreshImageArkAssetStatus(nodeId, assetId, projectId = currentProjectId, attempt = 0) {
+  if (currentProjectId !== projectId) return;
+  const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "image");
+  const asset = normalizeImageArkAsset(node?.arkAsset);
+  if (!node || asset?.status !== "Processing" || asset.assetId !== assetId
+    || (asset.sourceImageKey && asset.sourceImageKey !== getImageKey(node.image))) return;
+  try {
+    const response = await fetch("/api/ark-assets/status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectName: asset.projectName,
+        items: [{ clientId: nodeId, assetId }]
+      })
+    });
+    const data = await readJsonResponse(response);
+    if (!response.ok || data.parseError) throw new Error(data.error || "素材状态查询失败");
+    const result = (data.items || []).find((item) => item.assetId === assetId);
+    if (!result) throw new Error("方舟未返回素材状态");
+    if (currentProjectId !== projectId) return;
+    const current = canvasState.nodes.find((item) => item.id === nodeId && item.type === "image");
+    const latest = normalizeImageArkAsset(current?.arkAsset);
+    if (!current || latest?.status !== "Processing" || latest.assetId !== assetId
+      || (latest.sourceImageKey && latest.sourceImageKey !== getImageKey(current.image))) return;
+    current.arkAsset = normalizeImageArkAsset({
+      ...latest,
+      status: result.status,
+      error: result.error || ""
+    });
+    updateNode(current);
+    saveCanvasState({ history: false });
+    if (result.status === "Processing") scheduleImageArkAssetStatusPoll(nodeId, assetId, projectId, attempt + 1);
+    else showToast(result.status === "Active" ? "方舟素材已入库，可连接到 Seedance 视频节点" : result.error || "方舟素材入库失败");
+  } catch (error) {
+    if (currentProjectId === projectId) scheduleImageArkAssetStatusPoll(nodeId, assetId, projectId, attempt + 1);
+    if (attempt === 0) showToast(error.message || "素材状态查询失败，稍后会自动重试");
+  }
+}
+
+async function enrollImageNodeInArk(nodeId) {
+  const node = canvasState.nodes.find((item) => item.id === nodeId && item.type === "image");
+  if (!node?.image?.url || imageArkAssetImports.has(nodeId)) return;
+  const existing = normalizeImageArkAsset(node.arkAsset);
+  if (activeArkAssetForImageNode(node)) {
+    showToast("这张图片已在方舟素材库中，可直接连接到 Seedance 视频节点");
+    return;
+  }
+  if (existing?.status === "Processing" && existing.assetId
+    && (!existing.sourceImageKey || existing.sourceImageKey === getImageKey(node.image))) {
+    void refreshImageArkAssetStatus(nodeId, existing.assetId);
+    return;
+  }
+  const projectId = currentProjectId;
+  const projectName = config.arkAssetProject || "default";
+  const sourceImageKey = getImageKey(node.image);
+  imageArkAssetImports.add(nodeId);
+  node.arkAsset = normalizeImageArkAsset({
+    assetId: "",
+    assetUri: "",
+    status: "Processing",
+    groupId: existing?.projectName === projectName ? existing.groupId : "",
+    projectName,
+    sourceImageKey,
+    origin: "quick",
+    error: ""
+  });
+  updateNode(node);
+  saveCanvasState({ history: false });
+  try {
+    const response = await fetch("/api/ark-assets/quick-import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId,
+        projectName,
+        groupId: node.arkAsset.groupId,
+        url: node.image.url,
+        sourceUrl: node.image.sourceUrl || "",
+        filename: node.image.filename || "虚拟人像.png"
+      })
+    });
+    const data = await readJsonResponse(response);
+    if (!response.ok || data.parseError) throw new Error(data.error || "方舟素材入库失败");
+    if (currentProjectId !== projectId) return;
+    const current = canvasState.nodes.find((item) => item.id === nodeId && item.type === "image");
+    const latest = normalizeImageArkAsset(current?.arkAsset);
+    if (!current || getImageKey(current.image) !== sourceImageKey || latest?.status !== "Processing" || latest.assetId) return;
+    current.arkAsset = normalizeImageArkAsset({
+      ...data,
+      sourceImageKey,
+      origin: "quick",
+      updatedAt: new Date().toISOString()
+    });
+    updateNode(current);
+    saveCanvasState({ history: false });
+    showToast("已提交方舟素材库，审核通过后自动可用");
+    scheduleImageArkAssetStatusPoll(nodeId, data.assetId, projectId);
+  } catch (error) {
+    if (currentProjectId !== projectId) return;
+    const current = canvasState.nodes.find((item) => item.id === nodeId && item.type === "image");
+    const latest = normalizeImageArkAsset(current?.arkAsset);
+    if (!current || getImageKey(current.image) !== sourceImageKey || latest?.status !== "Processing" || latest.assetId) return;
+    current.arkAsset = normalizeImageArkAsset({ ...latest, status: "Failed", error: error.message || "方舟素材入库失败" });
+    updateNode(current);
+    saveCanvasState({ history: false });
+    showToast(current.arkAsset.error);
+  } finally {
+    imageArkAssetImports.delete(nodeId);
+  }
 }
 
 function arkAssetNodeStatus(node) {
@@ -2495,6 +2628,7 @@ function normalizeStoryEpisodeState(value, index, total) {
     result,
     status: source.status === "running" ? "idle" : String(source.status || (result ? "ready" : "idle")),
     error: String(source.error || ""),
+    responsePreview: String(source.responsePreview || "").slice(0, 2000),
     analysisVersion: String(source.analysisVersion || ""),
     selectedAssetIds: Array.isArray(source.selectedAssetIds)
       ? dedupeStrings(source.selectedAssetIds).filter((id) => assetIds.has(id))
@@ -2533,6 +2667,7 @@ function syncStoryEpisodesFromScript(node, options = {}) {
       result: previous?.result || null,
       status: sameSource ? previous?.status : previous?.result ? "stale" : "idle",
       error: sameSource ? previous?.error : "",
+      responsePreview: sameSource ? previous?.responsePreview : "",
       analysisVersion: previous?.analysisVersion || "",
       selectedAssetIds: previous?.selectedAssetIds,
       selectedStoryboardShotIds: previous?.selectedStoryboardShotIds,
@@ -3252,27 +3387,33 @@ async function generateVideoNode(nodeId) {
   const node = canvasState.nodes.find((item) => item.id === nodeId);
   if (!node || node.type !== "video-task" || node.status === "running") return;
 
-  if (!effectivePromptForNode(node)) {
+  const resumingDreamina = isDreaminaVideoModelName(node.model) && Boolean(dreaminaSubmitId(node.dreaminaSubmitId));
+
+  if (!resumingDreamina && !effectivePromptForNode(node)) {
     showToast("视频节点提示词不能为空");
     return;
   }
 
-  if (!syncNodeExtraParams(node)) return;
-  if (isArkVideoModelName(node.model) && !syncArkAssetUris(node)) return;
-  const referenceError = validateVideoNodeReferences(node);
-  if (referenceError) {
-    showToast(referenceError);
-    return;
-  }
-  const storedMedia = fileStore.get(node.id) || {};
-  if (storedMedia.images?.length || storedMedia.videos?.length || storedMedia.audios?.length) {
-    await cacheEditFiles(node.id);
+  if (!resumingDreamina) {
+    if (!syncNodeExtraParams(node)) return;
+    if (isArkVideoModelName(node.model) && !syncArkAssetUris(node)) return;
+    const referenceError = validateVideoNodeReferences(node);
+    if (referenceError) {
+      showToast(referenceError);
+      return;
+    }
+    const storedMedia = fileStore.get(node.id) || {};
+    if (storedMedia.images?.length || storedMedia.videos?.length || storedMedia.audios?.length) {
+      await cacheEditFiles(node.id);
+    }
   }
 
+  const projectId = currentProjectId;
   const controller = new AbortController();
   generationControllers.set(node.id, controller);
   node.status = "running";
   node.error = "";
+  node.dreaminaQueryMessage = "";
   node.z = ++canvasState.nextZ;
   selectedNodeIds.delete(node.id);
   updateNode(node);
@@ -3280,16 +3421,28 @@ async function generateVideoNode(nodeId) {
   updateCanvasMeta();
 
   try {
-    const response = await fetch("/api/generate", {
-      method: "POST",
-      ...buildNodeRequest(node),
-      signal: controller.signal
-    });
-    const data = await response.json();
-    rawResponse.textContent = JSON.stringify(data.raw || data, null, 2);
-
-    if (!response.ok) {
-      throw new Error(data.error || "视频生成失败");
+    let data;
+    if (resumingDreamina) {
+      data = await pollDreaminaVideoNode(node, controller.signal, projectId);
+    } else {
+      const response = await fetch("/api/generate", {
+        method: "POST",
+        ...buildNodeRequest(node),
+        signal: controller.signal
+      });
+      data = await readJsonResponse(response);
+      rawResponse.textContent = JSON.stringify(data.raw || data, null, 2);
+      if (isDreaminaVideoModelName(node.model) && dreaminaSubmitId(data.taskId)) {
+        node.dreaminaSubmitId = dreaminaSubmitId(data.taskId);
+        node.dreaminaStartedAt = Date.now();
+        saveCanvasState({ history: false });
+      }
+      if (!response.ok || data.parseError) {
+        throw Object.assign(new Error(data.error || "视频生成失败"), { dreaminaTaskFailed: data.taskFailed === true });
+      }
+      if (data.pending && node.dreaminaSubmitId) {
+        data = await pollDreaminaVideoNode(node, controller.signal, projectId);
+      }
     }
 
     const incoming = (data.videos || []).map((video) => normalizeNodeVideo(video, node));
@@ -3300,13 +3453,18 @@ async function generateVideoNode(nodeId) {
     node.videos = dedupeNodeVideos([...(node.videos || []), ...incoming]);
     createVideoNodesForTask(node, incoming);
     node.status = "done";
-    node.durationMs = data.durationMs;
+    node.durationMs = data.durationMs || (node.dreaminaStartedAt ? Date.now() - node.dreaminaStartedAt : null);
     node.error = "";
     removeGeneratedTaskNode(node.id);
   } catch (error) {
+    if (generationControllers.has(node.id) && generationControllers.get(node.id) !== controller) return;
     const stopped = controller.signal.aborted || error?.name === "AbortError";
-    node.status = stopped ? "idle" : "error";
-    node.error = stopped ? "已停止" : error.message || "视频生成失败";
+    const canContinue = isDreaminaVideoModelName(node.model) && Boolean(node.dreaminaSubmitId) && !error.dreaminaTaskFailed;
+    node.status = canContinue ? "pending" : stopped ? "idle" : "error";
+    node.error = canContinue
+      ? stopped ? "已暂停查询；即梦网页中的任务仍可继续生成，点击“继续查询”取回结果。" : error.message || "查询暂时失败，任务编号已保留，可继续查询。"
+      : stopped ? "已停止" : error.message || "视频生成失败";
+    if (error.dreaminaTaskFailed) node.dreaminaSubmitId = "";
     if (!stopped) showToast(node.error);
   } finally {
     if (generationControllers.get(node.id) === controller) generationControllers.delete(node.id);
@@ -3314,6 +3472,60 @@ async function generateVideoNode(nodeId) {
     saveCanvasState();
     updateCanvasMeta();
   }
+}
+
+async function pollDreaminaVideoNode(node, signal, projectId) {
+  const startedAt = Date.now();
+  let retryCount = 0;
+  while (Date.now() - startedAt < 30 * 60 * 1000) {
+    if (signal.aborted) throw Object.assign(new Error("已暂停查询"), { name: "AbortError" });
+    let data;
+    try {
+      const response = await fetch("/api/dreamina/video/query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, taskId: node.dreaminaSubmitId }),
+        signal
+      });
+      data = await readJsonResponse(response);
+      rawResponse.textContent = JSON.stringify(data.raw || data, null, 2);
+      if (!response.ok || data.parseError) {
+        const error = Object.assign(new Error(data.error || "即梦任务查询失败，可继续查询。"), {
+          dreaminaTaskFailed: data.taskFailed === true
+        });
+        if (!data.retryable || data.taskFailed) throw error;
+        data = { pending: true, queryError: error.message };
+      }
+    } catch (error) {
+      if (signal.aborted || error.dreaminaTaskFailed || !isRetryableDreaminaQueryError(error)) throw error;
+      data = { pending: true, queryError: error.message };
+    }
+    if (!data.pending && data.taskStatus === "success") return data;
+    retryCount = data.queryError ? retryCount + 1 : 0;
+    node.dreaminaQueryMessage = data.queryError
+      ? "进度查询暂时失败，正在重试；不会重复提交"
+      : "即梦任务已提交，正在排队或生成中";
+    updateNode(node);
+    saveCanvasState({ history: false });
+    await waitForDreaminaVideoQuery(data.queryError ? Math.min(30000, 4000 * 2 ** Math.min(retryCount, 3)) : 4000, signal);
+  }
+  throw new Error("等待时间较长，任务编号已保留；可点击“继续查询”，请勿重复提交。");
+}
+
+function waitForDreaminaVideoQuery(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      window.clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      reject(Object.assign(new Error("已暂停查询"), { name: "AbortError" }));
+    };
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+  });
 }
 
 function removeGeneratedTaskNode(nodeId) {
@@ -3332,8 +3544,9 @@ function stopGenerationNode(nodeId) {
   generationControllers.delete(nodeId);
   const node = canvasState.nodes.find((item) => item.id === nodeId);
   if (node && node.status === "running") {
-    node.status = "idle";
-    node.error = "已停止";
+    const retainsDreaminaTask = node.type === "video-task" && isDreaminaVideoModelName(node.model) && node.dreaminaSubmitId;
+    node.status = retainsDreaminaTask ? "pending" : "idle";
+    node.error = retainsDreaminaTask ? "已暂停查询；即梦网页中的任务仍可继续生成，点击“继续查询”取回结果。" : "已停止";
     if (node.type === "midjourney-task") {
       node.progress = "";
       node.taskStatus = "";
@@ -3342,7 +3555,7 @@ function stopGenerationNode(nodeId) {
     saveCanvasState();
     updateCanvasMeta();
   }
-  showToast("已停止生成");
+  showToast(node?.type === "video-task" && node.dreaminaSubmitId ? "已暂停查询，即梦任务不会被取消" : "已停止生成");
   return true;
 }
 
@@ -3402,6 +3615,7 @@ function buildNodeRequest(node, options = {}) {
 function buildNodePayload(node) {
   return {
     projectId: currentProjectId,
+    dreaminaAsync: node.type === "video-task" && isDreaminaVideoModelName(node.model),
     mode: node.mode,
     videoMode: node.videoMode,
     videoTransitions: node.videoTransitions || [],
@@ -3432,6 +3646,7 @@ function buildNodePayload(node) {
 
 function appendNodeFields(formData, node, options = {}) {
   formData.append("projectId", currentProjectId);
+  if (node.type === "video-task" && isDreaminaVideoModelName(node.model)) formData.append("dreaminaAsync", "true");
   formData.append("mode", node.mode);
   formData.append("videoMode", node.videoMode || dreaminaVideoDefaultMode);
   formData.append("videoTransitions", JSON.stringify(node.videoTransitions || []));
@@ -5067,10 +5282,14 @@ function renderDreaminaStatus(data = {}) {
 
   const meta = [];
   if (data.version) meta.push(`v${data.version}`);
+  if (data.userName || data.userId) {
+    meta.push([data.userName || "即梦账号", data.userId ? `ID 尾号 ${String(data.userId).slice(-4)}` : ""].filter(Boolean).join(" · "));
+  }
   if (Number.isFinite(data.totalCredit)) meta.push(`余额 ${data.totalCredit}`);
   if (data.vipLevel) meta.push(data.vipLevel);
   if (!meta.length && data.error) meta.push(data.error);
   dreaminaAccountMeta.textContent = meta.join(" · ");
+  dreaminaAccountMeta.title = data.userId ? `当前 CLI 登录账号 ID：${data.userId}` : "";
 
   config.dreaminaLoggedIn = loggedIn;
   updateDreaminaModelOptions(data);
@@ -10940,6 +11159,16 @@ function createStoryBreakdownEditor(node) {
     error.className = "node-error story-breakdown-error";
     error.textContent = node.error;
     source.append(error);
+    if (activeEpisode?.responsePreview) {
+      const details = document.createElement("details");
+      details.className = "story-response-details";
+      const summary = document.createElement("summary");
+      summary.textContent = "查看模型原始返回";
+      const preview = document.createElement("pre");
+      preview.textContent = activeEpisode.responsePreview;
+      details.append(summary, preview);
+      source.append(details);
+    }
   }
   editor.append(source);
   if (node.result) editor.append(createStoryBreakdownResults(node));
@@ -11414,11 +11643,13 @@ async function analyzeStoryBreakdown(nodeId) {
   node.error = "";
   episode.status = "running";
   episode.error = "";
+  episode.responsePreview = "";
   node.z = ++canvasState.nextZ;
   updateNode(node);
   saveCanvasState({ history: false });
   updateCanvasMeta();
 
+  let responsePreview = "";
   try {
     const response = await fetch("/api/story/analyze", {
       method: "POST",
@@ -11448,6 +11679,8 @@ async function analyzeStoryBreakdown(nodeId) {
       signal: controller.signal
     });
     const data = await readJsonResponse(response);
+    responsePreview = String(data.responsePreview || "").slice(0, 2000);
+    rawResponse.textContent = JSON.stringify(data, null, 2);
     if (!response.ok || data.parseError) throw new Error(data.error || "剧本拆解失败");
     const result = normalizeStoryBreakdownResult(data.result);
     if (!result || (!result.assets.length && !result.shots.length)) throw new Error("拆解结果中没有可用资产或镜头");
@@ -11459,6 +11692,7 @@ async function analyzeStoryBreakdown(nodeId) {
     targetEpisode.result = result;
     targetEpisode.status = "ready";
     targetEpisode.error = "";
+    targetEpisode.responsePreview = "";
     targetEpisode.analysisVersion = analysisVersion;
     targetEpisode.selectedAssetIds = result.assets
       .filter((asset) => asset.reuseMode !== storyAssetReuseModes.REUSE)
@@ -11490,6 +11724,7 @@ async function analyzeStoryBreakdown(nodeId) {
       if (targetEpisode) {
         targetEpisode.status = targetEpisode.result ? "ready" : "idle";
         targetEpisode.error = "";
+        targetEpisode.responsePreview = "";
       }
     } else {
       current.status = "error";
@@ -11497,6 +11732,7 @@ async function analyzeStoryBreakdown(nodeId) {
       if (targetEpisode) {
         targetEpisode.status = "error";
         targetEpisode.error = current.error;
+        targetEpisode.responsePreview = responsePreview;
       }
       showToast(current.error);
     }
@@ -13312,10 +13548,14 @@ function createImageLayerBadge(node) {
 function createImageArkAssetBadge(node) {
   const asset = normalizeImageArkAsset(node?.arkAsset);
   if (!asset) return null;
+  const stale = Boolean(asset.sourceImageKey && asset.sourceImageKey !== getImageKey(node.image))
+    || asset.projectName !== (config.arkAssetProject || "default");
   const badge = document.createElement("span");
-  badge.className = `image-ark-asset-badge status-${String(asset.status || "processing").toLowerCase()}`;
-  badge.textContent = asset.status === "Active" ? "方舟素材" : asset.status === "Failed" ? "入库失败" : "方舟处理中";
-  badge.title = asset.status === "Active"
+  badge.className = `image-ark-asset-badge status-${stale ? "failed" : String(asset.status || "processing").toLowerCase()}`;
+  badge.textContent = stale ? "需重新入库" : asset.status === "Active" ? "方舟素材" : asset.status === "Failed" ? "入库失败" : "方舟处理中";
+  badge.title = stale
+    ? "图片或方舟项目已变化，请重新入库"
+    : asset.status === "Active"
     ? "已通过 AIGC 素材入库，可直接连到火山方舟视频节点"
     : asset.error || badge.textContent;
   return badge;
@@ -13372,6 +13612,20 @@ function createImageToolbar(node) {
   download.href = node.image?.url || "#";
   download.download = node.image?.filename || "generated-image";
   download.textContent = "下载";
+
+  const arkAsset = normalizeImageArkAsset(node.arkAsset);
+  const arkAssetCurrent = arkAsset
+    && (!arkAsset.sourceImageKey || arkAsset.sourceImageKey === getImageKey(node.image))
+    && arkAsset.projectName === (config.arkAssetProject || "default");
+  const enroll = document.createElement("button");
+  enroll.type = "button";
+  enroll.textContent = imageArkAssetImports.has(node.id) ? "提交中…"
+    : arkAssetCurrent && arkAsset?.status === "Active" ? "已入库"
+      : arkAssetCurrent && arkAsset?.status === "Processing" ? "查入库"
+        : arkAssetCurrent && arkAsset?.status === "Failed" ? "重试入库" : "方舟入库";
+  enroll.title = "将这张图片直接提交火山方舟 AIGC 素材库；认证通过后可作为 Seedance 虚拟角色参考";
+  enroll.disabled = imageArkAssetImports.has(node.id) || Boolean(arkAssetCurrent && arkAsset?.status === "Active");
+  enroll.addEventListener("click", () => void enrollImageNodeInArk(node.id));
 
   const convertFormat = document.createElement("select");
   convertFormat.className = "image-format-select";
@@ -13442,7 +13696,7 @@ function createImageToolbar(node) {
     deleteNodes([node.id]);
   });
 
-  toolbar.append(scaleInput, reset, open, download, convertFormat, upscale, togglePrompt);
+  toolbar.append(scaleInput, reset, open, download, enroll, convertFormat, upscale, togglePrompt);
   if (config.photoshopBridgeEnabled) toolbar.append(sendToPhotoshop);
   toolbar.append(remove);
   return toolbar;
@@ -13918,10 +14172,19 @@ function createVideoTaskNode(node) {
   tile.style.zIndex = node.z;
 
   if (selected) {
-    tile.append(createVideoTaskHeader(node), createPromptField(node));
+    const prompt = createPromptField(node);
+    const settings = createVideoTaskSettings(node);
+    const references = createVideoReferenceFields(node);
+    if (isDreaminaVideoModelName(node.model) && node.dreaminaSubmitId) {
+      prompt.disabled = true;
+      for (const panel of [settings, references]) {
+        panel.querySelectorAll("input, select, textarea, button").forEach((control) => { control.disabled = true; });
+      }
+    }
+    tile.append(createVideoTaskHeader(node), prompt);
     const linkedPrompts = createLinkedPromptSources(node);
     if (linkedPrompts) tile.append(linkedPrompts);
-    tile.append(createVideoTaskSettings(node), createVideoReferenceFields(node));
+    tile.append(settings, references);
   }
 
   tile.append(createVideoTaskStatusArea(node));
@@ -14412,7 +14675,7 @@ function createVideoTaskStatusArea(node) {
     const loading = document.createElement("div");
     loading.className = "node-loading";
     const text = document.createElement("span");
-    text.textContent = isArkVideoModelName(node.model) ? "火山方舟视频生成中" : isGrokBuildVideoModelName(node.model) ? "Grok 官方视频生成中" : "即梦视频生成中";
+    text.textContent = isArkVideoModelName(node.model) ? "火山方舟视频生成中" : isGrokBuildVideoModelName(node.model) ? "Grok 官方视频生成中" : node.dreaminaQueryMessage || "即梦视频生成中";
     const progress = document.createElement("div");
     progress.className = "node-progress";
     progress.append(document.createElement("span"));
@@ -14425,6 +14688,15 @@ function createVideoTaskStatusArea(node) {
   placeholder.className = "node-placeholder";
   placeholder.textContent = node.error || "待生成视频";
   area.append(placeholder);
+  if (isDreaminaVideoModelName(node.model) && node.dreaminaSubmitId && selectedNodeIds.has(node.id)) {
+    const taskId = document.createElement("button");
+    taskId.type = "button";
+    taskId.className = "secondary compact";
+    taskId.textContent = "复制即梦任务编号";
+    taskId.title = node.dreaminaSubmitId;
+    taskId.addEventListener("click", () => copyTextToClipboard(node.dreaminaSubmitId, "任务编号已复制"));
+    area.append(taskId);
+  }
   return area;
 }
 
@@ -15096,7 +15368,9 @@ function createTaskActions(node) {
   const generate = document.createElement("button");
   generate.type = "button";
   generate.className = "node-action-primary";
-  generate.append(createNodeIcon("spark", "node-action-icon"), document.createTextNode(node.status === "running" ? "生成中" : "生成"));
+  const continuesDreamina = node.type === "video-task" && isDreaminaVideoModelName(node.model) && Boolean(node.dreaminaSubmitId);
+  generate.append(createNodeIcon("spark", "node-action-icon"), document.createTextNode(node.status === "running" ? "生成中" : continuesDreamina ? "继续查询" : "生成"));
+  if (continuesDreamina) generate.title = "只查询已提交的即梦任务，不重新提交生成请求";
   generate.disabled = node.status === "running";
   generate.addEventListener("click", () => generateNode(node.id));
 
@@ -15118,7 +15392,7 @@ function createTaskActions(node) {
     const stop = document.createElement("button");
     stop.type = "button";
     stop.className = "node-action-danger";
-    stop.append(createNodeIcon("trash", "node-action-icon"), document.createTextNode("停止"));
+    stop.append(createNodeIcon("trash", "node-action-icon"), document.createTextNode(continuesDreamina ? "暂停查询" : "停止"));
     stop.addEventListener("click", () => stopGenerationNode(node.id));
     actions.append(stop);
   }
@@ -18437,6 +18711,7 @@ function hideAssistantCopyMenu() {
 
 function statusText(status) {
   if (status === "running") return "运行中";
+  if (status === "pending") return "待查询";
   if (status === "done") return "已完成";
   if (status === "error") return "失败";
   return "待生成";
@@ -18495,6 +18770,9 @@ function duplicateNode(nodeId) {
     copy.status = "idle";
     copy.error = "";
     copy.durationMs = null;
+    copy.dreaminaSubmitId = "";
+    copy.dreaminaQueryMessage = "";
+    copy.dreaminaStartedAt = null;
     copy.sessionFiles = [...(node.sessionFiles || [])];
     copy.cachedImages = [...(node.cachedImages || [])];
     if (copy.type === "midjourney-task") {
@@ -18680,6 +18958,9 @@ function preparePastedNode(source, idMap, offset, createdAt) {
     copy.status = "idle";
     copy.error = "";
     copy.durationMs = null;
+    copy.dreaminaSubmitId = "";
+    copy.dreaminaQueryMessage = "";
+    copy.dreaminaStartedAt = null;
     copy.debugOpen = Boolean(copy.debugOpen);
     copy.sessionFiles = [...(copy.sessionFiles || [])];
     copy.cachedImages = [...(copy.cachedImages || [])];
@@ -19479,6 +19760,7 @@ function migrateVideoTaskNode(node) {
   const promptNoteNodeIds = dedupeStrings(node.promptNoteNodeIds || []);
   const model = isSupportedVideoModelName(node.model) ? node.model : dreaminaVideoDefaultModel;
   const videoMode = normalizeVideoModeForModel(model, node.videoMode);
+  const submitId = isDreaminaVideoModelName(model) ? dreaminaSubmitId(node.dreaminaSubmitId) : "";
   const arkAssetUris = dedupeStrings([
     ...(Array.isArray(node.arkAssetUris) ? node.arkAssetUris : []),
     ...parseArkAssetUriText(node.arkAssetUrisText || "")
@@ -19518,7 +19800,10 @@ function migrateVideoTaskNode(node) {
     sessionVideoFiles: node.sessionVideoFiles || [],
     sessionAudioFiles: node.sessionAudioFiles || [],
     videos: dedupeNodeVideos(node.videos || []),
-    status: node.status === "running" ? "idle" : node.status || "idle",
+    dreaminaSubmitId: submitId,
+    dreaminaQueryMessage: String(node.dreaminaQueryMessage || ""),
+    dreaminaStartedAt: Number(node.dreaminaStartedAt) || null,
+    status: node.status === "running" ? submitId ? "pending" : "idle" : node.status || "idle",
     error: node.error || "",
     durationMs: node.durationMs || null,
     debugOpen: Boolean(node.debugOpen),
@@ -19774,6 +20059,8 @@ function renderProjectSelect() {
 
 async function loadProjectById(projectId, options = {}) {
   currentProjectId = normalizeProjectId(projectId);
+  for (const timer of imageArkAssetPollTimers.values()) window.clearTimeout(timer);
+  imageArkAssetPollTimers.clear();
   localStorage.setItem(currentProjectStorageKey, currentProjectId);
   fileStore.clear();
 
@@ -19788,6 +20075,14 @@ async function loadProjectById(projectId, options = {}) {
   agentSyncRevision = Math.max(0, Number(state.agentRevision) || 0);
 
   renderCanvas();
+  for (const node of canvasState.nodes) {
+    if (node.type !== "image") continue;
+    const asset = normalizeImageArkAsset(node.arkAsset);
+    if (asset?.status === "Processing" && asset.assetId
+      && (!asset.sourceImageKey || asset.sourceImageKey === getImageKey(node.image))) {
+      scheduleImageArkAssetStatusPoll(node.id, asset.assetId, currentProjectId);
+    }
+  }
   const repairedLayerGroups = await repairExistingSeedreamLayerLayouts();
   if (repairedLayerGroups) {
     renderCanvas();
@@ -20184,7 +20479,10 @@ function applySavedState(saved, options = {}) {
       ? restoreNodesPreservingActiveGenerations(
           restoredNodes,
           canvasState.nodes,
-          new Set(generationControllers.keys())
+          new Set([
+            ...generationControllers.keys(),
+            ...canvasState.nodes.filter((node) => node.type === "video-task" && node.dreaminaSubmitId).map((node) => node.id)
+          ])
         )
       : restoredNodes;
     setCanvasNodes(nextNodes);

@@ -167,7 +167,7 @@ export function grokBuildInstallCommand(executable = "", platform = process.plat
   ].join("; ");
 }
 
-export async function runGrokBuildAssistant({ messages, model, proxyUrl, signal, cwd, useMemory = false, timeoutMs = 300000 }) {
+export async function runGrokBuildAssistant({ messages, model, proxyUrl, signal, cwd, useMemory = false, responseSchema = null, timeoutMs = 300000 }) {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cc-grok-chat-"));
   try {
     const promptFile = path.join(tempDir, "prompt.txt");
@@ -180,10 +180,17 @@ export async function runGrokBuildAssistant({ messages, model, proxyUrl, signal,
       signal,
       cwd,
       useMemory,
+      responseSchema,
+      systemPrompt: responseSchema
+        ? [
+            "你是画布内的结构化分析服务，不是编程代理。只能根据输入对话分析并直接返回符合 JSON Schema 的完整 JSON；不要读取或修改文件、执行命令、调用工具、使用技能或创建子代理。不能把结果写入文件，也不能只回复进度说明。",
+            ...messages.filter((message) => message.role === "system").map((message) => String(message.content || ""))
+          ].join("\n\n")
+        : "",
       timeoutMs,
       media: false
     });
-    return result;
+    return normalizeGrokAssistantResponse(result, responseSchema);
   } finally {
     await rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -264,10 +271,10 @@ export async function persistGrokMedia(files, destinationDir, prefix) {
   return saved;
 }
 
-async function runGrokHeadless({ promptFile, model, proxyUrl, signal, timeoutMs, media, useMemory = false, cwd = process.cwd() }) {
+async function runGrokHeadless({ promptFile, model, proxyUrl, signal, timeoutMs, media, useMemory = false, responseSchema = null, systemPrompt = "", cwd = process.cwd() }) {
   const executable = await findGrokExecutable();
   if (!executable) throw new Error("尚未安装 Grok Build CLI，请先在设置中安装。");
-  const args = buildGrokHeadlessArgs({ promptFile, model, media, useMemory });
+  const args = buildGrokHeadlessArgs({ promptFile, model, media, useMemory, responseSchema, systemPrompt });
   const result = await runGrokProcess(executable, args, { timeoutMs, proxyUrl, signal, cwd });
   const data = parseGrokJson(result.stdout);
   if (!data || typeof data !== "object") throw new Error("Grok Build 返回了无法识别的结果。");
@@ -275,7 +282,8 @@ async function runGrokHeadless({ promptFile, model, proxyUrl, signal, timeoutMs,
   return data;
 }
 
-export function buildGrokHeadlessArgs({ promptFile, model = "", media = false, useMemory = false }) {
+export function buildGrokHeadlessArgs({ promptFile, model = "", media = false, useMemory = false, responseSchema = null, systemPrompt = "" }) {
+  const structured = !media && responseSchema && typeof responseSchema === "object";
   return [
     "--prompt-file", promptFile,
     "--agent", "general-purpose",
@@ -285,9 +293,26 @@ export function buildGrokHeadlessArgs({ promptFile, model = "", media = false, u
     "--disable-web-search",
     media ? "--always-approve" : "--permission-mode",
     ...(media ? [] : ["dontAsk"]),
+    ...(structured ? [
+      "--tools", "",
+      // Grok keeps MCP meta-tools even with an empty built-in allowlist.
+      "--disallowed-tools", "search_tool,use_tool",
+      "--no-subagents",
+      "--max-turns", "1",
+      "--verbatim",
+      "--system-prompt-override", systemPrompt || "Only return the complete JSON matching the supplied schema. Do not use tools or write files.",
+      "--json-schema", JSON.stringify(responseSchema)
+    ] : []),
     "--output-format", "json",
     "--no-auto-update"
   ];
+}
+
+export function normalizeGrokAssistantResponse(result, responseSchema = null) {
+  if (!responseSchema) return result;
+  const structured = result.structured_output ?? result.structuredOutput;
+  if (!structured || typeof structured !== "object" || Array.isArray(structured)) return result;
+  return { ...result, text: JSON.stringify(structured) };
 }
 
 async function runGrokProcess(executable, args, options = {}) {

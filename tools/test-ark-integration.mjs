@@ -49,11 +49,20 @@ const mock = http.createServer((req, res) => {
   }
   if (req.method === "POST" && arkAction === "CreateAssetGroup") {
     return readJson(req).then((payload) => {
-      assert.equal(payload.Name, "新角色");
-      assert.equal(payload.Title, "新角色");
+      assert.ok(["新角色", "cc-infinite-canvas-portraits"].includes(payload.Name));
+      assert.equal(payload.Title, payload.Name);
       assert.equal(payload.GroupType, "AIGC");
       assert.equal(payload.ProjectName, "default");
-      sendJson(res, { Result: { Id: "group-created", Name: payload.Name, GroupType: payload.GroupType } });
+      sendJson(res, { Result: { Id: payload.Name === "新角色" ? "group-created" : "group-quick", Name: payload.Name, GroupType: payload.GroupType } });
+    });
+  }
+  if (req.method === "POST" && arkAction === "CreateAsset") {
+    return readJson(req).then((payload) => {
+      assert.equal(payload.GroupId, "group-quick");
+      assert.equal(payload.AssetType, "Image");
+      assert.equal(payload.ProjectName, "default");
+      assert.equal(payload.URL, "https://example.com/quick-portrait.png");
+      sendJson(res, { Result: { Id: "asset-quick-smoke" } });
     });
   }
   if (req.method === "POST" && arkAction === "ListAssets") {
@@ -82,6 +91,9 @@ const mock = http.createServer((req, res) => {
   }
   if (req.method === "POST" && arkAction === "GetAsset") {
     return readJson(req).then((payload) => {
+      if (payload.Id === "asset-quick-smoke") {
+        return sendJson(res, { Result: { Id: payload.Id, GroupId: "group-quick", Status: "Active" } });
+      }
       const address = mock.address();
       assert.equal(payload.Id, "asset-library-smoke");
       sendJson(res, {
@@ -350,7 +362,7 @@ const child = spawn(process.execPath, ["server.js"], {
     VOLCENGINE_ARK_API_KEY: "smoke-key",
     VOLCENGINE_ACCESS_KEY_ID: "smoke-access-key",
     VOLCENGINE_SECRET_ACCESS_KEY: "smoke-secret-key",
-    VOLCENGINE_ARK_ASSET_GROUP_ID: "group-smoke",
+    VOLCENGINE_ARK_ASSET_GROUP_ID: " ",
     VOLCENGINE_ARK_OPEN_API_BASE_URL: `http://127.0.0.1:${mockPort}`,
     VOLCENGINE_ARK_BASE_URL: `http://127.0.0.1:${mockPort}`,
     CC_CANVAS_ALLOW_LOCAL_ARK_ASSET_URLS: "1",
@@ -422,6 +434,21 @@ try {
   const missingGroup = await missingGroupResponse.json();
   assert.equal(missingGroupResponse.status, 400);
   assert.match(missingGroup.error, /角色素材组/u);
+
+  const quickImport = await postJson(`http://127.0.0.1:${appPort}/api/ark-assets/quick-import`, {
+    projectId: "ark-smoke",
+    projectName: "default",
+    sourceUrl: "https://example.com/quick-portrait.png",
+    filename: "quick-portrait.png"
+  });
+  assert.equal(quickImport.groupId, "group-quick");
+  assert.equal(quickImport.assetUri, "asset://asset-quick-smoke");
+  assert.equal(quickImport.status, "Processing");
+  const quickStatus = await postJson(`http://127.0.0.1:${appPort}/api/ark-assets/status`, {
+    projectName: "default",
+    items: [{ clientId: "quick-image", assetId: quickImport.assetId }]
+  });
+  assert.equal(quickStatus.items[0].status, "Active");
 
   const assetLibrary = await postJson(`http://127.0.0.1:${appPort}/api/ark-assets/list`, {
     projectName: "default",

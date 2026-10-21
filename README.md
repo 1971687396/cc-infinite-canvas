@@ -268,7 +268,7 @@ PORT=3000
 
 ## 版本更新
 
-当前版本为 **v1.1.10**：修复即梦视频任务查询与恢复、Grok 剧本拆解，并新增方舟虚拟人像快捷入库。完整更新内容见 [CHANGELOG.md](CHANGELOG.md)。发布附件仅提供 Windows 安装包。
+当前版本为 **v1.1.11**：延长 GPT Image 2.5 生图等待，适配 OpenLux 审核强度与 URL / b64_json 返回格式，并优化大图片结果保存。完整更新内容见 [CHANGELOG.md](CHANGELOG.md)。发布附件仅提供 Windows 安装包。
 
 应用当前版本来自 `package.json`，默认检查 `1971687396/cc-infinite-canvas` 的 GitHub Releases。发布新版本时：
 

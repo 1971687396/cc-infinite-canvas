@@ -293,6 +293,17 @@ const connections = {
     editEndpoint: "/v1/images/edits",
     chatEndpoint: "/v1/chat/completions"
   },
+  "openlux-gpt25-smoke": {
+    preset: "custom",
+    capability: "image",
+    protocol: "openai-images",
+    authType: "bearer",
+    apiModel: "gpt-image-2.5-sunburst",
+    baseUrl: "https://api.openlux.ai",
+    imageEndpoint: `http://127.0.0.1:${mockPort}/v1/images/generations`,
+    editEndpoint: `http://127.0.0.1:${mockPort}/v1/images/edits`,
+    chatEndpoint: "/v1/chat/completions"
+  },
   "tt-image-2.5-openai-smoke": {
     preset: "custom",
     capability: "image",
@@ -370,6 +381,7 @@ const child = spawn(process.execPath, ["server.js"], {
     CC_CANVAS_MEDIA_POLL_TIMEOUT_MS: "2000",
     CC_CANVAS_MODEL_KEYS_B64: Buffer.from(JSON.stringify({
       "sunburst-custom-relay": "smoke-gpt-image-25-key",
+      "openlux-gpt25-smoke": "smoke-openlux-image-key",
       "tt-image-2.5-openai-smoke": "smoke-tt-image-25-key",
       "tt-image-2.5-media-smoke": "smoke-tt-image-25-key",
       grokimagezhenzhen: "smoke-grok-image-key",
@@ -497,6 +509,7 @@ try {
     extraParams: {}
   });
   assert.equal(gptImage25.images.length, 1);
+  assert.match(gptImage25.raw.data[0].b64_json, /^\[base64 image omitted;/u);
   assert.equal(gptImage25CreatePayloads.length, 1);
   assert.equal(gptImage25CreatePayloads[0].model, "gpt-image-2.5-sunburst-2026-09-08");
   assert.equal(gptImage25CreatePayloads[0].size, "1536x1024");
@@ -524,6 +537,57 @@ try {
   assert.match(openAiEditBody, /name="quality"\r\n\r\nxhigh\r\n/u);
   assert.match(openAiEditBody, /name="output_format"\r\n\r\njpeg\r\n/u);
   assert.doesNotMatch(openAiEditBody, /name="format"\r\n/u);
+
+  const openLux4k = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+    projectId: "ark-smoke",
+    mode: "create",
+    prompt: "test OpenLux 4K default URL",
+    model: "openlux-gpt25-smoke",
+    size: "3840x2160",
+    quality: "max",
+    format: "webp",
+    moderation: "low",
+    extraParams: {}
+  });
+  assert.equal(openLux4k.images.length, 1);
+  const openLux4kPayload = gptImage25CreatePayloads.at(-1);
+  assert.equal(openLux4kPayload.response_format, "url");
+  assert.equal(openLux4kPayload.format, "webp");
+  assert.equal(openLux4kPayload.output_format, undefined);
+  assert.equal(openLux4kPayload.moderation, "low");
+
+  await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+    projectId: "ark-smoke",
+    mode: "create",
+    prompt: "test OpenLux explicit base64",
+    model: "openlux-gpt25-smoke",
+    size: "1024x1024",
+    format: "png",
+    moderation: "auto",
+    responseFormat: "b64_json",
+    extraParams: {}
+  });
+  const openLux1kPayload = gptImage25CreatePayloads.at(-1);
+  assert.equal(openLux1kPayload.response_format, "b64_json");
+  assert.equal(openLux1kPayload.moderation, "auto");
+
+  const openLuxEditForm = new FormData();
+  appendFields(openLuxEditForm, {
+    projectId: "ark-smoke",
+    mode: "edit",
+    prompt: "test OpenLux edit documented fields",
+    model: "openlux-gpt25-smoke",
+    size: "1024x1024",
+    format: "png",
+    moderation: "low",
+    responseFormat: "url",
+    extraParams: JSON.stringify({ response_format: "url" })
+  });
+  openLuxEditForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "openlux-reference.png");
+  await postForm(`http://127.0.0.1:${appPort}/api/generate`, openLuxEditForm);
+  assert.match(openAiEditBody, /name="moderation"\r\n\r\nlow\r\n/u);
+  assert.match(openAiEditBody, /name="response_format"\r\n\r\nurl\r\n/u);
+  assert.doesNotMatch(openAiEditBody, /name="output_format"\r\n/u);
 
   const ttImage25OpenAi = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
     projectId: "ark-smoke",

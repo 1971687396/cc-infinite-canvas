@@ -517,6 +517,23 @@ const moderationOptions = [
   ["low", "low"]
 ];
 
+const openLuxResponseFormatOptions = [
+  ["", "自动（4K 优先 URL）"],
+  ["url", "URL"],
+  ["b64_json", "b64_json"]
+];
+
+const openLuxEditResponseFormatOptions = [
+  ["", "自动（不传）"],
+  ["url", "URL（编辑渠道实验支持）"],
+  ["b64_json", "b64_json（编辑渠道实验支持）"]
+];
+
+const openLuxModerationOptions = [
+  ["auto", "auto（默认）"],
+  ["low", "low（较宽松）"]
+];
+
 const grokImagineModel = "grok-imagine-image";
 const legacyGrokImagineModel = "grok-image-image";
 const grokDefaultModel = "grok-3-image";
@@ -1746,6 +1763,10 @@ const imageModelDefaultProfiles = {
     if (!supportedQualities.some(([value]) => value === node.quality)) {
       node.quality = usesGptImage25Parameters(node.model) ? "auto" : "";
     }
+    if (isOpenLuxGptImage25Node(node) && !["auto", "low"].includes(node.moderation)) {
+      node.moderation = "auto";
+    }
+    if (!["", "url", "b64_json"].includes(node.responseFormat)) node.responseFormat = "";
     if (["grok", "grok-build", "grsai", "dreamina", "ark"].includes(context.previousProvider) || options.modelChanged) {
       node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
       delete node.extraParams.response_format;
@@ -1858,6 +1879,17 @@ function gptImage25ProfileForModel(model) {
 
 function usesGptImage25Parameters(model) {
   return Boolean(gptImage25ProfileForModel(model));
+}
+
+function isOpenLuxGptImage25Node(node) {
+  if (!usesGptImage25Parameters(node.model) || usesTtImage25Parameters(node.model)) return false;
+  const connection = imageModelConnectionForModel(node.model);
+  const baseUrl = node.connectionOverride ? node.baseUrl : connection?.baseUrl;
+  try {
+    return new URL(baseUrl || "").hostname.toLowerCase() === "api.openlux.ai";
+  } catch {
+    return false;
+  }
 }
 
 function usesTtImage25Parameters(model) {
@@ -2371,6 +2403,7 @@ function createDefaultTaskNode(mode = "create") {
     seedreamMode: seedreamProModes.STANDARD,
     background: "",
     moderation: "",
+    responseFormat: "",
     extraParams: {},
     extraParamsText: "{}",
     cachedImages: [],
@@ -3631,6 +3664,7 @@ function buildNodePayload(node) {
     format: node.format,
     background: node.background,
     moderation: node.moderation,
+    responseFormat: node.responseFormat,
     baseUrl: node.baseUrl,
     endpointPath: node.endpointPath || defaultEndpointForMode(node.mode),
     connectionOverride: Boolean(node.connectionOverride),
@@ -3662,6 +3696,7 @@ function appendNodeFields(formData, node, options = {}) {
   formData.append("format", node.format || "");
   formData.append("background", node.background || "");
   formData.append("moderation", node.moderation || "");
+  formData.append("responseFormat", node.responseFormat || "");
   formData.append("baseUrl", node.baseUrl);
   formData.append("endpointPath", node.endpointPath || defaultEndpointForMode(node.mode));
   formData.append("connectionOverride", String(Boolean(node.connectionOverride)));
@@ -3729,6 +3764,7 @@ function buildGenerationSnapshot(node) {
     format: node.format || "png",
     background: node.background || "",
     moderation: node.moderation || "",
+    responseFormat: node.responseFormat || "",
     baseUrl: node.baseUrl || config.baseUrl || "https://yunwu.ai",
     endpointPath: node.endpointPath || defaultEndpointForMode(node.mode),
     extraParams: clonePlainValue(node.extraParams || {}),
@@ -8828,6 +8864,7 @@ function getImageGeneration(node) {
     format: generation.format || image.format || "png",
     background: generation.background || "",
     moderation: generation.moderation || "",
+    responseFormat: generation.responseFormat || "",
     baseUrl: generation.baseUrl || config.baseUrl || "https://yunwu.ai",
     endpointPath: generation.endpointPath || defaultEndpointForMode(mode),
     extraParams: isPlainObject(generation.extraParams) ? clonePlainValue(generation.extraParams) : {},
@@ -8973,6 +9010,7 @@ function applyGenerationToTask(task, generation) {
   task.format = generation.format || "png";
   task.background = generation.background || "";
   task.moderation = generation.moderation || "";
+  task.responseFormat = generation.responseFormat || "";
   task.extraParams = isPlainObject(generation.extraParams) ? clonePlainValue(generation.extraParams) : {};
   task.extraParamsText = JSON.stringify(task.extraParams, null, 2);
   applyTaskModelDefaults(task, { modeChanged: true, modelChanged: true });
@@ -15282,12 +15320,22 @@ function createDebugPanel(node) {
     if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
   } else {
     const gptImage25 = usesGptImage25Parameters(node.model);
+    const openLuxGptImage25 = isOpenLuxGptImage25Node(node);
     settings.append(
       modelField,
       createSelectField(gptImage25 ? "比例 / 尺寸" : "尺寸", node, "size", sizeOptionsForModel(node.model, node.mode)),
       createNumberField("数量", node, "n", { min: 1, max: 10 }),
       createSelectField("质量", node, "quality", qualityOptionsForModel(node.model))
     );
+    if (openLuxGptImage25) {
+      settings.append(createSelectField("审核强度", node, "moderation", openLuxModerationOptions));
+      settings.append(createSelectField(
+        "返回格式",
+        node,
+        "responseFormat",
+        node.mode === "create" ? openLuxResponseFormatOptions : openLuxEditResponseFormatOptions
+      ));
+    }
     advancedGrid.append(createSelectField("格式", node, "format", formatOptions));
     if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
   }
@@ -15295,7 +15343,7 @@ function createDebugPanel(node) {
   if (node.mode === "edit" && !isDreaminaModelName(node.model) && !usesBananaImageParameters(node.model) && !isSeedreamImageModelName(node.model) && !usesTtImage25Parameters(node.model)) {
     advancedGrid.append(
       createSelectField("背景", node, "background", backgroundOptions),
-      createSelectField("审核", node, "moderation", moderationOptions)
+      ...(!isOpenLuxGptImage25Node(node) ? [createSelectField("审核", node, "moderation", moderationOptions)] : [])
     );
   }
 
@@ -19730,6 +19778,7 @@ function migrateTaskNode(node) {
     ttImageResolution: normalizeTtImage25Resolution(node.ttImageResolution),
     background: node.background || "",
     moderation: node.moderation || "",
+    responseFormat: node.responseFormat || "",
     extraParams,
     extraParamsText: node.extraParamsText || JSON.stringify(extraParams, null, 2),
     cachedImages: node.cachedImages || [],

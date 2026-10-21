@@ -11,6 +11,7 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
 import TosSdk from "@volcengine/tos-sdk";
+import { Agent } from "undici";
 import {
   buildMidjourneyEndpointUrl,
   extractMidjourneyTaskId,
@@ -127,6 +128,11 @@ const grsaiDefaultModel = "nano-banana-2";
 const mediaGenerateImageEndpoint = "/v1/media/generate";
 const ttImage25Model = gptImage25Profiles.TT;
 const lingkeApiBaseUrl = "https://api.lk888.ai";
+const gptImage25RequestTimeoutMs = 30 * 60 * 1000;
+const gptImage25Dispatcher = new Agent({
+  headersTimeout: gptImage25RequestTimeoutMs,
+  bodyTimeout: gptImage25RequestTimeoutMs
+});
 const mediaGeneratePollIntervalMs = Math.max(10, Number.parseInt(process.env.CC_CANVAS_MEDIA_POLL_INTERVAL_MS || "", 10) || 5000);
 const mediaGeneratePollTimeoutMs = Math.max(1000, Number.parseInt(process.env.CC_CANVAS_MEDIA_POLL_TIMEOUT_MS || "", 10) || 10 * 60 * 1000);
 const arkDefaultBaseUrl = "https://ark.cn-beijing.volces.com";
@@ -1128,6 +1134,36 @@ function applyGptImage25RequestDefaults(payload) {
   if (["png", "jpeg", "webp"].includes(outputFormat)) payload.output_format = outputFormat;
   else delete payload.output_format;
   delete payload.format;
+  return payload;
+}
+
+function isOpenLuxImageConnection(connection) {
+  try {
+    return new URL(connection?.baseUrl || "").hostname.toLowerCase() === "api.openlux.ai";
+  } catch {
+    return false;
+  }
+}
+
+function applyOpenLuxGptImage25Defaults(payload, connection, mode) {
+  if (!isOpenLuxImageConnection(connection) || !gptImage25Profile(payload.model)) return payload;
+
+  if (mode === "create") {
+    // OpenLux documents `format`, unlike the official API's `output_format`.
+    if (payload.output_format) payload.format = payload.output_format;
+    delete payload.output_format;
+    // Only the generations endpoint documents response_format. Keep explicit overrides.
+    if (!payload.response_format && /^(?:3840x2160|2160x3840)$/u.test(payload.size || "")) {
+      payload.response_format = "url";
+    }
+  } else {
+    // The OpenLux edits endpoint does not document output format fields.
+    delete payload.output_format;
+    delete payload.format;
+    // Do not set a default here. An explicit URL/base64 choice can be tested
+    // against relay implementations that accept this undocumented extension.
+    if (!["url", "b64_json"].includes(payload.response_format)) delete payload.response_format;
+  }
   return payload;
 }
 
@@ -6139,6 +6175,31 @@ function dedupeTextValues(values) {
   return Array.from(new Set((Array.isArray(values) ? values : []).map((value) => sanitizeOptionalText(value)).filter(Boolean)));
 }
 
+async function fetchOpenAiImageUpstream(apiUrl, options, modelName, connection) {
+  const longRunning = Boolean(gptImage25Profile(
+    modelName,
+    connection?.apiModel,
+    connectionDefinition(modelName)?.label
+  ));
+  if (!longRunning) return fetch(apiUrl, options);
+
+  try {
+    return await fetch(apiUrl, {
+      ...options,
+      dispatcher: gptImage25Dispatcher,
+      signal: AbortSignal.timeout(gptImage25RequestTimeoutMs)
+    });
+  } catch (error) {
+    if (error?.name === "TimeoutError" || ["UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"].includes(error?.cause?.code)) {
+      throw new Error("GPT Image 2.5 等待超过 30 分钟，尚未收到中转站结果；请先到中转站确认任务状态，避免重复提交扣费。", { cause: error });
+    }
+    if (["UND_ERR_SOCKET", "ECONNRESET", "EPIPE"].includes(error?.cause?.code)) {
+      throw new Error(`GPT Image 2.5 中转站连接中断（${error.cause.code}）；任务可能仍在生成，请先核对中转站记录。`, { cause: error });
+    }
+    throw error;
+  }
+}
+
 async function handleCreate(res, body, prompt) {
   const requestedModel = body.model || config.defaultModel;
   if (isGrokBuildImageModel(requestedModel)) {
@@ -6185,6 +6246,10 @@ async function handleCreate(res, body, prompt) {
       ? ttImage25OpenAiSize(body)
       : seedreamProModel ? normalizeArkImageSize(body.size, seedreamProfile) : body.size,
     quality: seedreamProModel ? undefined : body.quality,
+    moderation: !ttImage25 && gptImage25Profile(requestedModel, connection.apiModel) ? body.moderation : undefined,
+    response_format: isOpenLuxImageConnection(connection) && ["url", "b64_json"].includes(body.responseFormat)
+      ? body.responseFormat
+      : extraParams.response_format,
     version: ttImage25 ? normalizeTtImage25Version(body.ttImageVersion) : undefined,
     background: seedreamProModel ? seedreamBackground : ttBackground,
     output_format: seedreamFormat,
@@ -6202,6 +6267,7 @@ async function handleCreate(res, body, prompt) {
     connection.apiModel,
     connectionDefinition(requestedModel)?.label
   );
+  applyOpenLuxGptImage25Defaults(payload, connection, "create");
 
   const apiUrl = connection.apiUrl;
   if (!connection.apiKey) {
@@ -6209,11 +6275,11 @@ async function handleCreate(res, body, prompt) {
   }
   const startedAt = Date.now();
 
-  let upstream = await fetch(apiUrl, {
+  let upstream = await fetchOpenAiImageUpstream(apiUrl, {
     method: "POST",
     headers: connectionAuthHeaders(connection),
     body: JSON.stringify(payload)
-  });
+  }, requestedModel, connection);
 
   let responseText = await upstream.text();
   let upstreamData = tryParseJson(responseText);
@@ -6226,11 +6292,11 @@ async function handleCreate(res, body, prompt) {
       reason: readUpstreamError(upstreamData, responseText)
     };
     payload = { ...payload, model: yunwuGptImageFallbackModel };
-    upstream = await fetch(apiUrl, {
+    upstream = await fetchOpenAiImageUpstream(apiUrl, {
       method: "POST",
       headers: connectionAuthHeaders(connection),
       body: JSON.stringify(payload)
-    });
+    }, requestedModel, connection);
     responseText = await upstream.text();
     upstreamData = tryParseJson(responseText);
   }
@@ -6251,7 +6317,7 @@ async function handleCreate(res, body, prompt) {
     request: { apiUrl, payload: { ...payload, prompt }, requestedModel },
     fallback,
     images,
-    raw: upstreamData
+    raw: summarizeImageResponse(upstreamData)
   });
 }
 
@@ -7188,6 +7254,9 @@ async function handleEdit(res, body) {
     optimize_prompt_options: seedreamOptimizeMode ? JSON.stringify({ mode: seedreamOptimizeMode }) : undefined,
     background: seedreamProModel ? seedreamBackground : ttBackground,
     moderation: body.moderation,
+    response_format: isOpenLuxImageConnection(connection) && ["url", "b64_json"].includes(body.responseFormat)
+      ? body.responseFormat
+      : extraParams.response_format,
   });
   if (ttImage25) {
     fields.n = "1";
@@ -7202,6 +7271,7 @@ async function handleEdit(res, body) {
     connection.apiModel,
     connectionDefinition(modelName)?.label
   );
+  applyOpenLuxGptImage25Defaults(fields, connection, "edit");
 
   for (const [key, value] of Object.entries(fields)) {
     form.append(key, String(value));
@@ -7212,11 +7282,11 @@ async function handleEdit(res, body) {
     return sendJson(res, 500, { error: missingKeyMessage(modelName) });
   }
   const startedAt = Date.now();
-  const upstream = await fetch(apiUrl, {
+  const upstream = await fetchOpenAiImageUpstream(apiUrl, {
     method: "POST",
     headers: { ...connectionAuthHeaders(connection, ""), Accept: "application/json" },
     body: form
-  });
+  }, modelName, connection);
 
   const responseText = await upstream.text();
   const upstreamData = tryParseJson(responseText);
@@ -7242,7 +7312,7 @@ async function handleEdit(res, body) {
       }
     },
     images: resultImages,
-    raw: upstreamData
+    raw: summarizeImageResponse(upstreamData)
   });
 }
 
@@ -9129,6 +9199,17 @@ function tryParseJson(text) {
   }
 }
 
+function summarizeImageResponse(data) {
+  if (Array.isArray(data)) return data.map(summarizeImageResponse);
+  if (!data || typeof data !== "object") return data;
+  return Object.fromEntries(Object.entries(data).map(([key, value]) => [
+    key,
+    typeof value === "string" && ["b64_json", "base64", "image_base64"].includes(key)
+      ? `[base64 image omitted; ${value.length} characters]`
+      : summarizeImageResponse(value)
+  ]));
+}
+
 function readUpstreamError(data, fallback) {
   const sources = [data, data?.data, data?.result, data?.output, data?.response].filter((item) => item && typeof item === "object");
   for (const source of sources) {
@@ -9345,7 +9426,7 @@ async function saveBase64Image(value, preferredFormat, projectId = "default") {
 
 async function saveUrlImage(url, preferredFormat, projectId = "default") {
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(30000) });
+    const response = await fetch(url, { signal: AbortSignal.timeout(120000) });
     if (!response.ok) return null;
 
     const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() || "";

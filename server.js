@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { createReadStream, createWriteStream, readFileSync } from "node:fs";
+import { constants as fsConstants, copyFileSync, createReadStream, createWriteStream, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -12,6 +12,14 @@ import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
 import TosSdk from "@volcengine/tos-sdk";
 import { Agent } from "undici";
+import {
+  defaultYunwuBaseUrl,
+  migrateYunwuConnection,
+  migrateYunwuEnvText,
+  migrateYunwuEnvValue,
+  migrateYunwuNodeConnections,
+  migrateYunwuUrl
+} from "./public/connection-migrations.js";
 import {
   buildMidjourneyEndpointUrl,
   extractMidjourneyTaskId,
@@ -223,7 +231,7 @@ const apiConnectionModelDefinitions = [
 ];
 const modelKeyModels = [...new Set(apiConnectionModelDefinitions.map(({ model }) => normalizeModelAlias(model)))];
 const connectionPresetCatalog = {
-  yunwu: { label: "云雾平台", description: "云雾 OpenAI 兼容接口" },
+  yunwu: { label: "云雾国际站（OpenLux）", description: "云雾国际站 OpenAI 兼容接口" },
   openai: { label: "OpenAI 官方", description: "OpenAI 官方 API" },
   google: { label: "Google Gemini 官方", description: "Gemini 原生 generateContent" },
   anthropic: { label: "Anthropic 官方", description: "Anthropic Messages API" },
@@ -260,6 +268,9 @@ let photoshopReferenceSelection = null;
 const midjourneyPersistedResults = new Map();
 
 loadEnvFile(envFile);
+for (const key of ["YUNWU_BASE_URL", "YUNWU_IMAGE_ENDPOINT", "YUNWU_EDIT_ENDPOINT", "YUNWU_CHAT_ENDPOINT", "CC_CANVAS_MODEL_CONNECTIONS_B64"]) {
+  if (process.env[key]) process.env[key] = migrateYunwuEnvValue(key, process.env[key]);
+}
 
 const config = {
   port: Number(process.env.PORT || 3000),
@@ -276,7 +287,7 @@ const config = {
   tosRegion: process.env.VOLCENGINE_TOS_REGION || arkOpenApiRegion,
   tosEndpoint: process.env.VOLCENGINE_TOS_ENDPOINT || "",
   grsaiApiKey: process.env.GRSAI_API_KEY || "",
-  baseUrl: process.env.YUNWU_BASE_URL || "https://yunwu.ai",
+  baseUrl: process.env.YUNWU_BASE_URL || defaultYunwuBaseUrl,
   imageEndpoint: process.env.YUNWU_IMAGE_ENDPOINT || "/v1/images/generations",
   editEndpoint: process.env.YUNWU_EDIT_ENDPOINT || "/v1/images/edits",
   chatEndpoint: process.env.YUNWU_CHAT_ENDPOINT || "/v1/chat/completions",
@@ -805,7 +816,7 @@ function defaultConnectionForModel(model, presetId = "yunwu") {
     protocol: definition.capability === "image" ? imageProtocol : chatProtocol,
     authType: "bearer",
     apiModel: normalized,
-    baseUrl: config?.baseUrl || "https://yunwu.ai",
+    baseUrl: config?.baseUrl || defaultYunwuBaseUrl,
     imageEndpoint: config?.imageEndpoint || "/v1/images/generations",
     editEndpoint: config?.editEndpoint || "/v1/images/edits",
     chatEndpoint: config?.chatEndpoint || "/v1/chat/completions",
@@ -900,7 +911,7 @@ function defaultConnectionForModel(model, presetId = "yunwu") {
 
 function normalizeModelConnection(model, value) {
   const normalized = normalizeModelAlias(model);
-  const input = isPlainObject(value) ? value : {};
+  const input = isPlainObject(value) ? migrateYunwuConnection(value) : {};
   const fallback = defaultConnectionForModel(normalized, input.preset || connectionDefinition(normalized).presets[0]);
   const protocols = new Set([
     "openai-images",
@@ -1533,10 +1544,10 @@ async function handleSaveSettings(req, res) {
     tosRegion: sanitizeOptionalText(body.tosRegion) || config.tosRegion || arkOpenApiRegion,
     tosEndpoint: sanitizeOptionalText(body.tosEndpoint),
     grsaiApiKey: clearedModels.has(grsaiDefaultModel) ? "" : sanitizeOptionalText(body.grsaiApiKey) || config.grsaiApiKey,
-    baseUrl: sanitizeOptionalText(body.baseUrl) || config.baseUrl,
-    imageEndpoint: sanitizeOptionalText(body.imageEndpoint) || config.imageEndpoint,
-    editEndpoint: sanitizeOptionalText(body.editEndpoint) || config.editEndpoint,
-    chatEndpoint: sanitizeOptionalText(body.chatEndpoint) || config.chatEndpoint,
+    baseUrl: migrateYunwuUrl(sanitizeOptionalText(body.baseUrl)) || config.baseUrl,
+    imageEndpoint: migrateYunwuUrl(sanitizeOptionalText(body.imageEndpoint)) || config.imageEndpoint,
+    editEndpoint: migrateYunwuUrl(sanitizeOptionalText(body.editEndpoint)) || config.editEndpoint,
+    chatEndpoint: migrateYunwuUrl(sanitizeOptionalText(body.chatEndpoint)) || config.chatEndpoint,
     defaultModel: normalizeModelAlias(sanitizeOptionalText(body.defaultModel) || config.defaultModel),
     assistantModel: sanitizeOptionalText(body.assistantModel) || config.assistantModel,
     grokBuildProxyUrl:
@@ -5432,6 +5443,14 @@ async function readRecoverableProject(projectId, options = {}) {
 
   if (options.repair !== false && shouldRepair) {
     await queueProjectWrite(id, () => writeProjectRecordAtomic(id, selected.project, { backupCurrent: false }));
+  } else if (options.repair !== false && selected.connectionMigrationNeeded) {
+    await queueProjectWrite(id, async () => {
+      // A browser or Agent may have saved newer content while this read was queued.
+      const latest = await readRecoverableProject(id, { repair: false });
+      if (!latest?.project) return;
+      selected.project = latest.project;
+      await writeProjectRecordAtomic(id, latest.project, { backupCurrent: latest.source === "primary" });
+    });
   }
   if (options.repair !== false && selected.source !== "pending") {
     await rm(projectPendingFile(id), { force: true }).catch(() => {});
@@ -5456,6 +5475,7 @@ async function readProjectCandidate(filename, projectId, source, priority) {
       project,
       source,
       priority,
+      connectionMigrationNeeded: project.nodes.some((node, index) => node !== parsed.nodes[index]),
       savedTime: Number.isFinite(parsedTime) ? parsedTime : info.mtimeMs
     };
   } catch {
@@ -5517,7 +5537,7 @@ function normalizeProjectRecord(project, fallbackId) {
     savedAt: project?.savedAt || new Date().toISOString(),
     agentRevision: Math.max(0, Number(project?.agentRevision) || 0),
     grokProjectMemory: project?.grokProjectMemory === true,
-    nodes: Array.isArray(project?.nodes) ? project.nodes : [],
+    nodes: Array.isArray(project?.nodes) ? project.nodes.map(migrateYunwuNodeConnections) : [],
     viewport: isPlainObject(project?.viewport) ? project.viewport : { x: 120, y: 90, zoom: 1 },
     nextZ: Number(project?.nextZ) || 1
   };
@@ -6332,8 +6352,8 @@ function shouldRetryYunwuGptImageCreate(requestedModel, connection, payload, ups
 
 function isYunwuApiBaseUrl(value) {
   try {
-    const hostname = new URL(value).hostname.toLowerCase();
-    return hostname === "yunwu.ai" || hostname.endsWith(".yunwu.ai");
+    const hostname = new URL(migrateYunwuUrl(value)).hostname.toLowerCase();
+    return hostname === "api.openlux.ai" || hostname === "yunwu.ai" || hostname.endsWith(".yunwu.ai");
   } catch {
     return false;
   }
@@ -8845,19 +8865,37 @@ function dreaminaErrorMessage(error) {
 }
 
 function loadEnvFile(filePath) {
+  let content;
   try {
-    const content = readFileSync(filePath, "utf8");
-    for (const line of content.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
-      if (!match) continue;
-      const [, key, rawValue] = match;
-      if (process.env[key]) continue;
-      process.env[key] = stripEnvQuotes(rawValue.trim());
-    }
+    content = readFileSync(filePath, "utf8");
   } catch {
     // Missing env files are fine for first run.
+    return;
+  }
+  const migrated = migrateYunwuEnvText(content);
+  if (migrated !== content) {
+    const pending = `${filePath}.openlux-migration-${process.pid}.tmp`;
+    try {
+      try {
+        copyFileSync(filePath, `${filePath}.openlux-backup`, fsConstants.COPYFILE_EXCL);
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+      }
+      writeFileSync(pending, migrated, "utf8");
+      renameSync(pending, filePath);
+    } catch {
+      try { unlinkSync(pending); } catch { /* No pending file to remove. */ }
+      console.warn("Legacy Yunwu URLs were migrated in memory; local settings could not be updated on disk.");
+    }
+  }
+  for (const line of migrated.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!match) continue;
+    const [, key, rawValue] = match;
+    if (process.env[key]) continue;
+    process.env[key] = stripEnvQuotes(rawValue.trim());
   }
 }
 

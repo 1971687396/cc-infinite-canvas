@@ -8,7 +8,7 @@
 
 - 创建图像：`POST /v1/images/generations`
 - 编辑图像：`POST /v1/images/edits`
-- Base URL：`https://yunwu.ai`
+- Base URL：`https://api.openlux.ai`（云雾国际站）
 - 鉴权：`Authorization: Bearer <YOUR_API_KEY>`
 - 默认模型：`gpt-image-2`
 - 内置 GPT Image 2.5：`gpt-image-2.5-sunburst`（精细编辑）与 `gpt-image-2.5-flare`（快速生成）
@@ -65,7 +65,7 @@
 
 ## Midjourney（云雾代理）
 
-左侧工具栏的 `MJ` 会创建独立的 Midjourney 节点，不与通用生图节点混用。默认连接预设为云雾 `https://yunwu.ai`、Midjourney Proxy Plus 协议和官方文档公布的 `/mj` 路由；在“设置 > 模型 API 连接 > Midjourney（云雾代理）”中可以填写模型专用 Key，也可以留空使用全局备用 Key。自定义中转站如需按速度切换路径，可在接口路径中使用 `{mode}` 占位符。
+左侧工具栏的 `MJ` 会创建独立的 Midjourney 节点，不与通用生图节点混用。默认连接预设为云雾国际站 `https://api.openlux.ai`、Midjourney Proxy Plus 协议和官方文档公布的 `/mj` 路由；在“设置 > 模型 API 连接 > Midjourney（云雾代理）”中可以填写模型专用 Key，也可以留空使用全局备用 Key。自定义中转站如需按速度切换路径，可在接口路径中使用 `{mode}` 占位符。
 
 - 默认使用云雾当前平台版本，也可指定 V7、V6.1、Niji 7；V8.1 仅在云雾通道明确支持时手动启用
 - 支持本地上传、选中画布图片、点选画布图片和连线四种参考图添加方式，按 Proxy Plus 兼容限制单个节点最多 5 张
@@ -244,7 +244,7 @@ VOLCENGINE_ARK_ASSET_GROUP_ID=
 VOLCENGINE_TOS_BUCKET=本地图入库使用的存储桶
 VOLCENGINE_TOS_REGION=cn-beijing
 VOLCENGINE_TOS_ENDPOINT=
-YUNWU_BASE_URL=https://yunwu.ai
+YUNWU_BASE_URL=https://api.openlux.ai
 YUNWU_IMAGE_ENDPOINT=/v1/images/generations
 YUNWU_EDIT_ENDPOINT=/v1/images/edits
 YUNWU_CHAT_ENDPOINT=/v1/chat/completions
@@ -268,7 +268,9 @@ PORT=3000
 
 ## 版本更新
 
-当前版本为 **v1.1.11**：延长 GPT Image 2.5 生图等待，适配 OpenLux 审核强度与 URL / b64_json 返回格式，并优化大图片结果保存。完整更新内容见 [CHANGELOG.md](CHANGELOG.md)。发布附件仅提供 Windows 安装包。
+当前版本为 **v1.1.12**：修复新安装与升级后云雾地址未迁移、GPT Image 2.5 新选项不显示的问题。完整更新内容见 [CHANGELOG.md](CHANGELOG.md)。发布附件仅提供 Windows 安装包。
+
+安装更新后请完全退出并重新打开画布。首次启动会将 `yunwu.ai`、`api.yunwu.ai`、`api.apiplus.org` 的连接迁移至云雾国际站，覆盖全局地址、模型专用连接和旧画布中的节点覆盖地址；接口路径、各设备自己的 Key 以及其他渠道配置保持原样。迁移配置前会在安装目录保留 `.env.local.openlux-backup`；该备份包含本机配置，请勿公开上传。自定义模型名称与 Key 属于各设备的本地设置，不随公开安装包同步。
 
 应用当前版本来自 `package.json`，默认检查 `1971687396/cc-infinite-canvas` 的 GitHub Releases。发布新版本时：
 
@@ -281,7 +283,7 @@ PORT=3000
 
 新版设置页会把任意模型的连接配置和 Key 索引写入 `CC_CANVAS_MODEL_CONNECTIONS_B64` 与 `CC_CANVAS_MODEL_KEYS_B64`。这两个值由应用自动维护，不建议手工编辑；上面的旧版 `YUNWU_*` 配置仍然兼容。
 
-其他可用 Base URL：`https://yunwu.zeabur.app`、`https://api.apiplus.org`、`https://api3.wlai.vip`、`https://api.zhongzhuan.chat`。
+云雾默认 Base URL 为 `https://api.openlux.ai`。其他平台请使用相应供应商提供的地址；迁移仅匹配上述已知旧云雾域名。
 
 ## 运行
 

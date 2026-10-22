@@ -64,6 +64,7 @@ import {
   storyScriptSignature
 } from "./story-runtime.js";
 import { dreaminaSubmitId, isRetryableDreaminaQueryError } from "./dreamina-task-runtime.js";
+import { defaultYunwuBaseUrl, migrateYunwuNodeConnections } from "./connection-migrations.js";
 
 const storageKeyPrefix = "cc-infinite-canvas-project-v1";
 const currentProjectStorageKey = "cc-infinite-canvas-current-project";
@@ -1678,7 +1679,7 @@ const imageModelDefaultProfiles = {
     delete node.extraParams.response_format;
     delete node.extraParams.replyType;
     if (["grok", "grok-build", "grsai", "dreamina", "ark"].includes(context.previousProvider) && options.modelChanged) {
-      node.baseUrl = config.baseUrl || "https://yunwu.ai";
+      node.baseUrl = config.baseUrl || defaultYunwuBaseUrl;
       node.endpointPath = defaultEndpointForMode(node.mode);
     }
     }
@@ -1701,7 +1702,7 @@ const imageModelDefaultProfiles = {
   gemini: {
     apply(node, options, context) {
     const connection = context.connection;
-    node.baseUrl = connection?.baseUrl || config.baseUrl || "https://yunwu.ai";
+    node.baseUrl = connection?.baseUrl || config.baseUrl || defaultYunwuBaseUrl;
     node.endpointPath = (node.mode === "edit" ? connection?.editEndpoint : connection?.imageEndpoint)
       || geminiNativeEndpointForModel(connection?.apiModel || node.model);
     const parsedSize = parseGeminiNativeSizeValue(node.size, node.quality);
@@ -1735,7 +1736,7 @@ const imageModelDefaultProfiles = {
     apply(node, options, context) {
     node.model = isGrokModelName(node.model) ? node.model : grokDefaultModel;
     if (["grok-build", "grsai", "dreamina"].includes(context.previousProvider)) {
-      node.baseUrl = config.baseUrl || "https://yunwu.ai";
+      node.baseUrl = config.baseUrl || defaultYunwuBaseUrl;
       node.endpointPath = defaultEndpointForMode(node.mode);
     }
     if (node.mode === "edit") {
@@ -1773,7 +1774,7 @@ const imageModelDefaultProfiles = {
       delete node.extraParams.replyType;
     }
     if (["grok-build", "grsai", "dreamina", "ark"].includes(context.previousProvider) && options.modelChanged) {
-      node.baseUrl = config.baseUrl || "https://yunwu.ai";
+      node.baseUrl = config.baseUrl || defaultYunwuBaseUrl;
       node.endpointPath = defaultEndpointForMode(node.mode);
     }
     }
@@ -2395,7 +2396,7 @@ function createDefaultTaskNode(mode = "create") {
     ttImageAspectRatio: "auto",
     ttImageResolution: "auto",
     format: "png",
-    baseUrl: config.baseUrl || "https://yunwu.ai",
+    baseUrl: config.baseUrl || defaultYunwuBaseUrl,
     endpointPath: defaultEndpointForMode(normalizedMode),
     connectionOverride: false,
     apiKeyOverride: "",
@@ -3765,7 +3766,7 @@ function buildGenerationSnapshot(node) {
     background: node.background || "",
     moderation: node.moderation || "",
     responseFormat: node.responseFormat || "",
-    baseUrl: node.baseUrl || config.baseUrl || "https://yunwu.ai",
+    baseUrl: node.baseUrl || config.baseUrl || defaultYunwuBaseUrl,
     endpointPath: node.endpointPath || defaultEndpointForMode(node.mode),
     extraParams: clonePlainValue(node.extraParams || {}),
     arkAssetUris: clonePlainValue(node.arkAssetUris || []),
@@ -4853,7 +4854,7 @@ function fallbackSettingsConnection(model) {
     protocol: "openai-chat",
     authType: "bearer",
     apiModel: normalized,
-    baseUrl: config.baseUrl || "https://yunwu.ai",
+    baseUrl: config.baseUrl || defaultYunwuBaseUrl,
     imageEndpoint: config.imageEndpoint || "/v1/images/generations",
     editEndpoint: config.editEndpoint || "/v1/images/edits",
     chatEndpoint: config.chatEndpoint || "/v1/chat/completions",
@@ -8865,7 +8866,7 @@ function getImageGeneration(node) {
     background: generation.background || "",
     moderation: generation.moderation || "",
     responseFormat: generation.responseFormat || "",
-    baseUrl: generation.baseUrl || config.baseUrl || "https://yunwu.ai",
+    baseUrl: generation.baseUrl || config.baseUrl || defaultYunwuBaseUrl,
     endpointPath: generation.endpointPath || defaultEndpointForMode(mode),
     extraParams: isPlainObject(generation.extraParams) ? clonePlainValue(generation.extraParams) : {},
     cachedImages: Array.isArray(generation.cachedImages) ? clonePlainValue(generation.cachedImages) : [],
@@ -8994,7 +8995,7 @@ function applyGenerationToTask(task, generation) {
   task.mode = generation.mode === "edit" ? "edit" : "create";
   task.seedreamMode = normalizeSeedreamProMode(generation.seedreamMode);
   task.model = generation.model || config.defaultModel || "gpt-image-2";
-  task.baseUrl = generation.baseUrl || config.baseUrl || "https://yunwu.ai";
+  task.baseUrl = generation.baseUrl || config.baseUrl || defaultYunwuBaseUrl;
   task.endpointPath = generation.endpointPath || defaultEndpointForMode(task.mode);
   applyTaskModelDefaults(task, { modeChanged: true, modelChanged: true });
 
@@ -19380,6 +19381,7 @@ function getWorldPointFromClient(clientX, clientY) {
 }
 
 function migrateNode(node) {
+  node = migrateYunwuNodeConnections(node);
   if (node.type === "region") {
     return {
       ...node,
@@ -19768,7 +19770,7 @@ function migrateTaskNode(node) {
     size: node.size || "auto",
     quality: node.quality || "",
     format: node.format || "png",
-    baseUrl: node.baseUrl || config.baseUrl || "https://yunwu.ai",
+    baseUrl: node.baseUrl || config.baseUrl || defaultYunwuBaseUrl,
     endpointPath: node.endpointPath || defaultEndpointForMode(mode),
     connectionOverride: Boolean(node.connectionOverride),
     mode,

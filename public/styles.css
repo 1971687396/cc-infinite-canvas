@@ -334,7 +334,8 @@ summary:focus-visible {
 button.secondary,
 .node-actions button,
 .node-actions a,
-.thumb-actions a {
+.thumb-actions a,
+.thumb-actions button {
   border-color: var(--line);
   background: var(--panel);
   color: var(--ink);
@@ -344,7 +345,8 @@ button.secondary,
 button.secondary:hover,
 .node-actions button:hover,
 .node-actions a:hover,
-.thumb-actions a:hover {
+.thumb-actions a:hover,
+.thumb-actions button:hover {
   border-color: var(--accent);
   background: var(--soft-hover);
   color: var(--accent-strong);
@@ -5271,7 +5273,8 @@ body.assistant-open .minimap-dock {
   padding: 6px;
 }
 
-.thumb-actions a {
+.thumb-actions a,
+.thumb-actions button {
   min-height: 28px;
   display: inline-flex;
   align-items: center;
@@ -6946,6 +6949,7 @@ pre {
 :root[data-theme="dark"] .node-actions button,
 :root[data-theme="dark"] .node-actions a,
 :root[data-theme="dark"] .thumb-actions a,
+:root[data-theme="dark"] .thumb-actions button,
 :root[data-theme="dark"] .chatgpt-toolbar button,
 :root[data-theme="dark"] .chatgpt-fallback-actions button,
 :root[data-theme="dark"] .image-toolbar button,
@@ -6991,6 +6995,7 @@ pre {
 :root[data-theme="dark"] .node-actions button:hover,
 :root[data-theme="dark"] .node-actions a:hover,
 :root[data-theme="dark"] .thumb-actions a:hover,
+:root[data-theme="dark"] .thumb-actions button:hover,
 :root[data-theme="dark"] .chatgpt-toolbar button:hover,
 :root[data-theme="dark"] .chatgpt-fallback-actions button:hover,
 :root[data-theme="dark"] .image-toolbar button:hover,

@@ -1,6 +1,6 @@
 {
   "name": "yunwu-image-canvas",
-  "version": "1.1.12",
+  "version": "1.1.13",
   "private": true,
   "type": "module",
   "main": "electron-main.cjs",
@@ -14,6 +14,7 @@
     "test:media-virtualization": "node tools/test-media-virtualization.mjs",
     "test:model-profiles": "node tools/test-model-profiles.mjs",
     "test:connection-migrations": "node tools/test-connection-migrations.mjs",
+    "test:desktop-downloads": "node tools/test-desktop-downloads.mjs",
     "test:story-runtime": "node tools/test-story-runtime.mjs",
     "test:story-integration": "node tools/test-story-integration.mjs",
     "test:assistant-behavior": "node tools/test-assistant-behavior.mjs",

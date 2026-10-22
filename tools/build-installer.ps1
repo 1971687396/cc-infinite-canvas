@@ -460,6 +460,7 @@ New-Item -ItemType Directory -Path (Join-Path $payloadRoot "tools") -Force | Out
 
 $files = @(
   "server.js",
+  "desktop-downloads.cjs",
   "agent-control-client.js",
   "agent-control-runtime.js",
   "agent-mcp-server.js",

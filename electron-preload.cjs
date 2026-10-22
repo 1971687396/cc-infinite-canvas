@@ -1,6 +1,9 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("ccCanvasDesktop", {
+  downloadMedia(payload) {
+    return ipcRenderer.invoke("canvas:download-media", payload);
+  },
   showChatGpt(payload) {
     ipcRenderer.send("chatgpt:show", payload);
   },

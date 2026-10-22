@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
+const { createMediaDownloader, isCanvasDocumentUrl, normalizeMediaDownloadUrl, protectCanvasNavigation } = require("./desktop-downloads.cjs");
 
 loadEnvFile(path.join(__dirname, ".env.local"));
 
@@ -22,6 +23,8 @@ let chatGptViewAttached = false;
 let chatGptUrl = "";
 let chatGptProxyRules = "";
 let chatGptProxyAuth = null;
+let mediaDownloader = null;
+let mediaDownloadFilename = null;
 
 log("Electron main starting");
 process.on("uncaughtException", (error) => log(`uncaughtException: ${error.stack || error.message || error}`));
@@ -57,6 +60,7 @@ if (!hasSingleInstanceLock) {
 
   app.whenReady().then(async () => {
     log("app ready");
+    ({ mediaDownloadFilename } = await import(pathToFileURL(path.join(__dirname, "public", "media-downloads.js")).href));
     await ensureServer();
     createMainWindow();
   }).catch((error) => {
@@ -147,6 +151,16 @@ function createMainWindow() {
     }
   });
   mainWindow.setMenuBarVisibility(false);
+  mediaDownloader = createMediaDownloader({
+    webContents: mainWindow.webContents,
+    downloadsDirectory: app.getPath("downloads"),
+    filenameForItem: mediaDownloadFilename
+  });
+
+  protectCanvasNavigation(mainWindow.webContents, appUrl, (url) => {
+    const externalUrl = normalizeExternalUrl(url);
+    if (externalUrl) shell.openExternal(externalUrl);
+  });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) shell.openExternal(url);
@@ -388,6 +402,18 @@ ipcMain.on("chatgpt:reload", () => {
 ipcMain.on("open-external", (_event, url) => {
   const externalUrl = normalizeExternalUrl(url);
   if (externalUrl) shell.openExternal(externalUrl);
+});
+
+ipcMain.handle("canvas:download-media", async (event, payload = {}) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || !isCanvasDocumentUrl(event.senderFrame?.url, appUrl)) {
+    throw new Error("下载请求必须来自画布窗口");
+  }
+  try {
+    const url = normalizeMediaDownloadUrl(payload.url, appUrl);
+    return await mediaDownloader.download(url, payload.filename);
+  } catch (error) {
+    return { state: "failed", error: error.message || "文件下载失败" };
+  }
 });
 
 function normalizeExternalUrl(value) {

@@ -65,6 +65,7 @@ import {
 } from "./story-runtime.js";
 import { dreaminaSubmitId, isRetryableDreaminaQueryError } from "./dreamina-task-runtime.js";
 import { defaultYunwuBaseUrl, migrateYunwuNodeConnections } from "./connection-migrations.js";
+import { createMediaDownloadButton } from "./media-downloads.js";
 
 const storageKeyPrefix = "cc-infinite-canvas-project-v1";
 const currentProjectStorageKey = "cc-infinite-canvas-current-project";
@@ -5764,6 +5765,14 @@ function saveDownloadedUpdate(blob, filename) {
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+function createCanvasMediaDownload(media, fallbackFilename) {
+  return createMediaDownloadButton(media, {
+    fallbackFilename,
+    onComplete: (result) => showToast(result?.state === "completed" ? "文件已保存" : "下载已开始"),
+    onError: (error) => showToast(error.message || "下载失败")
+  });
 }
 
 function openUpdateDialog() {
@@ -13372,10 +13381,7 @@ function createVideoToolbar(node) {
   open.rel = "noreferrer";
   open.textContent = "打开";
 
-  const download = document.createElement("a");
-  download.href = node.video?.url || "#";
-  download.download = node.video?.filename || "dreamina-video.mp4";
-  download.textContent = "下载";
+  const download = createCanvasMediaDownload(node.video, "dreamina-video.mp4");
 
   const remove = document.createElement("button");
   remove.type = "button";
@@ -13647,10 +13653,7 @@ function createImageToolbar(node) {
   open.rel = "noreferrer";
   open.textContent = "打开";
 
-  const download = document.createElement("a");
-  download.href = node.image?.url || "#";
-  download.download = node.image?.filename || "generated-image";
-  download.textContent = "下载";
+  const download = createCanvasMediaDownload(node.image, "generated-image");
 
   const arkAsset = normalizeImageArkAsset(node.arkAsset);
   const arkAssetCurrent = arkAsset
@@ -18669,10 +18672,7 @@ function createResultThumb(image, showActions) {
     open.rel = "noreferrer";
     open.textContent = "打开";
 
-    const download = document.createElement("a");
-    download.href = image.url;
-    download.download = image.filename || "generated-image";
-    download.textContent = "下载";
+    const download = createCanvasMediaDownload(image, "generated-image");
 
     links.append(open, download);
     item.append(links);

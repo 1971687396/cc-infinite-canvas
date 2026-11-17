@@ -185,6 +185,14 @@ export function createCanvasMcpServer() {
       tt_image_version: z.enum(["flare", "sunburst"]).optional(),
       tt_image_aspect_ratio: z.string().optional(),
       tt_image_resolution: z.string().optional(),
+      image_26: z.object({
+        complexity: z.enum(["low", "medium", "high"]).optional(),
+        frameCount: z.number().int().min(2).max(16).optional(),
+        frameDurationMs: z.number().int().min(20).max(655350).optional(),
+        svgModel: z.string().optional(),
+        svgReasoning: z.string().optional(),
+        imageGuideMode: z.enum(["mask", "markup"]).optional()
+      }).optional(),
       reference_image_paths: z.array(z.string()).max(16).optional(),
       reference_video_paths: z.array(z.string()).max(4).optional(),
       reference_audio_paths: z.array(z.string()).max(4).optional(),
@@ -216,6 +224,7 @@ export function createCanvasMcpServer() {
       ttImageVersion: input.tt_image_version,
       ttImageAspectRatio: input.tt_image_aspect_ratio,
       ttImageResolution: input.tt_image_resolution,
+      image26: input.image_26 || {},
       cachedImages,
       cachedVideos,
       cachedAudios,

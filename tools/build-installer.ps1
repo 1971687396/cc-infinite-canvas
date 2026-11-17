@@ -460,6 +460,7 @@ New-Item -ItemType Directory -Path (Join-Path $payloadRoot "tools") -Force | Out
 
 $files = @(
   "server.js",
+  "grsai-task-runtime.js",
   "desktop-downloads.cjs",
   "agent-control-client.js",
   "agent-control-runtime.js",
@@ -585,7 +586,7 @@ if (-not $installerBuilt) {
     throw "IExpress was not found at $iexpress"
   }
 
-  $iexpressProcess = Start-Process -FilePath $iexpress -ArgumentList @("/N", "/Q", $sedPath) -Wait -PassThru
+  $iexpressProcess = Start-Process -FilePath $iexpress -ArgumentList @("/N", "/Q", $sedPath) -WindowStyle Hidden -Wait -PassThru
   if ($iexpressProcess.ExitCode -ne 0) {
     throw "IExpress failed with exit code $($iexpressProcess.ExitCode)."
   }

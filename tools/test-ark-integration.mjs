@@ -8,12 +8,21 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const testCache = path.join(root, "cache", "ark-smoke-test");
 const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2n0sAAAAASUVORK5CYII=";
+const bananaNativePayloads = [];
+const googleBananaNativePayloads = [];
+const grsai26Payloads = [];
+const grsai26Tasks = new Map();
 let lastVideoPayload = null;
 const arkImagePayloads = [];
 const mediaGeneratePayloads = [];
 const mediaGeneratePolls = new Map();
 const gptCreateModels = [];
 const gptImage25CreatePayloads = [];
+const gptImage26CreatePayloads = [];
+const mediaGenerateFormats = new Map();
+const svgFixture = '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><rect width="128" height="128" fill="teal"/></svg>';
+const gifMinimal = Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64");
+const gifFixture = Buffer.concat([gifMinimal.subarray(0, -1), Buffer.from([0x21,0xfe,64]), Buffer.alloc(64, 65), Buffer.from([0,0x3b])]);
 const ttImage25CreatePayloads = [];
 const grokCreatePayloads = [];
 const grokEditPayloads = [];
@@ -25,6 +34,45 @@ let ttImage25EditBody = "";
 
 const mock = http.createServer((req, res) => {
   const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  if (req.method === "POST" && requestUrl.pathname === "/v1/api/generate") {
+    return readJson(req).then((payload) => {
+      assert.equal(req.headers.authorization, "Bearer smoke-grsai-shared-key");
+      grsai26Payloads.push(payload);
+      const id = `grsai-${grsai26Payloads.length}`;
+      grsai26Tasks.set(id, { payload, polls: 0 });
+      if (payload.replyType === "json") return sendJson(res, { id, status: "succeeded", results: [{ url: `http://127.0.0.1:${mock.address().port}/grsai-output?id=${id}` }] });
+      sendJson(res, { id, status: "running" });
+    });
+  }
+  if (req.method === "GET" && requestUrl.pathname === "/v1/api/result") {
+    assert.equal(req.headers.authorization, "Bearer smoke-grsai-shared-key");
+    const id = requestUrl.searchParams.get("id");
+    const task = grsai26Tasks.get(id);
+    task.polls++;
+    return sendJson(res, task.polls < 2 ? { id, status: "running", progress: 50 } : { id, status: "succeeded", results: [{ url: `http://127.0.0.1:${mock.address().port}/grsai-output?id=${id}` }] });
+  }
+  if (req.method === "GET" && requestUrl.pathname === "/grsai-output") {
+    const format = grsai26Tasks.get(requestUrl.searchParams.get("id")).payload.outputFormat || "png";
+    res.setHeader("Content-Type", format === "svg" ? "image/svg+xml" : `image/${format}`);
+    return res.end(format === "svg" ? svgFixture : format === "gif" ? gifFixture : Buffer.from(pngBase64, "base64"));
+  }
+  if (req.method === "POST" && requestUrl.pathname === "/v1beta/models/gemini-nano-banana-2.1:generateContent") {
+    return readJson(req).then((payload) => {
+      const google = req.headers["x-goog-api-key"] === "smoke-google-banana-key";
+      if (google) assert.equal(req.headers.authorization, undefined);
+      else assert.equal(req.headers.authorization, "Bearer smoke-banana-native-key");
+      (google ? googleBananaNativePayloads : bananaNativePayloads).push(payload);
+      sendJson(res, { candidates: [{ ...(google ? { groundingMetadata: { groundingChunks: [{ web: { uri: "https://never-fetch.example/grounding.png" } }] } } : {}), content: { parts: [
+        ...(google ? [{ thought: true, inlineData: { mimeType: "image/png", data: pngBase64 } }] : []),
+        payload.response_format === "url"
+        ? { fileData: { mimeType: "image/png", fileUri: `http://127.0.0.1:${mock.address().port}/native-artifact` } }
+        : { inlineData: { mimeType: "image/png", data: pngBase64 } }] }, finishReason: "STOP" }] });
+    });
+  }
+  if (req.method === "GET" && requestUrl.pathname === "/native-artifact") {
+    res.setHeader("Content-Type", "image/png");
+    return res.end(Buffer.from(pngBase64, "base64"));
+  }
   const arkAction = requestUrl.searchParams.get("Action");
   if (req.method === "POST" && arkAction === "ListAssetGroups") {
     return readJson(req).then((payload) => {
@@ -129,6 +177,12 @@ const mock = http.createServer((req, res) => {
         gptImage25CreatePayloads.push(payload);
         return sendJson(res, { data: [{ b64_json: pngBase64 }] });
       }
+      if (String(payload.model || "").startsWith("gpt-image-2.6-")) {
+        gptImage26CreatePayloads.push(payload);
+        if (payload.output_format === "svg") return sendJson(res, { data: [{ b64_json: Buffer.from(svgFixture).toString("base64") }] });
+        if (payload.output_format === "gif") return sendJson(res, { data: [{ b64_json: gifFixture.toString("base64") }] });
+        return sendJson(res, { data: [{ b64_json: pngBase64 }] });
+      }
       gptCreateModels.push(payload.model);
       if (payload.model === "gpt-image-2") {
         res.statusCode = 400;
@@ -154,6 +208,9 @@ const mock = http.createServer((req, res) => {
       openAiEditContentType = String(req.headers["content-type"] || "");
       openAiEditBody = body.toString("utf8");
       if (/name="model"\r?\n\r?\ntt-image-2\.5/iu.test(openAiEditBody)) ttImage25EditBody = openAiEditBody;
+      if (/name="model"\r?\n\r?\ngpt-image-2\.6/iu.test(openAiEditBody)) {
+        return sendJson(res, { data: [{ b64_json: /name="output_format"\r\n\r\ngif/u.test(openAiEditBody) ? gifFixture.toString("base64") : pngBase64 }] });
+      }
       return sendJson(res, {
         data: [
           { b64_json: pngBase64, z_index: 0, name: "background" },
@@ -208,6 +265,7 @@ const mock = http.createServer((req, res) => {
         return sendJson(res, { code: 200, data: [{ b64_json: pngBase64 }] });
       }
       const taskId = 900000 + mediaGeneratePayloads.length;
+      mediaGenerateFormats.set(String(taskId), payload.params.output_format || "png");
       if (mediaGeneratePayloads.length === 1) {
         return sendJson(res, { code: 200, msg: "任务创建成功", data: { task: { id: taskId } } });
       }
@@ -232,12 +290,13 @@ const mock = http.createServer((req, res) => {
       task_id: taskId,
       is_final: true,
       state: "success",
-      result_url: `http://127.0.0.1:${address.port}/media-result`
+      result_url: `http://127.0.0.1:${address.port}/media-result?format=${mediaGenerateFormats.get(taskId) || "png"}`
     });
   }
-  if (req.method === "GET" && req.url === "/media-result") {
-    res.setHeader("Content-Type", "image/png");
-    res.end(Buffer.from(pngBase64, "base64"));
+  if (req.method === "GET" && requestUrl.pathname === "/media-result") {
+    const format = requestUrl.searchParams.get("format");
+    res.setHeader("Content-Type", format === "svg" ? "image/svg+xml" : format === "gif" ? "image/gif" : "image/png");
+    res.end(format === "svg" ? svgFixture : format === "gif" ? gifFixture : Buffer.from(pngBase64, "base64"));
     return;
   }
   if (req.method === "POST" && req.url === "/api/v3/contents/generations/tasks") {
@@ -271,6 +330,26 @@ const mock = http.createServer((req, res) => {
 await listen(mock);
 const mockPort = mock.address().port;
 const connections = {
+  ...Object.fromEntries(["gpt-image-2.6", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst"].map((apiModel) => [`grsai-${apiModel}`, {
+    preset: "grsai", capability: "image", protocol: "grsai", authType: "bearer", apiModel,
+    baseUrl: `http://127.0.0.1:${mockPort}`, imageEndpoint: "/v1/api/generate", editEndpoint: "/v1/api/generate"
+  }])),
+  "nano-banana-2": {
+    preset: "grsai", capability: "image", protocol: "grsai", authType: "bearer", apiModel: "nano-banana-2",
+    baseUrl: `http://127.0.0.1:${mockPort}`, imageEndpoint: "/v1/api/generate", editEndpoint: "/v1/api/generate"
+  },
+  ...Object.fromEntries(["gpt-image-2.6-sunburst", "gpt-image-2.6-flare"].map((model) => [model, {
+    preset: "custom", capability: "image", protocol: "openai-images", authType: "bearer", apiModel: model,
+    baseUrl: "https://api.openlux.ai", imageEndpoint: `http://127.0.0.1:${mockPort}/v1/images/generations`, editEndpoint: `http://127.0.0.1:${mockPort}/v1/images/edits`
+  }])),
+  ...Object.fromEntries(["tt-image-2.6", "tt-image-2.6-guan"].map((model) => [model, {
+    preset: "custom", capability: "image", protocol: "media-generate", authType: "bearer", apiModel: model,
+    baseUrl: `http://127.0.0.1:${mockPort}`, imageEndpoint: "/v1/media/generate", editEndpoint: "/v1/media/generate"
+  }])),
+  "tt26-legacy-smoke": {
+    preset: "custom", capability: "image", protocol: "openai-images", authType: "bearer", apiModel: "tt-image-2.6-guan",
+    baseUrl: "https://api.lk888.ai", imageEndpoint: "/v1/images/generations", editEndpoint: "/v1/images/edits"
+  },
   "gpt-image-2": {
     preset: "yunwu",
     capability: "image",
@@ -326,6 +405,33 @@ const connections = {
     editEndpoint: "/v1/media/generate",
     chatEndpoint: "/v1/chat/completions"
   },
+  "banana2.1": {
+    preset: "custom", capability: "image", protocol: "media-generate", authType: "bearer",
+    apiModel: "banana-2.1", baseUrl: `http://127.0.0.1:${mockPort}`,
+    imageEndpoint: "/v1/media/generate", editEndpoint: "/v1/media/generate"
+  },
+  "yunb21-smoke": {
+    preset: "custom", capability: "image", protocol: "gemini-native", authType: "bearer",
+    apiModel: "gemini-nano-banana-2.1", baseUrl: "https://api.openlux.ai",
+    imageEndpoint: `http://127.0.0.1:${mockPort}/v1beta/models/{model}:generateContent`,
+    editEndpoint: `http://127.0.0.1:${mockPort}/v1beta/models/{model}:generateContent`
+  },
+  "google-banana21-smoke": {
+    preset: "google", capability: "image", protocol: "gemini-native", authType: "x-goog-api-key",
+    apiModel: "gemini-nano-banana-2.1", baseUrl: "https://generativelanguage.googleapis.com",
+    imageEndpoint: `http://127.0.0.1:${mockPort}/v1beta/models/{model}:generateContent`,
+    editEndpoint: `http://127.0.0.1:${mockPort}/v1beta/models/{model}:generateContent`
+  },
+  "banana2.1官": {
+    preset: "custom", capability: "image", protocol: "media-generate", authType: "bearer",
+    apiModel: "banana-2.1-token", baseUrl: `http://127.0.0.1:${mockPort}`,
+    imageEndpoint: "/v1/media/generate", editEndpoint: "/v1/media/generate"
+  },
+  "banana21-legacy-smoke": {
+    preset: "custom", capability: "image", protocol: "gemini-native", authType: "bearer",
+    apiModel: "banana-2.1-token", baseUrl: "https://api.lk888.ai",
+    imageEndpoint: "/v1/images/generations", editEndpoint: "/v1/images/edits"
+  },
   grokimagezhenzhen: {
     preset: "custom",
     capability: "image",
@@ -379,11 +485,22 @@ const child = spawn(process.execPath, ["server.js"], {
     CC_CANVAS_ALLOW_LOCAL_ARK_ASSET_URLS: "1",
     CC_CANVAS_MEDIA_POLL_INTERVAL_MS: "10",
     CC_CANVAS_MEDIA_POLL_TIMEOUT_MS: "2000",
+    GOOGLE_API_KEY: "",
+    GRSAI_API_KEY: "smoke-grsai-shared-key",
+    GEMINI_API_KEY: "",
     CC_CANVAS_MODEL_KEYS_B64: Buffer.from(JSON.stringify({
+      "gpt-image-2.6-sunburst": "smoke-openlux26-key",
+      "gpt-image-2.6-flare": "smoke-openlux26-key",
+      "tt-image-2.6": "smoke-tt26-key",
+      "tt-image-2.6-guan": "smoke-tt26-guan-key",
       "sunburst-custom-relay": "smoke-gpt-image-25-key",
       "openlux-gpt25-smoke": "smoke-openlux-image-key",
       "tt-image-2.5-openai-smoke": "smoke-tt-image-25-key",
       "tt-image-2.5-media-smoke": "smoke-tt-image-25-key",
+      "banana2.1": "smoke-banana-key",
+      "yunb21-smoke": "smoke-banana-native-key",
+      "google-banana21-smoke": "smoke-google-banana-key",
+      "banana2.1官": "smoke-banana-token-key",
       grokimagezhenzhen: "smoke-grok-image-key",
       "seedream5.0pro-aggregate": "smoke-seedream-aggregate-key",
       "seedream5.0pro-official-route": "smoke-seedream-official-route-key",
@@ -403,11 +520,18 @@ try {
   const appPort = await waitForCanvasPort(child);
   const config = await getJson(`http://127.0.0.1:${appPort}/api/config`);
   assert.equal(config.hasArkApiKey, true);
+  assert.equal(config.modelConnections["tt26-legacy-smoke"].protocol, "media-generate");
+  for (const model of ["gpt-image-2.6-sunburst", "gpt-image-2.6-flare", "tt-image-2.6", "tt-image-2.6-guan"]) {
+    assert.ok(config.connectionModels.some((item) => item.model === model && item.capability === "image"));
+  }
   assert.equal(config.arkModels.length, 8);
   assert.equal(config.modelConnections["seedream5.0pro-aggregate"].protocol, "media-generate");
   assert.equal(config.modelConnections["seedream5.0pro-aggregate"].imageEndpoint, "/v1/media/generate");
   assert.equal(config.modelConnections["seedream5.0pro-aggregate"].editEndpoint, "/v1/media/generate");
   assert.equal(config.modelConnections["seedream5.0pro-official-route"].protocol, "ark-images");
+  assert.equal(config.modelConnections["banana21-legacy-smoke"].protocol, "media-generate");
+  assert.equal(config.modelConnections["banana21-legacy-smoke"].imageEndpoint, "/v1/media/generate");
+  assert.equal(config.modelConnections["banana21-legacy-smoke"].editEndpoint, "/v1/media/generate");
   assert.equal(config.modelConnections["seedream5.0pro-official-route"].imageEndpoint, "/api/v3/images/generations");
   assert.equal(config.modelConnections["sunburst-custom-relay"].apiModel, "gpt-image-2.5-sunburst-2026-09-08");
   assert.equal(config.connectionModels.some(({ model }) => model === "gpt-image-2.5-sunburst"), true);
@@ -1006,6 +1130,301 @@ try {
   assert.equal(ttImage25MediaEditPayload.params.resolution, undefined);
   assert.equal(ttImage25MediaEditPayload.params.images.length, 2);
   assert.match(ttImage25MediaEditPayload.params.images[0], /^data:image\/png;base64,/u);
+
+  for (const responseFormat of ["base64", "url"]) {
+    const nativeCreated = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+      projectId: "ark-smoke", mode: "create", prompt: "native banana", model: "yunb21-smoke",
+      size: "4:1", quality: "2K", bananaThinkingLevel: "high", responseFormat,
+      extraParams: { stream: true, generationConfig: { thinkingConfig: { thinkingBudget: 2048 } } }
+    });
+    assert.equal(nativeCreated.images.length, 1);
+    assert.match(nativeCreated.images[0].url, /^\/project-cache\//u);
+    const payload = bananaNativePayloads.at(-1);
+    assert.equal(payload.response_format, responseFormat);
+    assert.equal(payload.stream, undefined);
+    assert.deepEqual(payload.generationConfig.imageConfig, { aspectRatio: "4:1", imageSize: "2K" });
+    assert.equal(payload.generationConfig.thinkingConfig.thinkingLevel, "high");
+    assert.equal(payload.generationConfig.thinkingConfig.thinkingBudget, undefined);
+    assert.deepEqual(payload.generationConfig.responseModalities, ["IMAGE", "TEXT"]);
+    const nativeForm = new FormData();
+    appendFields(nativeForm, { projectId: "ark-smoke", mode: "edit", prompt: "native multi reference", model: "yunb21-smoke", size: "1:8", quality: "4K", bananaThinkingLevel: "minimal", responseFormat });
+    for (let i = 0; i < 2; i++) nativeForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), `native-${i}.png`);
+    const nativeEdited = await postForm(`http://127.0.0.1:${appPort}/api/generate`, nativeForm);
+    assert.equal(nativeEdited.images.length, 1);
+    const editPayload = bananaNativePayloads.at(-1);
+    assert.equal(editPayload.response_format, responseFormat);
+    assert.equal(editPayload.generationConfig.imageConfig.aspectRatio, "1:8");
+    assert.equal(editPayload.generationConfig.thinkingConfig.thinkingLevel, "minimal");
+    assert.equal(editPayload.contents[0].parts.filter((part) => part.inlineData).length, 2);
+    assert.equal(editPayload.contents[0].parts[1].inlineData.mimeType, "image/png");
+  }
+  for (const apiModel of ["gpt-image-2.6", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst"]) {
+    const model = `grsai-${apiModel}`;
+    const generic = apiModel === "gpt-image-2.6";
+    const generated = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+      projectId: "ark-smoke", mode: "create", prompt: "Grsai 2.6 smoke", model,
+      size: generic ? "16:9" : "3840x2160", quality: generic ? "auto" : "high", format: "gif",
+      image26: { complexity: "high", frameCount: 16 }
+    });
+    assert.equal(generated.images.length, 1);
+    assert.match(generated.images[0].filename, /\.gif$/u);
+    const payload = grsai26Payloads.at(-1);
+    assert.equal(payload.model, apiModel);
+    assert.equal(payload.outputFormat, "gif");
+    assert.equal(payload.replyType, "async");
+    assert.equal(payload.aspectRatio, generic ? "16:9" : "3840x2160");
+    for (const key of ["size", "imageSize", "output_format", "complexity", "frame_count", "response_format"]) assert.equal(payload[key], undefined);
+    const form = new FormData();
+    appendFields(form, { projectId: "ark-smoke", mode: "edit", prompt: "Grsai multi image", model, size: "1024x1024", quality: "auto", format: "png", background: "transparent" });
+    for (let i = 0; i < 2; i++) form.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), `grsai-ref-${i}.png`);
+    const edited = await postForm(`http://127.0.0.1:${appPort}/api/generate`, form);
+    assert.equal(edited.images.length, 1);
+    assert.equal(grsai26Payloads.at(-1).images.length, 2);
+    assert.equal(grsai26Payloads.at(-1).background, "transparent");
+    assert.match(grsai26Payloads.at(-1).images[0], /^data:image\/png;base64,/u);
+  }
+  const grsaiSvg = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+    projectId: "ark-smoke", mode: "create", prompt: "Grsai SVG", model: "grsai-gpt-image-2.6", size: "1:1", format: "svg", extraParams: { replyType: "json" }
+  });
+  assert.match(grsaiSvg.images[0].filename, /\.svg$/u);
+  assert.equal(grsai26Payloads.at(-1).replyType, "json");
+  for (const patch of [
+    { model: "grsai-gpt-image-2.6-flare", size: "16:9" },
+    { model: "grsai-gpt-image-2.6-flare", quality: "max" },
+    { model: "grsai-gpt-image-2.6-flare", format: "svg" },
+    { model: "grsai-gpt-image-2.6", size: "2048x2048" }
+  ]) {
+    const count = grsai26Payloads.length;
+    const response = await fetch(`http://127.0.0.1:${appPort}/api/generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "create", prompt: "reject invalid Grsai options", ...patch }) });
+    assert.equal(response.ok, false);
+    await response.text();
+    assert.equal(grsai26Payloads.length, count);
+  }
+  for (const quality of ["xhigh", "max"]) {
+    await postJson(`http://127.0.0.1:${appPort}/api/generate`, { projectId: "ark-smoke", mode: "create", model: "grsai-gpt-image-2.6-sunburst", prompt: "Grsai Sunburst extended quality", quality, size: "2048x2048", format: "png" });
+    assert.equal(grsai26Payloads.at(-1).quality, quality);
+    const form = new FormData();
+    appendFields(form, { projectId: "ark-smoke", mode: "edit", model: "grsai-gpt-image-2.6-sunburst", prompt: "Grsai Sunburst extended edit quality", quality, size: "1024x1024", format: "png" });
+    form.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "sunburst-extended.png");
+    await postForm(`http://127.0.0.1:${appPort}/api/generate`, form);
+    assert.equal(grsai26Payloads.at(-1).quality, quality);
+  }
+  await postJson(`http://127.0.0.1:${appPort}/api/generate`, { projectId: "ark-smoke", mode: "create", model: "nano-banana-2", prompt: "legacy Grsai unaffected", size: "16:9|2K" });
+  const oldGrsai = grsai26Payloads.at(-1);
+  assert.equal(oldGrsai.model, "nano-banana-2");
+  assert.equal(oldGrsai.aspectRatio, "16:9");
+  assert.equal(oldGrsai.imageSize, "2K");
+  assert.equal(oldGrsai.replyType, "json");
+  const googleConfig = (await getJson(`http://127.0.0.1:${appPort}/api/config`)).modelConnections["google-nano-banana-2.1"];
+  assert.equal(googleConfig.apiModel, "gemini-nano-banana-2.1");
+  assert.equal(googleConfig.baseUrl, "https://generativelanguage.googleapis.com");
+  assert.equal(googleConfig.authType, "x-goog-api-key");
+  assert.equal(googleConfig.imageEndpoint, "/v1beta/models/{model}:generateContent");
+  assert.equal(googleConfig.hasKey, false);
+  const missingGoogleKey = await fetch(`http://127.0.0.1:${appPort}/api/generate`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: "create", prompt: "must not use relay key", model: "google-nano-banana-2.1" })
+  });
+  assert.equal(missingGoogleKey.status, 500);
+  await missingGoogleKey.text();
+  assert.equal(googleBananaNativePayloads.length, 0);
+  for (const level of ["minimal", "medium", "high"]) {
+    const googleResult = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+      projectId: "ark-smoke", mode: "create", model: "google-banana21-smoke", prompt: "official banana",
+      bananaThinkingLevel: level, bananaWebSearch: level !== "minimal",
+      extraParams: { response_format: "url", replyType: "json" }
+    });
+    assert.equal(googleResult.images.length, 1);
+    const payload = googleBananaNativePayloads.at(-1);
+    assert.deepEqual(payload.generationConfig.imageConfig, { aspectRatio: "1:1", imageSize: "1K" });
+    assert.equal(payload.generationConfig.thinkingConfig.thinkingLevel, level);
+    assert.equal(payload.response_format, undefined);
+    assert.equal(payload.replyType, undefined);
+    assert.deepEqual(payload.tools, level === "minimal" ? undefined : [{ googleSearch: {} }]);
+  }
+  const googleEditForm = new FormData();
+  appendFields(googleEditForm, { projectId: "ark-smoke", mode: "edit", model: "google-banana21-smoke", prompt: "official edit", size: "3:4", quality: "2K", bananaThinkingLevel: "medium", bananaWebSearch: false });
+  googleEditForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "google-reference.png");
+  assert.equal((await postForm(`http://127.0.0.1:${appPort}/api/generate`, googleEditForm)).images.length, 1);
+  assert.equal(googleBananaNativePayloads.at(-1).contents[0].parts.filter((part) => part.inlineData).length, 1);
+  for (let i = 0; i < 14; i++) googleEditForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), `overflow-${i}.png`);
+  const googleOverflow = await fetch(`http://127.0.0.1:${appPort}/api/generate`, { method: "POST", body: googleEditForm });
+  assert.equal(googleOverflow.status, 400);
+  await googleOverflow.text();
+  assert.equal(googleBananaNativePayloads.length, 4);
+  for (const [model, apiModel] of [["banana2.1", "banana-2.1"], ["banana2.1官", "banana-2.1-token"]]) {
+    const created = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+      projectId: "ark-smoke", mode: "create", prompt: "Banana 2.1 search and thinking smoke", model,
+      size: "4:5", quality: "2K", bananaWebSearch: true, bananaThinkingLevel: "high", format: "png",
+      extraParams: { notify_url: "https://example.com/banana-hook", params: { web_search: false, thinkingLevel: "minimal", aspectRatio: "1:1" } }
+    });
+    assert.equal(created.images.length, 1);
+    assert.equal(created.request.provider, "media-generate");
+    const createPayload = mediaGeneratePayloads.at(-1);
+    assert.equal(createPayload.model, apiModel);
+    assert.equal(createPayload.notify_url, "https://example.com/banana-hook");
+    assert.equal(createPayload.params.web_search, true);
+    assert.equal(createPayload.params.thinkingLevel, "high");
+    assert.equal(createPayload.params.aspectRatio, "4:5");
+    assert.equal(createPayload.params.imageSize, "2K");
+    assert.equal(createPayload.params.n, 1);
+    assert.equal(createPayload.params.size, undefined);
+    assert.equal(createPayload.params.aspect_ratio, undefined);
+    assert.equal(createPayload.params.images, undefined);
+    assert.equal(createPayload.web_search, undefined);
+    assert.equal(createPayload.thinkingLevel, undefined);
+
+    const form = new FormData();
+    appendFields(form, {
+      projectId: "ark-smoke", mode: "edit", prompt: "Banana 2.1 multipart references", model,
+      size: "1:8", quality: "1K", bananaWebSearch: "false", bananaThinkingLevel: "minimal", format: "png", extraParams: "{}"
+    });
+    for (let i = 0; i < 14; i++) {
+      form.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), `banana-ref-${i}.png`);
+    }
+    const edited = await postForm(`http://127.0.0.1:${appPort}/api/generate`, form);
+    assert.equal(edited.images.length, 1);
+    const editPayload = mediaGeneratePayloads.at(-1);
+    assert.equal(editPayload.params.web_search, false);
+    assert.equal(editPayload.params.thinkingLevel, "minimal");
+    assert.equal(editPayload.params.aspectRatio, "1:8");
+    assert.equal(editPayload.params.imageSize, "1K");
+    assert.equal(editPayload.params.images.length, 14);
+    assert.match(editPayload.params.images[13], /^data:image\/png;base64,/u);
+    form.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "banana-ref-over-limit.png");
+    const submittedBeforeLimitCheck = mediaGeneratePayloads.length;
+    const tooManyReferences = await fetch(`http://127.0.0.1:${appPort}/api/generate`, { method: "POST", body: form });
+    assert.equal(tooManyReferences.status, 400);
+    assert.match((await tooManyReferences.json()).error, /14 张参考图片/u);
+    assert.equal(mediaGeneratePayloads.length, submittedBeforeLimitCheck);
+
+    const cacheForm = new FormData();
+    cacheForm.append("projectId", "ark-smoke");
+    cacheForm.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "banana-cached-reference.png");
+    const cachedReference = await postForm(`http://127.0.0.1:${appPort}/api/cache-assets`, cacheForm);
+    const cachedEdit = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+      projectId: "ark-smoke", mode: "edit", prompt: "Banana 2.1 cached canvas reference", model,
+      cachedImages: cachedReference.assets, size: "16:9", quality: "4K",
+      bananaWebSearch: "true", bananaThinkingLevel: "high", format: "png"
+    });
+    assert.equal(cachedEdit.images.length, 1);
+    assert.equal(mediaGeneratePayloads.at(-1).params.images.length, 1);
+    assert.equal(mediaGeneratePayloads.at(-1).params.web_search, true);
+    assert.equal(mediaGeneratePayloads.at(-1).params.thinkingLevel, "high");
+  }
+
+  const bananaDefaults = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+    projectId: "ark-smoke", mode: "create", prompt: "Banana defaults", model: "banana2.1", format: "png"
+  });
+  assert.equal(bananaDefaults.images.length, 1);
+  assert.equal(mediaGeneratePayloads.at(-1).params.web_search, false);
+  assert.equal(mediaGeneratePayloads.at(-1).params.thinkingLevel, "minimal");
+
+  for (const model of ["gpt-image-2.6-sunburst", "gpt-image-2.6-flare"]) {
+    const created26 = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+      projectId: "ark-smoke", mode: "create", model, prompt: "Image 2.6 create", size: "1536x1024", quality: "xhigh",
+      format: "webp", background: "transparent", moderation: "low", responseFormat: "url", image26: { complexity: "low" }
+    });
+    assert.equal(created26.images.length, 1);
+    const payload = gptImage26CreatePayloads.at(-1);
+    assert.equal(payload.model, model);
+    assert.equal(payload.output_format, "webp");
+    assert.equal(payload.format, undefined);
+    assert.equal(payload.complexity, "low");
+    assert.equal(payload.quality, "xhigh");
+    assert.equal(payload.moderation, "low");
+    assert.equal(payload.response_format, "url");
+
+    const svg26 = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+      projectId: "ark-smoke", mode: "create", model, prompt: "Image 2.6 SVG", format: "svg",
+      image26: { svgModel: "gpt-6-luna", svgReasoning: "low" }
+    });
+    assert.match(svg26.images[0].filename, /\.svg$/u);
+    assert.deepEqual(gptImage26CreatePayloads.at(-1).svg, { model: "gpt-6-luna", reasoning: { effort: "low" } });
+    const savedSvg = await fetch(`http://127.0.0.1:${appPort}${svg26.images[0].url}`);
+    assert.equal(await savedSvg.text(), svgFixture);
+
+    const gif26 = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+      projectId: "ark-smoke", mode: "create", model, prompt: "Image 2.6 GIF", format: "gif", size: "1024x1024",
+      image26: { frameCount: 6, frameDurationMs: 300, complexity: "high" }
+    });
+    assert.match(gif26.images[0].filename, /\.gif$/u);
+    assert.equal(gptImage26CreatePayloads.at(-1).frame_count, 6);
+    assert.equal(gptImage26CreatePayloads.at(-1).frame_duration_ms, 300);
+    assert.deepEqual(Buffer.from(await (await fetch(`http://127.0.0.1:${appPort}${gif26.images[0].url}`)).arrayBuffer()), gifFixture);
+
+    const edit26Form = new FormData();
+    appendFields(edit26Form, { projectId: "ark-smoke", mode: "edit", model, prompt: "Image 2.6 markup edit", size: "1024x1024", quality: "max", format: "webp", responseFormat: "url", image26: JSON.stringify({ complexity: "low", imageGuideMode: "markup" }) });
+    edit26Form.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "input.png");
+    edit26Form.append("mask", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "markup.png");
+    const edited26 = await postForm(`http://127.0.0.1:${appPort}/api/generate`, edit26Form);
+    assert.equal(edited26.images.length, 1);
+    assert.match(openAiEditBody, /name="markup"; filename="markup.png"/u);
+    assert.doesNotMatch(openAiEditBody, /name="mask";/u);
+    assert.match(openAiEditBody, /name="output_format"\r\n\r\nwebp\r\n/u);
+    assert.match(openAiEditBody, /name="complexity"\r\n\r\nlow\r\n/u);
+    assert.match(openAiEditBody, /name="response_format"\r\n\r\nurl\r\n/u);
+    assert.doesNotMatch(openAiEditBody, /name="format"\r\n/u);
+  }
+
+  for (const model of ["tt-image-2.6", "tt-image-2.6-guan"]) {
+    const created26 = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+      projectId: "ark-smoke", mode: "create", model, prompt: "TT 2.6 media generate", size: "auto", format: "webp",
+      quality: "max", ttImageVersion: "sunburst", ttImageAspectRatio: "16:9", ttImageResolution: "4K", background: "transparent",
+      image26: { complexity: "high" }
+    });
+    assert.equal(created26.images.length, 1);
+    const payload = mediaGeneratePayloads.at(-1);
+    assert.equal(payload.model, model);
+    assert.equal(payload.params.version, "sunburst");
+    assert.equal(payload.params.aspect_ratio, "16:9");
+    assert.equal(payload.params.resolution, "4K");
+    assert.equal(payload.params.output_format, "webp");
+    assert.equal(payload.params.complexity, "high");
+    assert.equal(payload.params.background, "transparent");
+    assert.equal(payload.params.quality, "max");
+
+    const gif26 = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+      projectId: "ark-smoke", mode: "create", model, prompt: "TT GIF", size: "3840x2160", format: "gif",
+      ttImageAspectRatio: "16:9", ttImageResolution: "4K", image26: { frameCount: 12, frameDurationMs: 500 }
+    });
+    assert.match(gif26.images[0].filename, /\.gif$/u);
+    assert.equal(mediaGeneratePayloads.at(-1).params.size, undefined);
+    assert.equal(mediaGeneratePayloads.at(-1).params.aspect_ratio, undefined);
+    assert.equal(mediaGeneratePayloads.at(-1).params.resolution, undefined);
+    assert.equal(mediaGeneratePayloads.at(-1).params.frame_count, 12);
+    assert.equal(mediaGeneratePayloads.at(-1).params.frame_duration_ms, 500);
+    assert.equal(mediaGeneratePayloads.at(-1).params.complexity, "medium");
+
+    const edit26 = new FormData();
+    appendFields(edit26, { projectId: "ark-smoke", mode: "edit", model, prompt: "TT 16 image edit", format: "png", size: "1280x720", image26: JSON.stringify({ complexity: "low" }) });
+    for (let i = 0; i < 16; i++) edit26.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), `ref-${i}.png`);
+    await postForm(`http://127.0.0.1:${appPort}/api/generate`, edit26);
+    assert.equal(mediaGeneratePayloads.at(-1).params.images.length, 16);
+    assert.equal(mediaGeneratePayloads.at(-1).params.size, "1280x720");
+    assert.equal(mediaGeneratePayloads.at(-1).params.complexity, "low");
+    edit26.append("image", new Blob([Buffer.from(pngBase64, "base64")], { type: "image/png" }), "excess.png");
+    const overflow = await fetch(`http://127.0.0.1:${appPort}/api/generate`, { method: "POST", body: edit26 });
+    assert.equal(overflow.status, 400);
+  }
+
+  const ttSvg = await postJson(`http://127.0.0.1:${appPort}/api/generate`, {
+    projectId: "ark-smoke", mode: "create", model: "tt-image-2.6", prompt: "TT SVG", format: "svg"
+  });
+  assert.match(ttSvg.images[0].filename, /\.svg$/u);
+  for (const request of [
+    { model: "tt-image-2.6-guan", format: "svg" },
+    { model: "gpt-image-2.6-flare", format: "svg" },
+    { model: "gpt-image-2.6-sunburst", format: "gif", image26: { frameCount: 17 } },
+    { model: "tt-image-2.6", format: "gif", image26: { frameCount: 3 } }
+  ]) {
+    const countBefore = gptImage26CreatePayloads.length + mediaGeneratePayloads.length;
+    const rejected = await fetch(`http://127.0.0.1:${appPort}/api/generate`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...request, mode: "create", projectId: "ark-smoke", prompt: "must reject before billing" })
+    });
+    assert.equal(rejected.status, 400, JSON.stringify(await rejected.json()));
+    assert.equal(gptImage26CreatePayloads.length + mediaGeneratePayloads.length, countBefore);
+  }
 
   const editForm = new FormData();
   appendFields(editForm, {

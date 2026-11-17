@@ -17,12 +17,218 @@ export const bananaImageProfiles = Object.freeze({
   GRSAI: "grsai"
 });
 
+export const banana21AspectRatios = Object.freeze([
+  "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9", "1:4", "4:1", "1:8", "8:1"
+]);
+
+export function isBanana21Model(...values) {
+  return values.flat(Infinity).some((value) => /(?:banana|香蕉)[\s_-]*2[._-]?1(?![\d.])/iu.test(String(value || "")));
+}
+
+export function normalizeBanana21ThinkingLevel(value, { google = false } = {}) {
+  const level = String(value || "").trim().toLowerCase();
+  if (google) return ["minimal", "medium", "high"].includes(level) ? level : "medium";
+  return level === "high" ? "high" : "minimal";
+}
+
+export function normalizeBanana21WebSearch(value) {
+  return value === true || value === 1 || String(value || "").trim().toLowerCase() === "true";
+}
+
+export function isOpenLuxBanana21Connection(connection) {
+  if (!/^gemini-nano-banana-2\.1(?:-(?:thinking|nothinking))?$/iu.test(String(connection?.apiModel || "").trim())) return false;
+  try { return new URL(connection.baseUrl).hostname.toLowerCase() === "api.openlux.ai"; } catch { return false; }
+}
+
+export const googleBanana21Model = "google-nano-banana-2.1";
+export const googleBanana21ApiModel = "gemini-nano-banana-2.1";
+
+export const banana21PresetChannels = Object.freeze([
+  { model: "openlux-banana-2.1", apiModel: "gemini-nano-banana-2.1", label: "Nano Banana 2.1（OpenLux）", preset: "yunwu", provider: "google" },
+  { model: "lingke-banana-2.1", apiModel: "banana-2.1", label: "Banana 2.1（玲珂 AI）", preset: "lingke-media", provider: "lingke" },
+  { model: "lingke-banana-2.1-token", apiModel: "banana-2.1-token", label: "Banana 2.1 官转（玲珂 AI）", preset: "lingke-media", provider: "lingke" }
+].map(Object.freeze));
+
+export function isGoogleBanana21Connection(connection) {
+  if (String(connection?.apiModel || "").trim().toLowerCase() !== googleBanana21ApiModel) return false;
+  try { return new URL(connection.baseUrl).hostname.toLowerCase() === "generativelanguage.googleapis.com"; } catch { return false; }
+}
+
+// Migrate only documented gateways, model IDs and known legacy paths.
+export function migrateBanana21Connection(model, connection) {
+  if (!connection || typeof connection !== "object" || Array.isArray(connection)) return connection;
+  if (!isBanana21Model(connection.apiModel || model) || (connection.capability && connection.capability !== "image")) return connection;
+  let hostname = "";
+  try { hostname = new URL(connection.baseUrl).hostname.toLowerCase(); } catch { return connection; }
+  const legacyEndpoint = (endpoint) => !endpoint
+    || /^\/v1\/(?:images\/(?:generations|edits)|media\/generate)\/?$/iu.test(endpoint)
+    || /^\/v1beta\/models\/[^/]+:generateContent$/iu.test(endpoint);
+  if (![connection.imageEndpoint, connection.editEndpoint].every(legacyEndpoint)) return connection;
+  if (isOpenLuxBanana21Connection(connection)) {
+    const endpoint = "/v1beta/models/{model}:generateContent";
+    if (connection.protocol === "gemini-native" && connection.imageEndpoint === endpoint && connection.editEndpoint === endpoint) return connection;
+    return { ...connection, protocol: "gemini-native", imageEndpoint: endpoint, editEndpoint: endpoint };
+  }
+  if (!["api.lk888.ai", "api.lk666.ai"].includes(hostname)) return connection;
+  return { ...connection, protocol: "media-generate", imageEndpoint: "/v1/media/generate", editEndpoint: "/v1/media/generate" };
+}
+
+export function normalizeBanana21ImageParameters(size, imageSize = "", defaults = {}) {
+  return normalizeBananaImageParameters(size, imageSize, { ...defaults, ratios: banana21AspectRatios });
+}
+
 export const gptImage25Profiles = Object.freeze({
   GENERIC: "gpt-image-2.5",
   SUNBURST: "gpt-image-2.5-sunburst",
   FLARE: "gpt-image-2.5-flare",
   TT: "tt-image-2.5"
 });
+
+export const gptImage26Profiles = Object.freeze({
+  GENERIC: "gpt-image-2.6",
+  SUNBURST: "gpt-image-2.6-sunburst",
+  FLARE: "gpt-image-2.6-flare",
+  TT: "tt-image-2.6",
+  TT_GUAN: "tt-image-2.6-guan"
+});
+
+export function gptImage26Profile(...values) {
+  for (const value of values.flat(Infinity)) {
+    const compact = compactModelName(value);
+    if (/ttimage26(?!\d)/u.test(compact)) return compact.includes("guan") ? gptImage26Profiles.TT_GUAN : gptImage26Profiles.TT;
+    if (!/gptimage26(?!\d)/u.test(compact)) continue;
+    if (compact.includes("sunburst")) return gptImage26Profiles.SUNBURST;
+    if (compact.includes("flare")) return gptImage26Profiles.FLARE;
+    return gptImage26Profiles.GENERIC;
+  }
+  return "";
+}
+
+export function gptImageProfile(...values) {
+  return gptImage26Profile(values) || gptImage25Profile(values);
+}
+
+export const grsaiImage26Models = Object.freeze([
+  "gpt-image-2.6", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst"
+].map((apiModel) => Object.freeze({ model: `grsai-${apiModel}`, apiModel, label: `${apiModel}（Grsai）` })));
+
+export function isGrsaiImage26Connection(connection) {
+  return connection?.protocol === "grsai" && grsaiImage26Models.some(({ apiModel }) => apiModel === connection.apiModel);
+}
+
+const grsaiImage26Ratios = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "9:21", "1:2", "2:1"];
+const grsaiImage26StandardSizes = ["1024x1024", "1672x941", "941x1672", "1443x1090", "1090x1443", "1536x1024", "1024x1536", "1408x1120", "1120x1408", "1920x832", "832x1920", "896x1792", "1792x896"];
+const grsaiImage26VipSizes = [
+  ["1:1", "1024x1024", "2048x2048", "2880x2880"],
+  ["16:9", "1280x720", "2048x1152", "3840x2160"],
+  ["9:16", "720x1280", "1152x2048", "2160x3840"],
+  ["4:3", "1152x864", "2304x1728", "3264x2448"],
+  ["3:4", "864x1152", "1728x2304", "2448x3264"],
+  ["3:2", "1536x1024", "2048x1360", "3504x2336"],
+  ["2:3", "1024x1536", "1360x2048", "2336x3504"],
+  ["5:4", "1120x896", "2240x1792", "3200x2560"],
+  ["4:5", "896x1120", "1792x2240", "2560x3200"],
+  ["21:9", "1456x624", "2912x1248", "3840x1648"],
+  ["9:21", "624x1456", "1248x2912", "1648x3840"],
+  ["1:3", "688x2048", "1280x3840"], ["3:1", "2048x688", "3840x1280"],
+  ["2:1", "1536x768", "3072x1536", "3840x1920"], ["1:2", "768x1536", "1536x3072", "1920x3840"]
+];
+
+export function grsaiImage26SizeOptions(apiModel) {
+  return [["auto", "自动"], ...(apiModel === "gpt-image-2.6"
+    ? [...grsaiImage26Ratios.map((ratio) => [ratio, ratio]), ...grsaiImage26StandardSizes.map((size, i) => [size, `${size} (${grsaiImage26Ratios[i]})`])]
+    : grsaiImage26VipSizes.flatMap(([ratio, ...sizes]) => sizes.map((size) => [size, `${size} (${ratio})`])))];
+}
+
+export function normalizeGrsaiImage26Size(value, apiModel) {
+  const size = String(value || "auto").trim().toLowerCase().replace(/[\s\u200b-\u200d\ufeff]/gu, "");
+  if (size === "auto") return size;
+  if (apiModel === "gpt-image-2.6") {
+    if (grsaiImage26Ratios.includes(size) || grsaiImage26StandardSizes.includes(size)) return size;
+    throw new Error("Grsai 普通版 2.6 请使用比例或文档列出的 1K 像素尺寸；2K/4K 请选 Flare 或 Sunburst。");
+  }
+  const dimensions = size.match(/^(\d+)x(\d+)$/u);
+  const [width, height] = dimensions ? dimensions.slice(1).map(Number) : [0, 0];
+  if (width > 0 && height > 0 && Math.max(width, height) <= 3840 && width % 16 === 0 && height % 16 === 0
+    && Math.max(width, height) / Math.min(width, height) <= 3 && width * height >= 655360 && width * height <= 8294400) return `${width}x${height}`;
+  throw new Error("Grsai 2.6 Flare/Sunburst 只接受 auto 或像素尺寸：边长≤3840、均为16的倍数、比例≤3:1、总像素655360～8294400。");
+}
+
+export function grsaiImage26Qualities(apiModel) {
+  // Native and OpenAI-compatible docs differ; expose Sunburst's documented six levels.
+  return apiModel === "gpt-image-2.6" ? ["auto"]
+    : apiModel === "gpt-image-2.6-sunburst" ? ["auto", "low", "medium", "high", "xhigh", "max"]
+    : ["auto", "low", "medium", "high"];
+}
+
+export function grsaiImage26Formats(apiModel) {
+  return apiModel === "gpt-image-2.6" ? ["png", "gif", "svg"] : ["png", "gif"];
+}
+
+export function buildGrsaiImage26Payload(apiModel, body, prompt, images = [], extra = {}) {
+  const aspectRatio = normalizeGrsaiImage26Size(extra.aspectRatio ?? body.size, apiModel);
+  const quality = String(body.quality || extra.quality || "auto").toLowerCase();
+  if (!grsaiImage26Qualities(apiModel).includes(quality)) throw new Error("当前 Grsai 模型不支持此质量档位。");
+  const outputFormat = String(body.format || extra.outputFormat || "png").toLowerCase();
+  if (!grsaiImage26Formats(apiModel).includes(outputFormat)) throw new Error("Grsai 2.6 仅支持 PNG/GIF；SVG 仅普通版支持。");
+  const replyType = extra.replyType || "async";
+  if (!["async", "json"].includes(replyType)) throw new Error("画布 Grsai 渠道仅支持 async 或 json 回复类型，不支持 stream。");
+  const background = body.background || extra.background;
+  if (background && !["auto", "opaque", "transparent"].includes(background)) throw new Error("Grsai 背景仅可选默认或透明。");
+  return { model: apiModel, prompt, images, aspectRatio, quality, outputFormat, replyType, ...(background === "transparent" ? { background } : {}) };
+}
+
+export function isTtImage26Model(...values) {
+  return [gptImage26Profiles.TT, gptImage26Profiles.TT_GUAN].includes(gptImage26Profile(values));
+}
+
+export function image26OutputFormats({ tt = false, guan = false, edit = false } = {}) {
+  return ["png", "jpeg", "webp", "gif", ...((tt ? !guan : !edit) ? ["svg"] : [])];
+}
+
+export function buildImage26Options(input = {}, options = {}) {
+  const outputFormat = String(input.format || input.output_format || "png").trim().toLowerCase().replace(/^jpg$/u, "jpeg");
+  if (!image26OutputFormats(options).includes(outputFormat)) throw new Error("当前 2.6 渠道或编辑模式不支持此输出格式。");
+  const complexity = input.complexity || (options.tt ? "medium" : "high");
+  if (!["low", "medium", "high"].includes(complexity)) throw new Error("复杂度只支持 low、medium、high。");
+  const background = input.background || "auto";
+  if (!["auto", "opaque", "transparent"].includes(background)) throw new Error("背景只支持 auto、opaque、transparent。");
+  if (background === "transparent" && !["png", "webp"].includes(outputFormat)) throw new Error("透明背景请使用 PNG 或 WebP 格式。");
+  const result = { complexity, output_format: outputFormat, background };
+  if (["gif", "svg"].includes(outputFormat)) {
+    if (input.stream || input.partial_images != null || input.prompt_rewriter != null || input.output_compression != null) {
+      throw new Error("GIF／SVG 不支持流式、partial_images、prompt_rewriter 或自定义压缩率，请移除这些参数。");
+    }
+  }
+  if (outputFormat === "gif") {
+    if (options.hasMask) throw new Error("GIF 输出不支持 mask 蒙版，请移除蒙版后重试。");
+    const frameCount = Number(input.frameCount ?? input.frame_count ?? 9);
+    const frameDuration = Number(input.frameDurationMs ?? input.frame_duration_ms ?? 200);
+    const validCount = options.tt ? [4, 6, 9, 12, 16].includes(frameCount) : Number.isInteger(frameCount) && frameCount >= 2 && frameCount <= 16;
+    const validDuration = options.tt ? [100, 200, 300, 500, 1000].includes(frameDuration) : Number.isInteger(frameDuration) && frameDuration >= 20 && frameDuration <= 655350;
+    if (!validCount || !validDuration) throw new Error("GIF 帧数或每帧时长超出当前渠道支持范围。");
+    result.frame_count = frameCount;
+    result.frame_duration_ms = frameDuration;
+  }
+  if (outputFormat === "svg" && !options.tt) {
+    if (Number(input.n || 1) !== 1) throw new Error("SVG 输出数量必须为 1。");
+    const authorModel = String(input.svgModel || input.svg?.model || "").trim();
+    if (!authorModel) throw new Error("SVG 输出需要填写 SVG 作者模型，例如 gpt-6-luna；作者模型会按其 Token 费率计费。");
+    const effort = input.svgReasoning || input.svg?.reasoning?.effort;
+    if (effort && !["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(effort)) throw new Error("SVG 作者模型推理强度无效。");
+    result.svg = { model: authorModel, ...(effort ? { reasoning: { effort } } : {}) };
+  }
+  return result;
+}
+
+export function migrateTtImage26Connection(model, connection) {
+  if (!connection || typeof connection !== "object" || !isTtImage26Model(connection.apiModel || model)) return connection;
+  let hostname;
+  try { hostname = new URL(connection.baseUrl).hostname.toLowerCase(); } catch { return connection; }
+  if (!["api.lk888.ai", "api.lk666.ai"].includes(hostname) || connection.capability && connection.capability !== "image") return connection;
+  if (![connection.imageEndpoint, connection.editEndpoint].every((endpoint) => !endpoint || /^\/v1\/(?:images\/(?:generations|edits)|media\/generate)\/?$/iu.test(endpoint))) return connection;
+  return { ...connection, protocol: "media-generate", imageEndpoint: "/v1/media/generate", editEndpoint: "/v1/media/generate" };
+}
 
 export const gptImage25Qualities = Object.freeze(["auto", "low", "medium", "high", "xhigh", "max"]);
 export const ttImage25Versions = Object.freeze(["flare", "sunburst"]);
@@ -477,7 +683,8 @@ function isGeminiImageModelName(value) {
 }
 
 export function normalizeBananaImageParameters(size, imageSize = "", defaults = {}) {
-  const defaultRatio = bananaImageRatios.includes(defaults.ratio) ? defaults.ratio : "1:1";
+  const ratios = defaults.ratios || bananaImageRatios;
+  const defaultRatio = ratios.includes(defaults.ratio) ? defaults.ratio : "1:1";
   const defaultImageSize = ["1K", "2K", "4K"].includes(String(defaults.imageSize || "").toUpperCase())
     ? String(defaults.imageSize).toUpperCase()
     : "4K";
@@ -486,13 +693,13 @@ export function normalizeBananaImageParameters(size, imageSize = "", defaults = 
   const [ratioPart, compoundImageSize = ""] = rawSize.split(/[|@]/);
   const dimensions = rawSize.match(/^(\d{2,5})\s*x\s*(\d{2,5})$/iu);
   const inferredRatio = dimensions
-    ? closestBananaImageRatio(Number(dimensions[1]), Number(dimensions[2]))
+    ? closestBananaImageRatio(Number(dimensions[1]), Number(dimensions[2]), ratios)
     : "";
   const longSide = dimensions ? Math.max(Number(dimensions[1]), Number(dimensions[2])) : 0;
   const inferredImageSize = longSide >= 2800 ? "4K" : longSide >= 1600 ? "2K" : longSide > 0 ? "1K" : "";
 
   return {
-    aspectRatio: bananaImageRatios.includes(ratioPart) ? ratioPart : inferredRatio || defaultRatio,
+    aspectRatio: ratios.includes(ratioPart) ? ratioPart : inferredRatio || defaultRatio,
     imageSize: ["1K", "2K", "4K"].includes(rawImageSize)
       ? rawImageSize
       : ["1K", "2K", "4K"].includes(compoundImageSize.toUpperCase())
@@ -517,10 +724,10 @@ export function effectiveImageProtocol(protocol, endpoint) {
   return normalizedProtocol;
 }
 
-function closestBananaImageRatio(width, height) {
+function closestBananaImageRatio(width, height, ratios = bananaImageRatios) {
   if (!(width > 0) || !(height > 0)) return "";
   const target = width / height;
-  return bananaImageRatios.reduce((best, ratio) => {
+  return ratios.reduce((best, ratio) => {
     const [ratioWidth, ratioHeight] = ratio.split(":").map(Number);
     const distance = Math.abs(Math.log(target / (ratioWidth / ratioHeight)));
     return !best || distance < best.distance ? { ratio, distance } : best;

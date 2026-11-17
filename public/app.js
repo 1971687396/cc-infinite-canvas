@@ -3,6 +3,7 @@ import {
   arkVideoReferenceLimits,
   bananaImageProfile,
   bananaImageProfiles,
+  banana21AspectRatios,
   canonicalDreaminaModelVersion,
   canonicalDreaminaVideoModelVersion,
   compareDreaminaModelVersions,
@@ -15,11 +16,29 @@ import {
   dreaminaVideoModelVersions as fallbackDreaminaVideoModelVersions,
   dreaminaVideoReferenceLimits,
   dreaminaVideoResolutionTypes,
-  gptImage25Profile,
+  gptImageProfile,
+  gptImage26Profile,
+  gptImage26Profiles,
+  image26OutputFormats,
+  isTtImage26Model,
   gptImage25Profiles,
   isGptImage25Size,
+  isBanana21Model,
   isArkSeedance25Model,
   normalizeBananaImageParameters,
+  normalizeBanana21ImageParameters,
+  normalizeBanana21ThinkingLevel,
+  normalizeBanana21WebSearch,
+  isOpenLuxBanana21Connection,
+  isGoogleBanana21Connection,
+  googleBanana21Model,
+  banana21PresetChannels,
+  grsaiImage26Models,
+  isGrsaiImage26Connection,
+  grsaiImage26SizeOptions,
+  normalizeGrsaiImage26Size,
+  grsaiImage26Qualities,
+  grsaiImage26Formats,
   normalizeArkVideoMode,
   normalizeDreaminaVideoMode,
   normalizeSeedreamProMode,
@@ -680,6 +699,9 @@ const geminiNativeImageSizeOptions = [
   ["2K", "2K"],
   ["4K", "4K"]
 ];
+const banana21RatioOptions = banana21AspectRatios.map((ratio) => [ratio, ratio]);
+const banana21WebSearchOptions = [["false", "关闭"], ["true", "开启"]];
+const banana21ThinkingLevelOptions = [["minimal", "快速（minimal）"], ["high", "深度（high）"]];
 const fallbackDreaminaModelVersions = [...dreaminaImageModelVersions];
 let dreaminaTextModelVersions = [...fallbackDreaminaModelVersions];
 let dreaminaEditModelVersions = fallbackDreaminaModelVersions.filter(dreaminaSupportsImageEdit);
@@ -730,12 +752,19 @@ const seedreamLayerSizeOptions = [
   ["2K", "2K"]
 ];
 const baseTaskModelOptions = [
+  ...banana21PresetChannels.map(({ model, label }) => [model, label]),
+  ...grsaiImage26Models.map(({ model, label }) => [model, label]),
+  [gptImage26Profiles.SUNBURST, "GPT Image 2.6 Sunburst（OpenLux）"],
+  [gptImage26Profiles.FLARE, "GPT Image 2.6 Flare（OpenLux）"],
+  [gptImage26Profiles.TT, "TT Image 2.6（玲珂 AI）"],
+  [gptImage26Profiles.TT_GUAN, "TT Image 2.6 官转（玲珂 AI）"],
   [gptImage25Profiles.SUNBURST, "GPT Image 2.5 Sunburst"],
   [gptImage25Profiles.FLARE, "GPT Image 2.5 Flare"],
   [gptImage25Profiles.TT, "TT Image 2.5（玲珂 AI）"],
   ["gpt-image-2", "gpt-image-2"],
   [grokBuildImageModel, "Grok Imagine（官方账号）"],
   [geminiBananaImageModel, geminiBananaImageAlias],
+  [googleBanana21Model, "Nano Banana 2.1（Google 官方）"],
   [grsaiDefaultModel, grsaiDefaultModel],
   ...arkImageModelOptions,
   ...grokModelOptions
@@ -1587,6 +1616,7 @@ function applyTaskNodePreset(node, preset) {
 
 function imageModelProfileKind(model) {
   const normalized = normalizeImageModelName(model);
+  if (usesGrsaiImage26Parameters(model)) return "openai";
   if (isDreaminaModelName(normalized)) return "dreamina";
   if (isArkImageModelName(normalized)) return "ark";
   if (seedreamImageProfileForModel(normalized)) return "seedream";
@@ -1706,8 +1736,11 @@ const imageModelDefaultProfiles = {
     node.baseUrl = connection?.baseUrl || config.baseUrl || defaultYunwuBaseUrl;
     node.endpointPath = (node.mode === "edit" ? connection?.editEndpoint : connection?.imageEndpoint)
       || geminiNativeEndpointForModel(connection?.apiModel || node.model);
-    const parsedSize = parseGeminiNativeSizeValue(node.size, node.quality);
-    node.size = geminiNativeRatioOptions.some(([value]) => value === parsedSize.aspectRatio)
+    const banana21 = usesBanana21Parameters(node.model);
+    const openLuxBanana21 = isOpenLuxBanana21Connection(connection);
+    const googleBanana21 = isGoogleBanana21Connection(connection);
+    const parsedSize = banana21 ? normalizeBanana21ImageParameters(node.size, node.quality, openLuxBanana21 || googleBanana21 ? { imageSize: "1K" } : {}) : parseGeminiNativeSizeValue(node.size, node.quality);
+    node.size = sizeOptionsForModel(node.model).some(([value]) => value === parsedSize.aspectRatio)
       ? parsedSize.aspectRatio
       : geminiNativeDefaultRatio;
     node.quality = geminiNativeImageSizeOptions.some(([value]) => value === parsedSize.imageSize)
@@ -1716,6 +1749,15 @@ const imageModelDefaultProfiles = {
     node.n = "1";
     node.format = "png";
     node.extraParams = isPlainObject(node.extraParams) ? { ...node.extraParams } : {};
+    if (banana21) {
+      node.bananaWebSearch = String(normalizeBanana21WebSearch(node.bananaWebSearch ?? node.extraParams.params?.web_search));
+      node.bananaThinkingLevel = normalizeBanana21ThinkingLevel(node.bananaThinkingLevel || node.extraParams.generationConfig?.thinkingConfig?.thinkingLevel || node.extraParams.params?.thinkingLevel, { google: googleBanana21 });
+      if (openLuxBanana21) {
+        const responseFormat = node.responseFormat || node.extraParams.response_format;
+        node.responseFormat = responseFormat === "url" ? "url" : "base64";
+      }
+      if (googleBanana21) node.responseFormat = "";
+    }
     delete node.extraParams.response_format;
     delete node.extraParams.replyType;
     }
@@ -1778,6 +1820,14 @@ const imageModelDefaultProfiles = {
       node.baseUrl = config.baseUrl || defaultYunwuBaseUrl;
       node.endpointPath = defaultEndpointForMode(node.mode);
     }
+    if (usesGrsaiImage26Parameters(node.model)) {
+      node.baseUrl = context.connection.baseUrl;
+      node.endpointPath = node.mode === "edit" ? context.connection.editEndpoint : context.connection.imageEndpoint;
+      node.n = "1";
+      node.moderation = "";
+      node.responseFormat = "";
+      node.background = node.background === "transparent" ? "transparent" : "";
+    }
     }
   }
 };
@@ -1800,6 +1850,7 @@ function applyTaskModelDefaults(node, options = {}) {
   imageModelDefaultProfiles[kind].apply(node, options, { previousProvider, seedreamProfile, connection });
 
   if (usesTtImage25Parameters(node.model)) applyTtImage25NodeDefaults(node);
+  if (image26ProfileForModel(node.model)) applyImage26NodeDefaults(node);
 
   node.extraParamsText = JSON.stringify(node.extraParams, null, 2);
 }
@@ -1809,8 +1860,38 @@ function applyTtImage25NodeDefaults(node) {
   const sizing = normalizeTtImage25Sizing(node.ttImageAspectRatio, node.ttImageResolution);
   node.ttImageAspectRatio = sizing.aspectRatio;
   node.ttImageResolution = sizing.resolution;
-  node.background = normalizeTtImage25Background(node.background);
-  if (node.background === "transparent") node.format = "png";
+  node.background = normalizeTtImage25Background(node.background, image26ProfileForModel(node.model) ? "auto" : "opaque");
+  if (node.background === "transparent" && (!image26ProfileForModel(node.model) || !["png", "webp"].includes(node.format))) node.format = "png";
+}
+
+function image26ProfileForModel(model) {
+  const connection = imageModelConnectionForModel(model);
+  return gptImage26Profile(connection?.apiModel, model);
+}
+
+function image26FormatsForNode(node) {
+  if (usesGrsaiImage26Parameters(node.model)) return grsaiImage26Formats(imageModelConnectionForModel(node.model).apiModel);
+  const profile = image26ProfileForModel(node.model);
+  return image26OutputFormats({ tt: isTtImage26Model(profile), guan: profile === gptImage26Profiles.TT_GUAN, edit: node.mode === "edit" });
+}
+
+function applyImage26NodeDefaults(node) {
+  if (usesGrsaiImage26Parameters(node.model)) {
+    node.image26 = {};
+    if (!image26FormatsForNode(node).includes(node.format)) node.format = "png";
+    return;
+  }
+  node.image26 = isPlainObject(node.image26) ? node.image26 : {};
+  const params = node.image26;
+  params.complexity = ["low", "medium", "high"].includes(params.complexity) ? params.complexity : "";
+  params.frameCount = String(params.frameCount || 9);
+  params.frameDurationMs = String(params.frameDurationMs || 200);
+  params.svgModel = String(params.svgModel || "");
+  params.svgReasoning = String(params.svgReasoning || "");
+  params.imageGuideMode = params.imageGuideMode === "markup" ? "markup" : "mask";
+  if (!image26FormatsForNode(node).includes(node.format)) node.format = "png";
+  if (node.format === "svg") node.n = "1";
+  if (node.background === "transparent" && !["png", "webp"].includes(node.format)) node.background = "auto";
 }
 
 function isGrokModelName(model) {
@@ -1869,7 +1950,7 @@ function gptImage25ProfileForModel(model) {
   const normalized = normalizeImageModelName(model);
   const connection = imageModelConnectionForModel(normalized);
   const definition = imageModelDefinitionForModel(normalized);
-  return gptImage25Profile(
+  return gptImageProfile(
     normalized,
     connection?.apiModel,
     definition?.model,
@@ -1881,6 +1962,10 @@ function gptImage25ProfileForModel(model) {
 
 function usesGptImage25Parameters(model) {
   return Boolean(gptImage25ProfileForModel(model));
+}
+
+function usesGrsaiImage26Parameters(model) {
+  return isGrsaiImage26Connection(imageModelConnectionForModel(model));
 }
 
 function isOpenLuxGptImage25Node(node) {
@@ -1895,7 +1980,7 @@ function isOpenLuxGptImage25Node(node) {
 }
 
 function usesTtImage25Parameters(model) {
-  return gptImage25ProfileForModel(model) === gptImage25Profiles.TT;
+  return [gptImage25Profiles.TT, gptImage26Profiles.TT, gptImage26Profiles.TT_GUAN].includes(gptImage25ProfileForModel(model));
 }
 
 function usesTtImage25MediaProtocol(model) {
@@ -1904,6 +1989,11 @@ function usesTtImage25MediaProtocol(model) {
 
 function usesBananaImageParameters(model) {
   return bananaImageProfileForModel(model) === bananaImageProfiles.GEMINI_NATIVE;
+}
+
+function usesBanana21Parameters(model) {
+  const connection = imageModelConnectionForModel(model);
+  return ["media-generate", "gemini-native"].includes(connection?.protocol) && isBanana21Model(connection.apiModel || model);
 }
 
 function geminiNativeEndpointForModel(model) {
@@ -2080,10 +2170,12 @@ function isGrsaiBaseUrl(value) {
 }
 
 function sizeOptionsForModel(model, mode = "create") {
+  if (usesGrsaiImage26Parameters(model)) return grsaiImage26SizeOptions(imageModelConnectionForModel(model).apiModel);
   if (isGrokBuildImageModelName(model)) return grokBuildImageRatioOptions;
   if (isDreaminaModelName(model)) return dreaminaSizeOptionsForModel(model, mode);
   const seedreamProfile = seedreamImageProfileForModel(model);
   if (seedreamProfile) return arkSeedreamSizes[seedreamProfile] || [["2K", "2K"]];
+  if (usesBanana21Parameters(model)) return banana21RatioOptions;
   if (usesBananaImageParameters(model)) return geminiNativeRatioOptions;
   if (isGrsaiModelName(model)) return grsaiSizeOptions;
   if (usesGptImage25Parameters(model)) return gptImage25SizeOptions;
@@ -2091,6 +2183,7 @@ function sizeOptionsForModel(model, mode = "create") {
 }
 
 function qualityOptionsForModel(model) {
+  if (usesGrsaiImage26Parameters(model)) return grsaiImage26Qualities(imageModelConnectionForModel(model).apiModel).map((value) => [value, value]);
   return usesGptImage25Parameters(model) ? gptImage25QualityOptions : qualityOptions;
 }
 
@@ -2112,6 +2205,9 @@ function defaultSizeForModel(model, mode = "create") {
 }
 
 function isSizeAllowedForModel(size, model, mode = "create") {
+  if (usesGrsaiImage26Parameters(model)) {
+    try { normalizeGrsaiImage26Size(size, imageModelConnectionForModel(model).apiModel); return true; } catch { return false; }
+  }
   if (!size) return true;
   if (usesGptImage25Parameters(model)) return isGptImage25Size(size);
   return sizeOptionsForModel(model, mode).some(([value]) => value === size);
@@ -2393,6 +2489,9 @@ function createDefaultTaskNode(mode = "create") {
     n: "1",
     size: "auto",
     quality: "",
+    image26: {},
+    bananaWebSearch: "false",
+    bananaThinkingLevel: "",
     ttImageVersion: "flare",
     ttImageAspectRatio: "auto",
     ttImageResolution: "auto",
@@ -2921,42 +3020,92 @@ function addChatGptNode(point = null) {
   return node;
 }
 
-async function generateNode(nodeId) {
+function isGrsaiTaskNode(node) {
+  return node?.type === "task" && imageModelConnectionForModel(node.model)?.protocol === "grsai";
+}
+
+function hasPendingGrsaiTask(node) {
+  return isGrsaiTaskNode(node) && String(node.grsaiTask?.model || "").toLowerCase() === String(node.model || "").toLowerCase()
+    && Boolean(node.grsaiTask.requestId || node.grsaiTask.taskId)
+    && !["succeeded", "failed", "violation"].includes(node.grsaiTask.status);
+}
+
+function applyGrsaiTaskState(node, task) {
+  if (!task) return;
+  node.grsaiTask = { ...node.grsaiTask, ...task };
+  saveCanvasState({ history: false });
+  updateNode(node);
+}
+
+async function waitForGrsaiTaskResult(node, signal, projectId) {
+  const deadline = Date.now() + 30 * 60 * 1000;
+  while (!signal.aborted && Date.now() < deadline) {
+    let data, response;
+    try {
+      response = await fetch("/api/grsai/result", {
+        method: "POST", headers: { "Content-Type": "application/json" }, signal,
+        body: JSON.stringify({ projectId, model: node.grsaiTask?.model || node.model, mode: node.mode,
+          requestId: node.grsaiTask?.requestId || "", taskId: node.grsaiTask?.taskId || "",
+          format: node.format, connectionOverride: node.connectionOverride, baseUrl: node.baseUrl,
+          endpointPath: node.endpointPath, apiKeyOverride: node.apiKeyOverride || "" })
+      });
+      data = await response.json();
+    } catch (error) {
+      if (signal.aborted) throw error;
+      applyGrsaiTaskState(node, { status: "query_error", message: "查询连接中断，正在重查原任务，不会重新生成。" });
+      await waitForDreaminaVideoQuery(5000, signal);
+      continue;
+    }
+    applyGrsaiTaskState(node, data.grsaiTask);
+    if (data.images?.length) return data;
+    if (!response.ok || data.retryable === false || ["unknown", "failed", "violation"].includes(data.taskStatus)) {
+      throw new Error(data.error || data.grsaiTask?.message || "无法查询此任务，请确认后台任务 ID 和原渠道。结果生成后仅约 2 小时可查询。");
+    }
+    await waitForDreaminaVideoQuery(5000, signal);
+  }
+  if (signal.aborted) throw new DOMException("查询已暂停", "AbortError");
+  throw new Error("查询等待超过 30 分钟，任务编号已保留；可稍后点击“查询结果”，不要重新生成。");
+}
+
+async function generateNode(nodeId, options = {}) {
   const node = canvasState.nodes.find((item) => item.id === nodeId);
   if (!node || node.status === "running") return;
   if (node.type === "midjourney-task") return await generateMidjourneyNode(nodeId);
   if (node.type === "video-task") return await generateVideoNode(nodeId);
   if (node.type !== "task") return;
 
+  const grsai = isGrsaiTaskNode(node);
+  const recoveringGrsai = grsai && (options.grsaiQueryOnly || hasPendingGrsaiTask(node));
+  const requestProjectId = currentProjectId;
   const seedreamMode = seedreamModeForNode(node);
-  if (!effectivePromptForNode(node) && seedreamMode !== seedreamProModes.LAYERS) {
-    showToast("节点提示词不能为空");
-    return;
-  }
+  if (!recoveringGrsai) {
+    if (!effectivePromptForNode(node) && seedreamMode !== seedreamProModes.LAYERS) {
+      showToast("节点提示词不能为空");
+      return;
+    }
 
-  const referenceCount = referenceImageCountForNode(node);
-  if (seedreamMode === seedreamProModes.LAYERS && referenceCount < 1) {
-    showToast("智能拆图层需要 1 张输入图片");
-    return;
-  }
-  if (seedreamMode === seedreamProModes.FUSION && referenceCount < 2) {
-    showToast("多图融合至少需要 2 张参考图片");
-    return;
-  }
-  if (seedreamMode === seedreamProModes.INTERACTIVE && referenceCount < 1) {
-    showToast("精准编辑至少需要 1 张参考图片");
-    return;
-  }
-  if (node.background === "transparent" && referenceCount > 1) {
-    showToast("透明背景编辑仅支持 1 张参考图片");
-    return;
-  }
+    const referenceCount = referenceImageCountForNode(node);
+    if (seedreamMode === seedreamProModes.LAYERS && referenceCount < 1) {
+      showToast("智能拆图层需要 1 张输入图片");
+      return;
+    }
+    if (seedreamMode === seedreamProModes.FUSION && referenceCount < 2) {
+      showToast("多图融合至少需要 2 张参考图片");
+      return;
+    }
+    if (seedreamMode === seedreamProModes.INTERACTIVE && referenceCount < 1) {
+      showToast("精准编辑至少需要 1 张参考图片");
+      return;
+    }
+    if (!grsai && node.background === "transparent" && referenceCount > 1) {
+      showToast("透明背景编辑仅支持 1 张参考图片");
+      return;
+    }
 
-  if (!syncNodeExtraParams(node)) return;
-
-  if (node.mode === "edit" && fileStore.get(node.id)?.images?.length) {
-    await cacheEditFiles(node.id);
+    if (!syncNodeExtraParams(node)) return;
+    if (node.mode === "edit" && fileStore.get(node.id)?.images?.length) await cacheEditFiles(node.id);
   }
+  if (grsai && !recoveringGrsai) node.grsaiTask = { requestId: createId(), taskId: "", model: node.model, status: "submitting", createdAt: new Date().toISOString() };
 
   const controller = new AbortController();
   generationControllers.set(node.id, controller);
@@ -2970,18 +3119,30 @@ async function generateNode(nodeId) {
   updateCanvasMeta();
 
   try {
-    const annotatedReferenceFiles = await prepareSeedreamAnnotatedReferenceFiles(node);
-    const response = await fetch("/api/generate", {
-      method: "POST",
-      ...buildNodeRequest(node, { imageFiles: annotatedReferenceFiles }),
-      signal: controller.signal
-    });
-    const data = await response.json();
-    rawResponse.textContent = JSON.stringify(data.raw || data, null, 2);
-
-    if (!response.ok) {
-      throw new Error(data.error || "生成失败");
+    let data;
+    if (recoveringGrsai) {
+      data = await waitForGrsaiTaskResult(node, controller.signal, requestProjectId);
+    } else {
+      const annotatedReferenceFiles = await prepareSeedreamAnnotatedReferenceFiles(node);
+      const request = buildNodeRequest(node, { imageFiles: annotatedReferenceFiles });
+      if (request.body instanceof FormData) request.body.set("projectId", requestProjectId);
+      else request.body = JSON.stringify({ ...JSON.parse(request.body), projectId: requestProjectId });
+      let response;
+      try {
+        response = await fetch("/api/generate", { method: "POST", ...request, signal: controller.signal });
+        data = await response.json();
+      } catch (error) {
+        if (!grsai || controller.signal.aborted) throw error;
+        // A lost local acknowledgement is recovered by client request ID, never POSTed again.
+        data = await waitForGrsaiTaskResult(node, controller.signal, requestProjectId);
+        response = { ok: true };
+      }
+      rawResponse.textContent = JSON.stringify(data.raw || data, null, 2);
+      if (grsai) applyGrsaiTaskState(node, data.grsaiTask);
+      if (!response.ok) throw new Error(data.error || "生成失败");
+      if (grsai && !data.images?.length) data = await waitForGrsaiTaskResult(node, controller.signal, requestProjectId);
     }
+    if (grsai && currentProjectId !== requestProjectId) return;
 
     if (data.fallback?.to) {
       showToast(`云雾文生图已自动切换兼容通道：${data.fallback.to}`);
@@ -3013,6 +3174,11 @@ async function generateNode(nodeId) {
     const stopped = controller.signal.aborted || error?.name === "AbortError";
     node.status = stopped ? "idle" : "error";
     node.error = stopped ? "已停止" : error.message || "生成失败";
+    if (grsai && hasPendingGrsaiTask(node)) {
+      node.grsaiTask.message = stopped ? "已暂停查询，后台任务不会取消。" : node.error;
+      if (!node.grsaiTask.taskId) node.grsaiTask.status = "unknown";
+      node.error += "；查询记录已保留，可点击“查询结果”取回原任务。";
+    }
     if (!stopped) showToast(node.error);
   } finally {
     if (generationControllers.get(node.id) === controller) generationControllers.delete(node.id);
@@ -3582,6 +3748,7 @@ function stopGenerationNode(nodeId) {
     const retainsDreaminaTask = node.type === "video-task" && isDreaminaVideoModelName(node.model) && node.dreaminaSubmitId;
     node.status = retainsDreaminaTask ? "pending" : "idle";
     node.error = retainsDreaminaTask ? "已暂停查询；即梦网页中的任务仍可继续生成，点击“继续查询”取回结果。" : "已停止";
+    if (hasPendingGrsaiTask(node)) node.error = "已暂停查询；Grsai 后台任务不会取消，点击“继续查询”取回结果。";
     if (node.type === "midjourney-task") {
       node.progress = "";
       node.taskStatus = "";
@@ -3590,7 +3757,7 @@ function stopGenerationNode(nodeId) {
     saveCanvasState();
     updateCanvasMeta();
   }
-  showToast(node?.type === "video-task" && node.dreaminaSubmitId ? "已暂停查询，即梦任务不会被取消" : "已停止生成");
+  showToast(hasPendingGrsaiTask(node) ? "已暂停查询，Grsai 任务不会被取消" : node?.type === "video-task" && node.dreaminaSubmitId ? "已暂停查询，即梦任务不会被取消" : "已停止生成");
   return true;
 }
 
@@ -3649,6 +3816,7 @@ function buildNodeRequest(node, options = {}) {
 
 function buildNodePayload(node) {
   return {
+    grsaiRequestId: isGrsaiTaskNode(node) ? node.grsaiTask?.requestId || "" : "",
     projectId: currentProjectId,
     dreaminaAsync: node.type === "video-task" && isDreaminaVideoModelName(node.model),
     mode: node.mode,
@@ -3660,6 +3828,9 @@ function buildNodePayload(node) {
     n: node.n,
     size: node.size,
     quality: node.quality,
+    image26: node.image26 || {},
+    bananaWebSearch: node.bananaWebSearch,
+    bananaThinkingLevel: node.bananaThinkingLevel,
     ttImageVersion: node.ttImageVersion,
     ttImageAspectRatio: node.ttImageAspectRatio,
     ttImageResolution: node.ttImageResolution,
@@ -3681,6 +3852,7 @@ function buildNodePayload(node) {
 }
 
 function appendNodeFields(formData, node, options = {}) {
+  if (isGrsaiTaskNode(node) && node.grsaiTask?.requestId) formData.append("grsaiRequestId", node.grsaiTask.requestId);
   formData.append("projectId", currentProjectId);
   if (node.type === "video-task" && isDreaminaVideoModelName(node.model)) formData.append("dreaminaAsync", "true");
   formData.append("mode", node.mode);
@@ -3692,6 +3864,9 @@ function appendNodeFields(formData, node, options = {}) {
   formData.append("n", node.n);
   formData.append("size", node.size);
   formData.append("quality", node.quality || "");
+  formData.append("image26", JSON.stringify(node.image26 || {}));
+  formData.append("bananaWebSearch", node.bananaWebSearch ?? "false");
+  formData.append("bananaThinkingLevel", node.bananaThinkingLevel || "minimal");
   formData.append("ttImageVersion", node.ttImageVersion || "flare");
   formData.append("ttImageAspectRatio", node.ttImageAspectRatio || "auto");
   formData.append("ttImageResolution", node.ttImageResolution || "auto");
@@ -3760,6 +3935,9 @@ function buildGenerationSnapshot(node) {
     n: String(node.n || "1"),
     size: node.size || "auto",
     quality: node.quality || "",
+    image26: clonePlainValue(node.image26 || {}),
+    bananaWebSearch: String(normalizeBanana21WebSearch(node.bananaWebSearch)),
+    bananaThinkingLevel: normalizeBanana21ThinkingLevel(node.bananaThinkingLevel, { google: isGoogleBanana21Connection(imageModelConnectionForModel(node.model)) }),
     ttImageVersion: normalizeTtImage25Version(node.ttImageVersion),
     ttImageAspectRatio: normalizeTtImage25AspectRatio(node.ttImageAspectRatio),
     ttImageResolution: normalizeTtImage25Resolution(node.ttImageResolution),
@@ -8868,6 +9046,9 @@ function getImageGeneration(node) {
     n: String(generation.n || "1"),
     size: generation.size || image.size || "auto",
     quality: generation.quality || "",
+    image26: clonePlainValue(generation.image26 || {}),
+    bananaWebSearch: generation.bananaWebSearch,
+    bananaThinkingLevel: generation.bananaThinkingLevel,
     ttImageVersion: generation.ttImageVersion || "flare",
     ttImageAspectRatio: generation.ttImageAspectRatio || "auto",
     ttImageResolution: generation.ttImageResolution || "auto",
@@ -9001,6 +9182,7 @@ function reusePromptFromVideo(videoNodeId) {
 }
 
 function applyGenerationToTask(task, generation) {
+  task.grsaiTask = null;
   task.mode = generation.mode === "edit" ? "edit" : "create";
   task.seedreamMode = normalizeSeedreamProMode(generation.seedreamMode);
   task.model = generation.model || config.defaultModel || "gpt-image-2";
@@ -9014,6 +9196,9 @@ function applyGenerationToTask(task, generation) {
   task.n = String(generation.n || "1");
   task.size = generation.size || defaultSizeForModel(task.model, task.mode);
   task.quality = generation.quality || "";
+  task.image26 = clonePlainValue(generation.image26 || {});
+  task.bananaWebSearch = generation.bananaWebSearch;
+  task.bananaThinkingLevel = generation.bananaThinkingLevel;
   task.ttImageVersion = normalizeTtImage25Version(generation.ttImageVersion);
   task.ttImageAspectRatio = normalizeTtImage25AspectRatio(generation.ttImageAspectRatio);
   task.ttImageResolution = normalizeTtImage25Resolution(generation.ttImageResolution);
@@ -15196,6 +15381,8 @@ function createLinkedPromptSources(node) {
 }
 
 function createDebugPanel(node) {
+  const image26 = image26ProfileForModel(node.model);
+  if (image26) applyImage26NodeDefaults(node);
   const debug = document.createElement("section");
   debug.className = "node-debug";
 
@@ -15271,12 +15458,31 @@ function createDebugPanel(node) {
       }
     }
     if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
+  } else if (usesGrsaiImage26Parameters(node.model)) {
+    settings.append(modelField,
+      createSelectField("比例 / 尺寸", node, "size", sizeOptionsForModel(node.model)),
+      createSelectField("质量", node, "quality", qualityOptionsForModel(node.model)));
+    advancedGrid.append(createSelectField("输出格式", node, "format", image26FormatsForNode(node).map((value) => [value, value.toUpperCase()])));
+    advancedGrid.append(createSelectField("背景", node, "background", [["", "默认"], ["transparent", "透明"]]));
+    if (imageModelConnectionForModel(node.model).apiModel !== "gpt-image-2.6") advancedGrid.append(createTextField("自定义像素尺寸", node, "size"));
+    if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
   } else if (usesBananaImageParameters(node.model)) {
     settings.append(
       modelField,
-      createSelectField("比例", node, "size", geminiNativeRatioOptions),
+      createSelectField("比例", node, "size", sizeOptionsForModel(node.model)),
       createSelectField("尺寸", node, "quality", geminiNativeImageSizeOptions)
     );
+    if (usesBanana21Parameters(node.model)) {
+      const connection = imageModelConnectionForModel(node.model);
+      const googleBanana21 = isGoogleBanana21Connection(connection);
+      if (connection?.protocol === "media-generate" || googleBanana21) settings.append(createSelectField("联网搜索", node, "bananaWebSearch", banana21WebSearchOptions));
+      settings.append(createSelectField("思考强度", node, "bananaThinkingLevel", googleBanana21
+        ? [["minimal", "快速（minimal）"], ["medium", "均衡（medium）"], ["high", "深度（high）"]]
+        : banana21ThinkingLevelOptions));
+      if (isOpenLuxBanana21Connection(connection)) {
+        advancedGrid.append(createSelectField("返回方式", node, "responseFormat", [["base64", "Base64（默认）"], ["url", "URL"]]));
+      }
+    }
     advancedGrid.append(createSelectField("格式", node, "format", formatOptions));
     if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
   } else if (usesTtImage25Parameters(node.model)) {
@@ -15317,7 +15523,7 @@ function createDebugPanel(node) {
     }
     advancedGrid.append(createSelectField("背景", node, "background", ttImage25BackgroundOptions, {
       onChange: (value) => {
-        if (value === "transparent") node.format = "png";
+        if (value === "transparent" && (!image26 || !["png", "webp"].includes(node.format))) node.format = "png";
         updateNode(node);
       }
     }));
@@ -15337,14 +15543,56 @@ function createDebugPanel(node) {
         "返回格式",
         node,
         "responseFormat",
-        node.mode === "create" ? openLuxResponseFormatOptions : openLuxEditResponseFormatOptions
+        image26 ? [["", "平台默认（b64_json）"], ["url", "URL"], ["b64_json", "b64_json"]]
+          : node.mode === "create" ? openLuxResponseFormatOptions : openLuxEditResponseFormatOptions
       ));
     }
-    advancedGrid.append(createSelectField("格式", node, "format", formatOptions));
+    if (!image26) advancedGrid.append(createSelectField("格式", node, "format", formatOptions));
     if (node.connectionOverride) advancedGrid.append(createTextField("接口路径", node, "endpointPath"));
   }
 
-  if (node.mode === "edit" && !isDreaminaModelName(node.model) && !usesBananaImageParameters(node.model) && !isSeedreamImageModelName(node.model) && !usesTtImage25Parameters(node.model)) {
+  if (image26 && !usesGrsaiImage26Parameters(node.model)) {
+    const tt = isTtImage26Model(image26);
+    if (!tt && node.mode === "create") advancedGrid.append(createSelectField("背景", node, "background", backgroundOptions));
+    settings.append(createSelectField("复杂度", node.image26, "complexity", [
+      ["", `平台默认（${tt ? "中" : "高"}）`], ["low", "低（low）"], ["medium", "中（medium）"], ["high", "高（high）"]
+    ]));
+    advancedGrid.append(createSelectField("输出格式", node, "format", image26FormatsForNode(node).map((value) => [value, value.toUpperCase()]), {
+      onChange: () => { applyImage26NodeDefaults(node); updateNode(node); }
+    }));
+    if (node.format === "gif") {
+      if (tt) {
+        advancedGrid.append(
+          createSelectField("GIF 帧数", node.image26, "frameCount", [4,6,9,12,16].map((value) => [String(value), `${value} 帧`])),
+          createSelectField("每帧时长", node.image26, "frameDurationMs", [100,200,300,500,1000].map((value) => [String(value), `${value} ms`]))
+        );
+      } else {
+        advancedGrid.append(createNumberField("GIF 帧数", node.image26, "frameCount", { min: 2, max: 16 }), createNumberField("每帧毫秒", node.image26, "frameDurationMs", { min: 20, max: 655350, step: 10 }));
+      }
+      const tip = document.createElement("p");
+      tip.className = "node-field-full asset-summary";
+      tip.textContent = tt ? "GIF 的比例与分辨率由模型决定，上方尺寸选项不生效。" : "GIF 需要平台预览权限；帧数 × 尺寸可能触及像素预算，不支持 mask 蒙版。";
+      advancedGrid.append(tip);
+    }
+    if (node.format === "svg" && !tt) {
+      advancedGrid.append(createTextField("SVG 作者模型（必填，如 gpt-6-luna；另计 Token）", node.image26, "svgModel", "node-field-full"));
+      advancedGrid.append(createSelectField("SVG 作者推理强度", node.image26, "svgReasoning", [["", "作者模型默认"], ...["none","minimal","low","medium","high","xhigh","max"].map((value) => [value, value])]));
+    }
+    if (node.mode === "edit" && !tt && isOpenLuxGptImage25Node(node)) {
+      advancedGrid.append(createSelectField("编辑引导", node.image26, "imageGuideMode", [["mask", "Mask 蒙版"], ["markup", "Markup 标注层"]], {
+        onChange: () => {
+          node.cachedMask = null;
+          node.sessionMask = "";
+          const stored = fileStore.get(node.id);
+          if (stored) delete stored.mask;
+          for (const image of node.cachedImages || []) image.maskAnnotation = null;
+          updateNode(node);
+        }
+      }));
+    }
+  }
+
+  if (node.mode === "edit" && !usesGrsaiImage26Parameters(node.model) && !isDreaminaModelName(node.model) && !usesBananaImageParameters(node.model) && !isSeedreamImageModelName(node.model) && !usesTtImage25Parameters(node.model)) {
     advancedGrid.append(
       createSelectField("背景", node, "background", backgroundOptions),
       ...(!isOpenLuxGptImage25Node(node) ? [createSelectField("审核", node, "moderation", moderationOptions)] : [])
@@ -15374,7 +15622,57 @@ function createDebugPanel(node) {
   debug.append(summary);
   if (node.mode === "edit") debug.append(createEditAssetFields(node));
   debug.append(settings, advanced);
+  if (isGrsaiTaskNode(node)) debug.append(createGrsaiRecoveryPanel(node));
   return debug;
+}
+
+function createGrsaiRecoveryPanel(node) {
+  const panel = document.createElement("section");
+  panel.className = "edit-assets";
+  panel.addEventListener("pointerdown", (event) => event.stopPropagation());
+  const label = document.createElement("label");
+  label.className = "node-field node-field-full";
+  const heading = document.createElement("span");
+  heading.textContent = "Grsai 结果查询（不会重新生成）";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "可粘贴后台任务 ID；留空查询已保存记录";
+  input.value = node.grsaiTask?.model === node.model ? node.grsaiTask.taskId || "" : "";
+  input.disabled = node.status === "running";
+  input.addEventListener("change", () => {
+    const previous = node.grsaiTask?.model === node.model ? node.grsaiTask : {};
+    node.grsaiTask = { ...previous, taskId: input.value.trim(), model: node.model, status: "manual" };
+    saveCanvasState({ history: false });
+  });
+  label.append(heading, input);
+  const query = document.createElement("button");
+  query.type = "button";
+  query.className = "secondary compact";
+  query.textContent = "查询结果";
+  query.disabled = node.status === "running";
+  query.addEventListener("click", () => generateNode(node.id, { grsaiQueryOnly: true }));
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "secondary compact";
+  copy.textContent = "复制任务 ID";
+  copy.disabled = !node.grsaiTask?.taskId;
+  copy.addEventListener("click", () => copyTextToClipboard(node.grsaiTask?.taskId || "", "任务 ID 已复制"));
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "secondary compact";
+  clear.textContent = "清除本节点查询记录";
+  clear.disabled = node.status === "running";
+  clear.addEventListener("click", () => {
+    if (!window.confirm("只清除本节点查询记录，不会取消后台任务。之后点击生成会重新提交并可能再次计费，是否继续？")) return;
+    node.grsaiTask = null;
+    saveCanvasState({ history: false });
+    updateNode(node);
+  });
+  const tip = document.createElement("p");
+  tip.className = "asset-summary";
+  tip.textContent = [node.grsaiTask?.message, "最终结果约 2 小时内可查询；请及时取回并保存。"].filter(Boolean).join(" · ");
+  panel.append(label, query, copy, clear, tip);
+  return panel;
 }
 
 function createImageArea(node, selected) {
@@ -15421,7 +15719,8 @@ function createTaskActions(node) {
   generate.type = "button";
   generate.className = "node-action-primary";
   const continuesDreamina = node.type === "video-task" && isDreaminaVideoModelName(node.model) && Boolean(node.dreaminaSubmitId);
-  generate.append(createNodeIcon("spark", "node-action-icon"), document.createTextNode(node.status === "running" ? "生成中" : continuesDreamina ? "继续查询" : "生成"));
+  const continuesGrsai = hasPendingGrsaiTask(node);
+  generate.append(createNodeIcon("spark", "node-action-icon"), document.createTextNode(node.status === "running" ? "生成中" : continuesDreamina || continuesGrsai ? "继续查询" : "生成"));
   if (continuesDreamina) generate.title = "只查询已提交的即梦任务，不重新提交生成请求";
   generate.disabled = node.status === "running";
   generate.addEventListener("click", () => generateNode(node.id));
@@ -15444,7 +15743,7 @@ function createTaskActions(node) {
     const stop = document.createElement("button");
     stop.type = "button";
     stop.className = "node-action-danger";
-    stop.append(createNodeIcon("trash", "node-action-icon"), document.createTextNode(continuesDreamina ? "暂停查询" : "停止"));
+    stop.append(createNodeIcon("trash", "node-action-icon"), document.createTextNode(continuesDreamina || continuesGrsai ? "暂停查询" : "停止"));
     stop.addEventListener("click", () => stopGenerationNode(node.id));
     actions.append(stop);
   }
@@ -15530,7 +15829,7 @@ function createEditAssetFields(node) {
       files = files.slice(0, remaining);
     } else if (usesTtImage25Parameters(node.model)) {
       const remaining = Math.max(0, ttImage25ReferenceLimit - (node.cachedImages?.length || 0) - (stored.images?.length || 0));
-      if (files.length > remaining) showToast(`TT Image 2.5 最多使用 ${ttImage25ReferenceLimit} 张参考图片`);
+      if (files.length > remaining) showToast(`TT Image 最多使用 ${ttImage25ReferenceLimit} 张参考图片`);
       files = files.slice(0, remaining);
     } else if (isGrokBuildImageModelName(node.model)) {
       const remaining = Math.max(0, 7 - (node.cachedImages?.length || 0) - (stored.images?.length || 0));
@@ -15608,7 +15907,7 @@ function createTtImage25AssetHint(node) {
   if (!usesTtImage25Parameters(node.model)) return null;
   const hint = document.createElement("p");
   hint.className = "seedream-mode-hint mode-fusion";
-  hint.textContent = "TT Image 2.5 支持 1–16 张参考图，可用于图生图、局部编辑和多图融合；参考图会按画布连接顺序发送。";
+  hint.textContent = `${image26ProfileForModel(node.model) ? "TT Image 2.6" : "TT Image 2.5"} 支持 1–16 张参考图，可用于图生图、局部编辑和多图融合；参考图会按画布连接顺序发送。`;
   return hint;
 }
 
@@ -15889,12 +16188,20 @@ function removeReferenceImage(nodeId, index) {
 
 function openReferenceMaskEditor(nodeId, imageIndex) {
   const node = canvasState.nodes.find((item) => item.id === nodeId);
+  if (usesGrsaiImage26Parameters(node?.model)) {
+    showToast("Grsai 此接口未提供独立蒙版参数，请在提示词中描述修改区域");
+    return;
+  }
   const imageRef = node?.cachedImages?.[imageIndex];
   const seedreamPrecisionEditor = seedreamImageProfileForModel(node?.model) === seedreamImageProfiles.PRO_5
     && seedreamModeForNode(node) !== seedreamProModes.LAYERS;
   const imageUrl = imageRef?.url || (imageRef?.path ? `/${imageRef.path}` : "");
   if (!node || !imageUrl) {
     showToast("参考图还没有缓存完成");
+    return;
+  }
+  if (imageIndex !== 0 && image26ProfileForModel(node.model) && node.image26?.imageGuideMode === "markup") {
+    showToast("Markup 标注只作用于第一张参考图，请点击图 1 进行标注");
     return;
   }
 
@@ -15908,7 +16215,8 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
   toolbar.className = "mask-editor-toolbar";
 
   const title = document.createElement("strong");
-  title.textContent = seedreamPrecisionEditor ? "Seedream 精准编辑标注" : "局部重绘标注";
+  const markupEditor = Boolean(image26ProfileForModel(node.model)) && isOpenLuxGptImage25Node(node) && node.image26?.imageGuideMode === "markup";
+  title.textContent = seedreamPrecisionEditor ? "Seedream 精准编辑标注" : markupEditor ? "Markup 标注（改动内容写在提示词中）" : "局部重绘标注";
 
   const toolGroup = document.createElement("div");
   toolGroup.className = "mask-editor-tools";
@@ -16350,7 +16658,7 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
         : "Seedream 精准编辑标记已清空");
       return;
     }
-    maskCanvas.toBlob(async (blob) => {
+    (markupEditor ? overlayCanvas : maskCanvas).toBlob(async (blob) => {
       if (!blob) {
         save.disabled = false;
         save.textContent = "保存标注";
@@ -16374,7 +16682,7 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
         return;
       }
 
-      const file = new File([blob], `mask-${Date.now()}.png`, { type: "image/png" });
+      const file = new File([blob], `${markupEditor ? "markup" : "mask"}-${Date.now()}.png`, { type: "image/png" });
       imageRef.maskAnnotation = {
         version: 1,
         width: maskCanvas.width,
@@ -16390,7 +16698,7 @@ function openReferenceMaskEditor(nodeId, imageIndex) {
       saveCanvasState();
       await cacheEditFiles(node.id);
       closeEditor();
-      showToast("局部重绘蒙版已保存");
+      showToast(markupEditor ? "Markup 透明标注层已保存；请在提示词中描述具体改动" : "局部重绘蒙版已保存");
     }, "image/png");
   });
 }
@@ -16736,7 +17044,7 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
       );
       ordinaryImageNodes = ordinaryImageNodes.filter((imageNode) => !existingReferenceIds.has(imageNode.id));
       if (ordinaryImageNodes.length > availableSlots) {
-        showToast(`TT Image 2.5 最多使用 ${ttImage25ReferenceLimit} 张参考图，已自动截取`);
+        showToast(`TT Image 最多使用 ${ttImage25ReferenceLimit} 张参考图，已自动截取`);
         ordinaryImageNodes = ordinaryImageNodes.slice(0, availableSlots);
       }
     } else if (target.type === "task" && isGrokBuildImageModelName(target.model)) {
@@ -16771,7 +17079,7 @@ async function useCanvasImagesAsReference(targetNodeId, imageNodeIds) {
               ? "智能拆图层只能使用 1 张输入图片"
               : `当前 Seedream 模型最多使用 ${seedreamReferenceLimitForNode(target)} 张参考图`
           : target.type === "task" && usesTtImage25Parameters(target.model)
-            ? `TT Image 2.5 最多使用 ${ttImage25ReferenceLimit} 张参考图`
+            ? `TT Image 最多使用 ${ttImage25ReferenceLimit} 张参考图`
           : target.type === "task" && isGrokBuildImageModelName(target.model)
             ? "Grok 官方图片编辑最多使用 7 张参考图"
             : `当前视频模式最多使用 ${videoReferenceLimit(target.model, videoModeForNode(target))} 张参考图片`;
@@ -18820,6 +19128,7 @@ function duplicateNode(nodeId) {
     copy.error = "";
     copy.durationMs = null;
     copy.dreaminaSubmitId = "";
+    copy.grsaiTask = null;
     copy.dreaminaQueryMessage = "";
     copy.dreaminaStartedAt = null;
     copy.sessionFiles = [...(node.sessionFiles || [])];
@@ -19008,6 +19317,7 @@ function preparePastedNode(source, idMap, offset, createdAt) {
     copy.error = "";
     copy.durationMs = null;
     copy.dreaminaSubmitId = "";
+    copy.grsaiTask = null;
     copy.dreaminaQueryMessage = "";
     copy.dreaminaStartedAt = null;
     copy.debugOpen = Boolean(copy.debugOpen);
@@ -19770,6 +20080,9 @@ function migrateTaskNode(node) {
     size: node.size || "auto",
     quality: node.quality || "",
     format: node.format || "png",
+    image26: isPlainObject(node.image26) ? clonePlainValue(node.image26) : {},
+    bananaWebSearch: node.bananaWebSearch,
+    bananaThinkingLevel: node.bananaThinkingLevel,
     baseUrl: node.baseUrl || config.baseUrl || defaultYunwuBaseUrl,
     endpointPath: node.endpointPath || defaultEndpointForMode(mode),
     connectionOverride: Boolean(node.connectionOverride),

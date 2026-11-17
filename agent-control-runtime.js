@@ -53,6 +53,9 @@ export function createAgentNode(spec = {}, context = {}) {
       n: String(spec.n ?? data.n ?? "1"),
       size: String(spec.size || data.size || "auto"),
       quality: String(spec.quality ?? data.quality ?? ""),
+      image26: plainObject(spec.image26 ?? data.image26) ? cloneJson(spec.image26 ?? data.image26) : {},
+      bananaWebSearch: spec.bananaWebSearch ?? data.bananaWebSearch,
+      bananaThinkingLevel: spec.bananaThinkingLevel ?? data.bananaThinkingLevel,
       ttImageVersion: String(spec.ttImageVersion || data.ttImageVersion || "flare"),
       ttImageAspectRatio: String(spec.ttImageAspectRatio || data.ttImageAspectRatio || "auto"),
       ttImageResolution: String(spec.ttImageResolution || data.ttImageResolution || "auto"),
@@ -261,7 +264,7 @@ export function mediaNodesFromGeneration(taskNode, result = {}, context = {}) {
 export function generationSnapshot(node) {
   const fields = [
     "mode", "videoMode", "videoTransitions", "seedreamMode", "prompt", "model", "n", "size", "quality",
-    "ttImageVersion", "ttImageAspectRatio", "ttImageResolution", "format", "background", "moderation", "extraParams",
+    "ttImageVersion", "ttImageAspectRatio", "ttImageResolution", "image26", "bananaWebSearch", "bananaThinkingLevel", "format", "background", "moderation", "extraParams",
     "arkAssetUris", "cachedImages", "cachedVideos", "cachedAudios", "referenceImageNodeIds", "referenceVideoNodeIds"
   ];
   return Object.fromEntries(fields.filter((key) => node?.[key] !== undefined).map((key) => [key, cloneJson(node[key])]));

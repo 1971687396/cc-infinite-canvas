@@ -2,6 +2,8 @@
 
 一个本地运行的无限画布生图工具：画布用于摆放、配置、并行生成、比较和整理结果。每个图片节点都有自己的提示词、尺寸、模型、接口参数和生成按钮，可以同时启动多个节点并行出图。
 
+v1.1.14 已将近期新增渠道固化为内置预设，新安装和旧版升级后均可直接选择，无需复制开发机配置。各设备的 API Key、画布和生成素材不会打入安装包；已有自定义渠道仍保留。
+
 ## Yunwu 图像接口
 
 来自 Yunwu Apifox 文档：
@@ -51,7 +53,50 @@
 - 媒体异步模式支持 `flare`、`sunburst`、`auto/low/medium/high/xhigh/max`、不透明/透明/自动背景，以及最多 16 张参考图
 - 透明背景会强制使用 PNG；自定义尺寸优先于比例和分辨率，宽高必须是 16 的倍数，比例范围为 1:3～3:1，总像素为 655360～8294400
 
+### GPT Image 2.6 / TT Image 2.6
+
+- 内置 OpenLux `gpt-image-2.6-sunburst`、`gpt-image-2.6-flare`：同步 JSON 生图和 multipart 编辑分别使用 `/v1/images/generations`、`/v1/images/edits`；两者均发送 `output_format`，可选 URL / b64_json、六档画质、审核强度和独立的低/中/高复杂度。
+- 内置玲珂 `tt-image-2.6`、`tt-image-2.6-guan`：使用 `/v1/media/generate` 和任务轮询；在节点选择 flare / sunburst、比例、1K/2K/4K、自定义像素尺寸、复杂度及背景，最多 16 张参考图。新模型不会覆盖已有 2.5 配置。
+- 四个渠道均提供 GIF 输出；选择 GIF 后才显示帧数、每帧时长。OpenLux 支持 2–16 帧、每帧至少 20ms；玲珂提供文档列出的离散选项，GIF 比例/分辨率由其模型决定。GIF 结果保留原始动画，不生成静态缩略图。
+- OpenLux 仅文生图可选 SVG，必须填写 SVG 作者模型（例如 `gpt-6-luna`，另计作者 Token）；玲珂按次渠道可选 SVG，官转渠道不提供 SVG。SVG 原文件按矢量格式保存和下载。
+- OpenLux 图片编辑在高级参数选择「Markup 标注层」，再点击第一张参考图画标记，在提示词中描述修改内容；输出透明 PNG 标注层，按 `markup` 提交，不与 `mask` 同传。切换引导方式会清除旧蒙版/标记。GIF 不支持 Mask 蒙版。
+- 2.6 同步请求和异步查询默认最多等待 30 分钟；不会因等待较久自动重复提交付费生成。可用 `CC_CANVAS_MEDIA_POLL_TIMEOUT_MS` 显式覆盖异步查询时限。
+- 文档：[OpenLux 生图](https://doc.openlux.ai/reference/v1/images/generations?leaf=c%3A1793871933171)、[OpenLux 编辑](https://doc.openlux.ai/reference/v1/images/edits?leaf=c%3A1793873785651)、[TT 2.6](https://xoell.jundao.ai/apidoc#model/tt-image-2.6)、[TT 2.6 官转](https://xoell.jundao.ai/apidoc#model/tt-image-2.6-guan)。
+
 ## 多平台模型连接
+
+### Grsai GPT Image 2.6
+
+- 新增 `grsai-gpt-image-2.6`、`grsai-gpt-image-2.6-flare`、`grsai-gpt-image-2.6-sunburst` 三个独立渠道。实际 API 模型 ID 不带 `grsai-` 前缀；默认使用全球节点 `https://grsaiapi.com`，也可在连接设置中改为国内节点 `https://grsai.dakka.com.cn`。文生图和多图编辑均为 `/v1/api/generate`，Bearer 鉴权，可复用本机 Grsai Key，不覆盖云雾同名模型。
+- 使用 Grsai 的 `aspectRatio`、`quality`、`images`、`outputFormat` 字段，不发送其他平台的 `size`、`imageSize`、`output_format`、复杂度或 GIF 帧数。普通版提供比例/文档列出的 1K 尺寸，质量保守使用 auto；Flare 提供 auto/low/medium/high，Sunburst 根据 OpenAI 兼容生图/编辑文档增加 xhigh/max，二者均支持符合平台约束的 1–4K 像素尺寸。原生接口文档与兼容接口文档对 Sunburst 质量说明不一致，先允许六档透传，不自动降档或重提交。
+- 三个模型均支持 PNG、GIF 和透明背景选项；SVG 仅普通版可选。文档未列出独立 Mask/Markup 参数，不显示相关编辑选项。生成的 GIF/SVG 保留原始格式并下载缓存。
+- 默认 `replyType: async`，仅提交一次生成，通过 `/v1/api/result?id=...` 查询，最长等待 30 分钟；不会因等待较久自动重复付费提交。高级 JSON 可指定 `replyType: json`。最终结果查询有效期为 2 小时，请及时保存。
+- 文档：https://qmy27nhsd9.apifox.cn/452409160e0
+- Sunburst 六档质量参考兼容接口文档：https://qmy27nhsd9.apifox.cn/512807352e0 、https://qmy27nhsd9.apifox.cn/512802278e0
+
+#### Grsai 断线恢复与结果查询
+
+- 画布新任务只提交一次异步生成，提交前保存客户端请求编号，拿到平台任务 ID 后立即写入项目缓存的 `grsai-tasks/`。刷新或重启后可在原节点点击「继续查询」或「查询结果」，不会重新调用生图接口。
+- 节点参数区提供任务 ID 输入、复制和查询按钮。历史任务、提交响应丢失且未拿到 ID 的任务，可从 Grsai 后台复制编号手动找回。接口为本机 `POST /api/grsai/result`，上游仅调用 `GET /v1/api/result?id=...`；不支持按提示词或时间猜测后台任务。
+- 查询网络中断、408/429/5xx 会保留编号自动重查；生成成功但下载失败会保存结果 URL，继续下载。成功后复用缓存，避免同一任务被反复下载或放置。查询记录不保存 API Key 或请求头，并校验原项目、模型渠道及接口主机。
+- 「暂停查询」不会取消后台生成。待查询任务的生成按钮会改为「继续查询」；只有确认清除本节点查询记录后，才允许开始新任务。复制节点或复用提示词不继承旧任务编号。
+- 平台最终结果仅约 2 小时内可查，请及时取回；超过期限、没有任务 ID，或后台已清理的数据无法保证恢复。文档：https://qmy27nhsd9.apifox.cn/452409577e0
+
+### 云雾国际站 Banana 2.1
+
+- `gemini-nano-banana-2.1` 使用 `https://api.openlux.ai` 的 Gemini 原生协议，文生图和多图编辑均为 `/v1beta/models/{model}:generateContent`，Bearer 鉴权。已有云雾渠道误选异步媒体或旧 Images 路径时会自动修正，不覆盖其他平台或自定义接口。
+- 节点提供 14 种比例、1K/2K/4K（新节点默认 1K）、minimal/high 思考强度，以及高级参数中的 Base64/URL 返回选择。URL 在 `fileData.fileUri` 中返回后下载至本地缓存；默认 Base64，字段值不是 OpenAI 的 `b64_json`。
+- 思考参数放在 `generationConfig.thinkingConfig.thinkingLevel`，比例和分辨率放在 `generationConfig.imageConfig`。此文档未说明联网搜索，云雾渠道不显示该选项；玲珂渠道原有联网功能保留。
+- 文档：https://doc.openlux.ai/reference/v1/v1beta/models/gemini-nano-banana-2.1%3AgenerateContent?leaf=c%3A1791529101208
+
+### Google 官方 Nano Banana 2.1
+
+- 独立内置渠道「Nano Banana 2.1（Google 官方）」：画布 ID 为 `google-nano-banana-2.1`，实际 API 模型为 `gemini-nano-banana-2.1`。默认直连 `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`，使用 `x-goog-api-key`，不修改云雾、玲珂等现有渠道。
+- 在设置中为该渠道填写 Google AI Studio 官方 Key，也可通过 `GOOGLE_API_KEY` / `GEMINI_API_KEY` 配置后端环境。未配置时不使用中转站的全局备用 Key；不会自动提交付费验证。
+- 提供 14 种比例、1K/2K/4K、minimal/medium/high 三档思考（默认 medium），及 Google 联网搜索开关（默认关闭）。支持最多 14 张参考图片，结果保存至本地；不发送中转站专属 URL/Base64 返回字段，不将搜索参考图片或思考过程图当作生成结果。
+- 官方文档：https://aistudio.google.com/docs/models/gemini-nano-banana-2.1
+
+### 模型连接设置
 
 设置页的“模型 API 连接”允许每个模型分别选择平台、Key、API 模型 ID、Base URL、接口路径、协议和鉴权方式。内置预设包括云雾、OpenAI、Google Gemini、Anthropic、xAI、DeepSeek、火山方舟与 Grsai，也可以选择“自定义 / 中转站”后按照服务商文档填写。
 

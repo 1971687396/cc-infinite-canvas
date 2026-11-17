@@ -9,7 +9,7 @@
 
 ```ini
 YUNWU_API_KEY=你的 Yunwu API Key
-YUNWU_BASE_URL=https://yunwu.ai
+YUNWU_BASE_URL=https://api.openlux.ai
 YUNWU_IMAGE_ENDPOINT=/v1/images/generations
 YUNWU_EDIT_ENDPOINT=/v1/images/edits
 YUNWU_DEFAULT_MODEL=gpt-image-2
@@ -25,6 +25,8 @@ npm start
 4. 打开 `http://localhost:3000`。通过 `YunwuCanvas.cmd` 启动时，如果配置端口已被占用，启动器会自动改用其他空闲端口。
 
 `.env.local` 已在 `.gitignore` 里，不会被 Git 跟踪。
+
+新版内置 Grsai GPT Image 2.6 三渠道、Google 官方 Nano Banana 2.1、OpenLux Banana 2.1、玲珂 Banana 2.1/官转，以及 OpenLux/玲珂 GPT/TT Image 2.6 预设。新装和升级均可在“模型 API 连接”直接选择，无需复制其他设备的源码或密钥配置。各平台的 Key 仍需在本机填写，Google 官方不能使用中转站 Key。
 
 画布工程会自动保存到 `cache/canvases/<画布ID>/project.json`，生成图片、视频和拖入素材会保存在同一画布目录下的 `outputs/` 与 `assets/`。
 

@@ -20,6 +20,20 @@ import {
   extractDreaminaVideoModelVersions,
   gptImage25Profile,
   gptImage25Profiles,
+  gptImageProfile,
+  gptImage26Profile,
+  gptImage26Profiles,
+  buildImage26Options,
+  image26OutputFormats,
+  isTtImage26Model,
+  migrateTtImage26Connection,
+  isBanana21Model,
+  isOpenLuxBanana21Connection,
+  isGoogleBanana21Connection,
+  migrateBanana21Connection,
+  normalizeBanana21ImageParameters,
+  normalizeBanana21ThinkingLevel,
+  normalizeBanana21WebSearch,
   isGptImage25Size,
   isTtImage25Model,
   isArkSeedance25Model,
@@ -55,6 +69,34 @@ const cases = [
   ["seedream-4.5", seedreamImageProfiles.V4_5],
   ["doubao-seedream-4-0-250828", seedreamImageProfiles.V4_0]
 ];
+
+for (const model of Object.values(gptImage26Profiles)) assert.equal(gptImage26Profile(model), model);
+assert.equal(gptImage26Profile("Custom GPT Image 2.6 Sunburst-c"), gptImage26Profiles.SUNBURST);
+assert.equal(gptImage26Profile("tt_image_2_6_guan"), gptImage26Profiles.TT_GUAN);
+assert.equal(gptImage26Profile("gpt-image-2.60"), "");
+assert.equal(gptImage26Profile("gpt-image-2.5-sunburst"), "");
+assert.equal(gptImageProfile("gpt-image-2.5-sunburst"), gptImage25Profiles.SUNBURST);
+assert.equal(isTtImage26Model("tt-image-2.6-guan"), true);
+assert.equal(isTtImage26Model("tt-image-2.5"), false);
+assert.deepEqual(buildImage26Options(), { complexity: "high", output_format: "png", background: "auto" });
+assert.equal(buildImage26Options({}, { tt: true }).complexity, "medium");
+assert.deepEqual(buildImage26Options({ format: "gif", frameCount: "2", frameDurationMs: "20" }), {
+  complexity: "high", output_format: "gif", background: "auto", frame_count: 2, frame_duration_ms: 20
+});
+assert.equal(buildImage26Options({ format: "webp", background: "transparent" }).output_format, "webp");
+assert.deepEqual(buildImage26Options({ format: "svg", svgModel: "gpt-6-luna", svgReasoning: "low" }).svg, { model: "gpt-6-luna", reasoning: { effort: "low" } });
+assert.throws(() => buildImage26Options({ format: "svg" }), /SVG 作者模型/u);
+assert.throws(() => buildImage26Options({ format: "svg", svgModel: "gpt-6-luna" }, { edit: true }), /不支持/u);
+assert.throws(() => buildImage26Options({ format: "svg" }, { tt: true, guan: true }), /不支持/u);
+assert.equal(buildImage26Options({ format: "svg" }, { tt: true }).output_format, "svg");
+assert.throws(() => buildImage26Options({ format: "gif", frameCount: 3 }, { tt: true }), /帧数/u);
+assert.throws(() => buildImage26Options({ format: "gif" }, { hasMask: true }), /mask/u);
+assert.throws(() => buildImage26Options({ format: "gif", output_compression: 80 }), /压缩率/u);
+assert.throws(() => buildImage26Options({ format: "gif", background: "transparent" }), /透明背景/u);
+assert.equal(image26OutputFormats({ tt: true, guan: true }).includes("svg"), false);
+const tt26Legacy = { apiModel: "tt-image-2.6-guan", baseUrl: "https://api.lk888.ai", protocol: "openai-images", imageEndpoint: "/v1/images/generations", editEndpoint: "/v1/images/edits" };
+assert.equal(migrateTtImage26Connection("custom-tt26", tt26Legacy).protocol, "media-generate");
+assert.equal(migrateTtImage26Connection("custom-tt26", { ...tt26Legacy, baseUrl: "https://other.example" }).protocol, "openai-images");
 
 for (const [model, expected] of cases) {
   assert.equal(seedreamImageProfile(model), expected, model);
@@ -143,6 +185,62 @@ assert.deepEqual(normalizeBananaImageParameters("3840x2160"), { aspectRatio: "16
 assert.deepEqual(normalizeBananaImageParameters("2048x1152"), { aspectRatio: "16:9", imageSize: "2K" });
 assert.deepEqual(normalizeBananaImageParameters("21:9|2K"), { aspectRatio: "21:9", imageSize: "2K" });
 assert.deepEqual(normalizeBananaImageParameters("9:16", "1k"), { aspectRatio: "9:16", imageSize: "1K" });
+for (const model of ["banana-2.1", "banana-2.1-token", "banana2.1", "banana2.1官"]) {
+  assert.equal(isBanana21Model(model), true, model);
+}
+for (const model of ["banana-2", "nano-banana-2", "banana-pro", "banana-2.10", "gemini-3.1-flash-image-preview"]) {
+  assert.equal(isBanana21Model(model), false, model);
+}
+assert.deepEqual(normalizeBanana21ImageParameters("1:8", "2k"), { aspectRatio: "1:8", imageSize: "2K" });
+assert.deepEqual(normalizeBanana21ImageParameters("4:5|1K"), { aspectRatio: "4:5", imageSize: "1K" });
+assert.deepEqual(normalizeBanana21ImageParameters("2048x512"), { aspectRatio: "4:1", imageSize: "2K" });
+assert.deepEqual(normalizeBananaImageParameters("4:5", "1K"), { aspectRatio: "1:1", imageSize: "1K" });
+assert.equal(normalizeBanana21ThinkingLevel("HIGH"), "high");
+assert.equal(normalizeBanana21ThinkingLevel("invalid"), "minimal");
+assert.equal(normalizeBanana21ThinkingLevel("MEDIUM", { google: true }), "medium");
+assert.equal(normalizeBanana21ThinkingLevel("invalid", { google: true }), "medium");
+assert.equal(normalizeBanana21ThinkingLevel("medium"), "minimal");
+const googleConnection = { baseUrl: "https://generativelanguage.googleapis.com", apiModel: "gemini-nano-banana-2.1" };
+assert.equal(isGoogleBanana21Connection(googleConnection), true);
+assert.equal(isGoogleBanana21Connection({ ...googleConnection, baseUrl: "https://api.openlux.ai" }), false);
+assert.equal(isGoogleBanana21Connection({ ...googleConnection, baseUrl: "https://generativelanguage.googleapis.com.example.org" }), false);
+assert.equal(normalizeBanana21WebSearch(true), true);
+assert.equal(normalizeBanana21WebSearch("true"), true);
+assert.equal(normalizeBanana21WebSearch("false"), false);
+assert.equal(normalizeBanana21WebSearch(false), false);
+assert.equal(normalizeBanana21WebSearch(undefined), false);
+const bananaLegacy = {
+  capability: "image", apiModel: "banana-2.1-token", baseUrl: "https://api.lk888.ai", protocol: "gemini-native",
+  imageEndpoint: "/v1/images/generations", editEndpoint: "/v1/images/edits", authType: "bearer"
+};
+const bananaMigrated = migrateBanana21Connection("banana2.1官", bananaLegacy);
+assert.deepEqual(bananaMigrated, { ...bananaLegacy, protocol: "media-generate", imageEndpoint: "/v1/media/generate", editEndpoint: "/v1/media/generate" });
+assert.equal(bananaLegacy.protocol, "gemini-native");
+assert.deepEqual(migrateBanana21Connection("banana2.1官", bananaMigrated), bananaMigrated);
+for (const patch of [
+  { baseUrl: "https://other.example" },
+  { baseUrl: "https://api.lk888.ai.other.example" },
+  { apiModel: "gemini-3.1-flash-image-preview" },
+  { editEndpoint: "/custom/edit" },
+  { capability: "video" }
+]) {
+  const unchanged = { ...bananaLegacy, ...patch };
+  assert.equal(migrateBanana21Connection("banana2.1官", unchanged), unchanged);
+}
+assert.equal(migrateBanana21Connection("banana2.1", { ...bananaLegacy, baseUrl: "https://api.lk666.ai" }).protocol, "media-generate");
+const openLuxBanana = { ...bananaLegacy, apiModel: "gemini-nano-banana-2.1", baseUrl: "https://api.openlux.ai", protocol: "media-generate" };
+const openLuxBananaMigrated = migrateBanana21Connection("yunb2.1", openLuxBanana);
+assert.equal(isOpenLuxBanana21Connection(openLuxBanana), true);
+assert.equal(isOpenLuxBanana21Connection({ ...openLuxBanana, baseUrl: "https://api.openlux.ai.other.example" }), false);
+assert.equal(openLuxBananaMigrated.protocol, "gemini-native");
+assert.equal(openLuxBananaMigrated.imageEndpoint, "/v1beta/models/{model}:generateContent");
+assert.equal(openLuxBananaMigrated.editEndpoint, openLuxBananaMigrated.imageEndpoint);
+assert.equal(migrateBanana21Connection("yunb2.1", openLuxBananaMigrated), openLuxBananaMigrated);
+for (const patch of [{ baseUrl: "https://ai.t8star.org" }, { apiModel: "banana-2.1" }, { imageEndpoint: "/my/custom" }, { capability: "video" }]) {
+  const value = { ...openLuxBanana, ...patch };
+  assert.equal(migrateBanana21Connection("yunb2.1", value), value);
+}
+assert.deepEqual(normalizeBanana21ImageParameters("auto", "", { imageSize: "1K" }), { aspectRatio: "1:1", imageSize: "1K" });
 assert.equal(effectiveImageProtocol("gemini-native", "/v1/images/generations"), "openai-images");
 assert.equal(effectiveImageProtocol("gemini-native", "https://proxy.example/v1/images/edits"), "openai-images");
 assert.equal(effectiveImageProtocol("gemini-native", "/v1beta/models/{model}:generateContent"), "gemini-native");
@@ -238,4 +336,4 @@ assert.deepEqual(arkVideoReferenceLimits("ark-seedance-2.5", "extend"), {
   minVideos: 1
 });
 
-console.log(`Image model profile tests passed (${cases.length + bananaCases.length + gptImage25Cases.length + 74} cases).`);
+console.log("Image model profile tests passed (Banana 2.1 and GPT/TT Image 2.6 recognition, constraints and scoped migration).");

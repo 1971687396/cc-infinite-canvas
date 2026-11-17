@@ -1,3 +1,5 @@
+import { isOpenLuxBanana21Connection, migrateBanana21Connection } from "./model-profiles.js";
+
 export const defaultYunwuBaseUrl = "https://api.openlux.ai";
 
 const legacyYunwuHosts = new Set(["yunwu.ai", "api.yunwu.ai", "api.apiplus.org"]);
@@ -26,7 +28,7 @@ export function migrateYunwuConnection(value) {
       result[field] = migrated;
     }
   }
-  return result;
+  return isOpenLuxBanana21Connection(result) ? migrateBanana21Connection("", result) : result;
 }
 
 export function migrateYunwuNodeConnections(node) {

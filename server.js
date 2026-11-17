@@ -11,6 +11,7 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
 import TosSdk from "@volcengine/tos-sdk";
+import { GrsaiTaskJournal, grsaiRecoveryId, manualGrsaiRequestId, publicGrsaiTask } from "./grsai-task-runtime.js";
 import { Agent } from "undici";
 import {
   defaultYunwuBaseUrl,
@@ -59,12 +60,30 @@ import {
   dreaminaVideoReferenceLimits,
   dreaminaVideoResolutionTypes,
   effectiveImageProtocol,
+  buildImage26Options,
   extractDreaminaModelVersions,
   extractDreaminaVideoModelVersions,
-  gptImage25Profile,
+  gptImageProfile,
+  gptImage26Profile,
+  gptImage26Profiles,
   gptImage25Profiles,
+  isBanana21Model,
   isTtImage25Model,
+  isTtImage26Model,
   isArkSeedance25Model,
+  migrateBanana21Connection,
+  migrateTtImage26Connection,
+  normalizeBanana21ImageParameters,
+  normalizeBanana21ThinkingLevel,
+  normalizeBanana21WebSearch,
+  isOpenLuxBanana21Connection,
+  isGoogleBanana21Connection,
+  googleBanana21Model,
+  googleBanana21ApiModel,
+  banana21PresetChannels,
+  grsaiImage26Models,
+  isGrsaiImage26Connection,
+  buildGrsaiImage26Payload,
   normalizeArkVideoMode,
   normalizeGptImage25Quality,
   normalizeGptImage25Size,
@@ -186,6 +205,16 @@ const assistantKeyModels = [
   "deepseek-v4-pro"
 ];
 const apiConnectionModelDefinitions = [
+  ...banana21PresetChannels.map(({ model, label, provider, preset }) => ({ model, label, capability: "image", provider, presets: [preset, "custom"] })),
+  ...grsaiImage26Models.map(({ model, label }) => ({ model, label, capability: "image", provider: "grsai", presets: ["grsai", "custom"] })),
+  ...[gptImage26Profiles.SUNBURST, gptImage26Profiles.FLARE].map((model) => ({
+    model, label: `GPT Image 2.6 ${model.endsWith("sunburst") ? "Sunburst" : "Flare"}（OpenLux）`,
+    capability: "image", provider: "openai", presets: ["yunwu", "custom"]
+  })),
+  ...[gptImage26Profiles.TT, gptImage26Profiles.TT_GUAN].map((model) => ({
+    model, label: `TT Image 2.6${model.endsWith("guan") ? " 官转" : ""}（玲珂 AI）`,
+    capability: "image", provider: "lingke", presets: ["lingke-media", "custom"]
+  })),
   {
     model: midjourneyConnectionModel,
     label: "Midjourney（云雾代理）",
@@ -216,6 +245,7 @@ const apiConnectionModelDefinitions = [
   },
   { model: "gpt-image-2", label: "GPT Image 2", capability: "image", provider: "openai", presets: ["yunwu", "openai", "custom"] },
   { model: geminiBananaImageModel, label: "banana2", capability: "image", provider: "google", presets: ["yunwu", "google", "custom"] },
+  { model: googleBanana21Model, label: "Nano Banana 2.1（Google 官方）", capability: "image", provider: "google", presets: ["google", "custom"] },
   { model: "grok-3-image", label: "Grok 3 Image", capability: "image", provider: "xai", presets: ["yunwu", "xai", "custom"] },
   { model: grokImageModel, label: "Grok Imagine Image", capability: "image", provider: "xai", presets: ["yunwu", "xai", "custom"] },
   { model: grsaiDefaultModel, label: "nano-banana-2 (Grsai)", capability: "image", provider: "grsai", presets: ["grsai", "custom"] },
@@ -453,6 +483,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/generate") {
       return await handleGenerate(req, res);
     }
+    if (req.method === "POST" && url.pathname === "/api/grsai/result") {
+      return await handleGrsaiResult(req, res);
+    }
 
     if (req.method === "POST" && url.pathname === "/api/midjourney/submit") {
       return await handleMidjourneySubmit(req, res);
@@ -687,6 +720,20 @@ function mergeModelApiKeys(body) {
 function apiKeyForModel(model) {
   const normalizedModel = normalizeModelAlias(model || config.defaultModel);
   if (config.modelApiKeys[normalizedModel]) return config.modelApiKeys[normalizedModel];
+  if (banana21PresetChannels.some(({ model }) => model === normalizedModel)) {
+    const target = connectionForModel(normalizedModel);
+    // Reuse only an unambiguous existing dedicated key for the same API model/host.
+    const candidates = new Set(Object.entries(config.modelConnections).filter(([id, value]) => id !== normalizedModel
+      && value.apiModel === target.apiModel && sameApiHost(value.baseUrl, target.baseUrl)).map(([id]) => config.modelApiKeys[id]).filter(Boolean));
+    if (candidates.size === 1) return [...candidates][0];
+    if (candidates.size > 1) return "";
+    return target.preset === "yunwu" && sameApiHost(config.baseUrl, target.baseUrl) ? config.apiKey : "";
+  }
+  if (isGrsaiImage26Connection(connectionForModel(normalizedModel))) return config.grsaiApiKey;
+  // A relay's global fallback key must not be sent to the official Google host.
+  if (isGoogleBanana21Connection(connectionForModel(normalizedModel))) {
+    return sanitizeOptionalText(process.env.GOOGLE_API_KEY) || sanitizeOptionalText(process.env.GEMINI_API_KEY);
+  }
   if (isGrsaiImageModel(normalizedModel)) return config.grsaiApiKey || config.apiKey;
   if (isArkModel(normalizedModel)) return config.arkApiKey || config.apiKey;
   return config.apiKey;
@@ -804,7 +851,7 @@ function defaultConnectionForModel(model, presetId = "yunwu") {
   const imageProtocol =
     normalized === midjourneyConnectionModel
       ? "midjourney-proxy"
-      : normalized === geminiBananaImageModel
+      : [geminiBananaImageModel, googleBanana21Model].includes(normalized)
         ? "gemini-native"
         : normalized === grsaiDefaultModel
           ? "grsai"
@@ -822,8 +869,21 @@ function defaultConnectionForModel(model, presetId = "yunwu") {
     chatEndpoint: config?.chatEndpoint || "/v1/chat/completions",
     videoEndpoint: arkVideoEndpoint
   };
+  const banana21Preset = banana21PresetChannels.find(({ model }) => model === normalized);
+  if (banana21Preset) {
+    defaults.apiModel = banana21Preset.apiModel;
+    if (banana21Preset.preset === "yunwu") {
+      defaults.baseUrl = defaultYunwuBaseUrl;
+      defaults.protocol = "gemini-native";
+      defaults.imageEndpoint = "/v1beta/models/{model}:generateContent";
+      defaults.editEndpoint = "/v1beta/models/{model}:generateContent";
+    }
+  }
   if (ark) defaults.apiModel = ark.apiModel;
-  if (normalized === geminiBananaImageModel) {
+  const grsaiImage26 = grsaiImage26Models.find(({ model }) => model === normalized);
+  if (grsaiImage26) defaults.apiModel = grsaiImage26.apiModel;
+  if (normalized === googleBanana21Model) defaults.apiModel = googleBanana21ApiModel;
+  if ([geminiBananaImageModel, googleBanana21Model].includes(normalized)) {
     defaults.imageEndpoint = "/v1beta/models/{model}:generateContent";
     defaults.editEndpoint = "/v1beta/models/{model}:generateContent";
   }
@@ -911,7 +971,7 @@ function defaultConnectionForModel(model, presetId = "yunwu") {
 
 function normalizeModelConnection(model, value) {
   const normalized = normalizeModelAlias(model);
-  const input = isPlainObject(value) ? migrateYunwuConnection(value) : {};
+  const input = isPlainObject(value) ? migrateTtImage26Connection(normalized, migrateBanana21Connection(normalized, migrateYunwuConnection(value))) : {};
   const fallback = defaultConnectionForModel(normalized, input.preset || connectionDefinition(normalized).presets[0]);
   const protocols = new Set([
     "openai-images",
@@ -1100,7 +1160,7 @@ function isDreaminaVideoModel(model) {
 }
 
 function applyModelRequestDefaults(payload, mode = "create", ...modelHints) {
-  if (gptImage25Profile(payload.model, modelHints)) return applyGptImage25RequestDefaults(payload);
+  if (gptImageProfile(payload.model, modelHints)) return applyGptImage25RequestDefaults(payload);
   if (isGrsaiImageModel(payload.model)) return applyGrsaiRequestDefaults(payload);
   if (!isGrokImageModel(payload.model)) return payload;
 
@@ -1120,14 +1180,14 @@ function applyModelRequestDefaults(payload, mode = "create", ...modelHints) {
 }
 
 function isTtImage25Request(modelName, connection = null) {
-  return isTtImage25Model(
+  return (isTtImage25Model(
     modelName,
     connection?.model,
     connection?.apiModel,
     connectionDefinition(modelName)?.label,
     connection?.imageEndpoint,
     connection?.editEndpoint
-  );
+  ) || isTtImage26Model(connection?.apiModel, modelName));
 }
 
 function ttImage25OpenAiSize(body = {}) {
@@ -1142,7 +1202,7 @@ function applyGptImage25RequestDefaults(payload) {
 
   const requestedFormat = String(payload.output_format || payload.format || "").trim().toLowerCase();
   const outputFormat = requestedFormat === "jpg" ? "jpeg" : requestedFormat;
-  if (["png", "jpeg", "webp"].includes(outputFormat)) payload.output_format = outputFormat;
+  if ((gptImage26Profile(payload.model) ? ["png", "jpeg", "webp", "gif", "svg"] : ["png", "jpeg", "webp"]).includes(outputFormat)) payload.output_format = outputFormat;
   else delete payload.output_format;
   delete payload.format;
   return payload;
@@ -1157,7 +1217,9 @@ function isOpenLuxImageConnection(connection) {
 }
 
 function applyOpenLuxGptImage25Defaults(payload, connection, mode) {
-  if (!isOpenLuxImageConnection(connection) || !gptImage25Profile(payload.model)) return payload;
+  if (!isOpenLuxImageConnection(connection) || !gptImageProfile(payload.model)) return payload;
+  // 2.6 documents output_format and response_format for BOTH endpoints.
+  if (gptImage26Profile(connection.apiModel, payload.model)) return payload;
 
   if (mode === "create") {
     // OpenLux documents `format`, unlike the official API's `output_format`.
@@ -1176,6 +1238,31 @@ function applyOpenLuxGptImage25Defaults(payload, connection, mode) {
     if (!["url", "b64_json"].includes(payload.response_format)) delete payload.response_format;
   }
   return payload;
+}
+
+function applyImage26RequestOptions(payload, body, connection, mode, hasMask = false) {
+  const profile = gptImage26Profile(connection.apiModel, connection.model);
+  if (!profile) return;
+  const tt = isTtImage26Model(connection.apiModel);
+  const options = buildImage26Options({
+    ...payload,
+    format: body.format || payload.output_format,
+    complexity: body.complexity || payload.complexity,
+    frameCount: body.frameCount ?? payload.frame_count,
+    frameDurationMs: body.frameDurationMs ?? payload.frame_duration_ms,
+    svgModel: body.svgModel,
+    svgReasoning: body.svgReasoning
+  }, { tt, guan: profile === gptImage26Profiles.TT_GUAN, edit: mode === "edit", hasMask });
+  delete payload.format;
+  delete payload.frame_count;
+  delete payload.frame_duration_ms;
+  delete payload.svg;
+  Object.assign(payload, options);
+  if (tt && payload.output_format === "gif") {
+    delete payload.size;
+    delete payload.aspect_ratio;
+    delete payload.resolution;
+  }
 }
 
 function applyGrokImagineJsonRequestDefaults(payload) {
@@ -2622,6 +2709,10 @@ async function handleGenerate(req, res) {
   const contentType = req.headers["content-type"] || "";
   const isMultipart = contentType.includes("multipart/form-data");
   const body = isMultipart ? await readMultipartBody(req, contentType) : await readJsonBody(req);
+  const image26Controls = parseExtraParamsValue(body.image26);
+  for (const key of ["complexity", "frameCount", "frameDurationMs", "svgModel", "svgReasoning", "imageGuideMode"]) {
+    if (body[key] == null && image26Controls[key] != null) body[key] = image26Controls[key];
+  }
   body.model = normalizeModelAlias(body.model || config.defaultModel);
   const prompt = String(body.prompt || "").trim();
   const seedreamMode = seedreamProModeForRequest(body);
@@ -6196,7 +6287,7 @@ function dedupeTextValues(values) {
 }
 
 async function fetchOpenAiImageUpstream(apiUrl, options, modelName, connection) {
-  const longRunning = Boolean(gptImage25Profile(
+  const longRunning = Boolean(gptImageProfile(
     modelName,
     connection?.apiModel,
     connectionDefinition(modelName)?.label
@@ -6266,7 +6357,7 @@ async function handleCreate(res, body, prompt) {
       ? ttImage25OpenAiSize(body)
       : seedreamProModel ? normalizeArkImageSize(body.size, seedreamProfile) : body.size,
     quality: seedreamProModel ? undefined : body.quality,
-    moderation: !ttImage25 && gptImage25Profile(requestedModel, connection.apiModel) ? body.moderation : undefined,
+    moderation: !ttImage25 && gptImageProfile(requestedModel, connection.apiModel) ? body.moderation : undefined,
     response_format: isOpenLuxImageConnection(connection) && ["url", "b64_json"].includes(body.responseFormat)
       ? body.responseFormat
       : extraParams.response_format,
@@ -6288,6 +6379,8 @@ async function handleCreate(res, body, prompt) {
     connectionDefinition(requestedModel)?.label
   );
   applyOpenLuxGptImage25Defaults(payload, connection, "create");
+  try { applyImage26RequestOptions(payload, body, connection, "create"); }
+  catch (error) { return sendJson(res, 400, { error: error.message }); }
 
   const apiUrl = connection.apiUrl;
   if (!connection.apiKey) {
@@ -6363,30 +6456,36 @@ async function handleGrsaiGenerate(res, body, prompt, imageFiles = [], suppliedC
   const projectId = normalizeProjectId(body.projectId || "default");
   const extraParams = parseExtraParamsValue(body.extraParams);
   const { images: extraImages, ...extraPayload } = extraParams;
+  const connection = suppliedConnection || resolvedConnection(body.model || grsaiDefaultModel, body, imageFiles.length ? "edit" : "create");
+  const gpt26 = isGrsaiImage26Connection(connection);
   const size = parseGrsaiSize(body.size);
-  const payload = pruneEmpty({
+  const references = [...normalizeGrsaiImageRefs(extraImages), ...imageFiles.map(fileToDataUrl)];
+  const payload = gpt26 ? buildGrsaiImage26Payload(connection.apiModel, body, prompt, references, extraPayload) : pruneEmpty({
     model: suppliedConnection?.apiModel || body.model || grsaiDefaultModel,
     prompt,
-    images: [...normalizeGrsaiImageRefs(extraImages), ...imageFiles.map(fileToDataUrl)],
+    images: references,
     aspectRatio: size.aspectRatio,
     imageSize: size.imageSize,
     replyType: "json",
     ...extraPayload
   });
-  applyModelRequestDefaults(payload, "create");
+  if (!gpt26) applyModelRequestDefaults(payload, "create");
 
-  const connection = suppliedConnection || resolvedConnection(body.model || grsaiDefaultModel, body, "create");
   const apiUrl = connection.apiUrl || grsaiGenerateUrl(body);
   const apiKey = connection.apiKey;
   if (!apiKey) {
     return sendJson(res, 500, { error: missingKeyMessage(body.model || grsaiDefaultModel) });
+  }
+  if (body.grsaiRequestId) {
+    return await submitRecoverableGrsaiTask(res, body, connection, { ...payload, replyType: "async" }, projectId);
   }
   const startedAt = Date.now();
 
   const upstream = await fetch(apiUrl, {
     method: "POST",
     headers: connectionAuthHeaders(connection),
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    ...(gpt26 ? { dispatcher: gptImage25Dispatcher, signal: AbortSignal.timeout(gptImage25RequestTimeoutMs) } : {})
   });
 
   const responseText = await upstream.text();
@@ -6402,7 +6501,10 @@ async function handleGrsaiGenerate(res, body, prompt, imageFiles = [], suppliedC
 
   let finalData;
   try {
-    finalData = await resolveGrsaiResult(upstreamData, apiUrl, apiKey);
+    finalData = await resolveGrsaiResult(upstreamData, apiUrl, apiKey, gpt26 ? {
+      timeoutMs: process.env.CC_CANVAS_MEDIA_POLL_TIMEOUT_MS ? mediaGeneratePollTimeoutMs : gptImage25RequestTimeoutMs,
+      intervalMs: mediaGeneratePollIntervalMs
+    } : {});
   } catch (error) {
     return sendJson(res, 502, {
       error: error.message || "Grsai generation failed.",
@@ -6420,9 +6522,112 @@ async function handleGrsaiGenerate(res, body, prompt, imageFiles = [], suppliedC
 
   sendJson(res, 200, {
     durationMs: Date.now() - startedAt,
-    request: { apiUrl, payload: { ...payload, prompt } },
+    request: { apiUrl, payload: { ...payload, prompt, ...(gpt26 ? { images: `<${references.length} reference image(s)>` } : {}) } },
     images,
     raw: finalData
+  });
+}
+
+function grsaiTaskJournal(projectId) {
+  return new GrsaiTaskJournal(path.join(projectDir(projectId), "grsai-tasks"));
+}
+
+function grsaiTaskResponse(record, extra = {}) {
+  return { taskId: record.taskId || "", taskStatus: record.status, grsaiTask: publicGrsaiTask(record), images: record.images || [], ...extra };
+}
+
+async function submitRecoverableGrsaiTask(res, body, connection, payload, projectId) {
+  const requestId = grsaiRecoveryId(body.grsaiRequestId);
+  const journal = grsaiTaskJournal(projectId);
+  return await journal.exclusive(requestId, async () => {
+    const existing = await journal.read(requestId);
+    // A reused client request ID is a lookup, never another billable submission.
+    if (existing) return sendJson(res, 200, grsaiTaskResponse(existing));
+    let record = await journal.write({ requestId, taskId: "", model: connection.model || body.model,
+      apiModel: connection.apiModel, apiUrl: connection.apiUrl, mode: body.mode === "edit" ? "edit" : "create",
+      format: body.format || "png", status: "submitting", createdAt: new Date().toISOString() });
+    try {
+      const upstream = await fetch(connection.apiUrl, { method: "POST", headers: connectionAuthHeaders(connection), body: JSON.stringify(payload),
+        dispatcher: gptImage25Dispatcher, signal: AbortSignal.timeout(gptImage25RequestTimeoutMs) });
+      const text = await upstream.text();
+      const data = tryParseJson(text);
+      if (!upstream.ok || ["failed", "violation"].includes(data?.status)) {
+        record = await journal.write({ ...record, taskId: data?.id ? grsaiRecoveryId(data.id) : "", status: "failed", message: readUpstreamError(data, text) });
+        return sendJson(res, upstream.ok ? 502 : upstream.status, grsaiTaskResponse(record, { error: record.message }));
+      }
+      if (!data?.id) throw new Error("提交响应未包含任务 ID");
+      record = await journal.write({ ...record, taskId: grsaiRecoveryId(data.id), status: data.status || "running", progress: data.progress,
+        results: Array.isArray(data.results) ? data.results.map((item) => ({ url: item?.url })).filter(({ url }) => /^https?:\/\//iu.test(url || "")) : undefined });
+      return sendJson(res, 200, grsaiTaskResponse(record));
+    } catch {
+      record = await journal.write({ ...record, status: "unknown", message: "提交连接中断，后台可能已接单。请从 Grsai 后台复制任务 ID 后查询，不要重复生成。" });
+      return sendJson(res, 502, grsaiTaskResponse(record, { error: record.message }));
+    }
+  });
+}
+
+async function handleGrsaiResult(req, res) {
+  const body = await readJsonBody(req);
+  const projectId = normalizeProjectId(body.projectId || "default");
+  const model = normalizeModelAlias(body.model);
+  const connection = resolvedConnection(model, body, body.mode === "edit" ? "edit" : "create");
+  if (connection.protocol !== "grsai") return sendJson(res, 400, { error: "请选择 Grsai 原生渠道查询任务结果。" });
+  const journal = grsaiTaskJournal(projectId);
+  let requestId, taskId;
+  try {
+    taskId = body.taskId ? grsaiRecoveryId(body.taskId) : "";
+    requestId = body.requestId ? grsaiRecoveryId(body.requestId) : taskId ? manualGrsaiRequestId(model, taskId) : "";
+  } catch (error) { return sendJson(res, 400, { error: error.message }); }
+  if (!requestId) return sendJson(res, 400, { error: "请填写 Grsai 后台任务 ID，或使用节点已保存的查询记录。" });
+  const saved = await journal.read(requestId);
+  if (taskId && saved && saved.taskId !== taskId) requestId = manualGrsaiRequestId(model, taskId);
+  // A lookup while the one-shot submit is still in flight must not block behind it.
+  if (saved && !saved.taskId && !taskId) {
+    if (saved.model !== model || !sameApiHost(saved.apiUrl, connection.apiUrl)) return sendJson(res, 409, { error: "请选择任务提交时的原 Grsai 渠道。" });
+    return sendJson(res, 200, grsaiTaskResponse(saved, { retryable: saved.status === "submitting", error: saved.message || "" }));
+  }
+  return await journal.exclusive(requestId, async () => {
+    let record = await journal.read(requestId);
+    if (!record && !taskId) return sendJson(res, 404, { error: "本机未找到提交记录，请从 Grsai 后台复制任务 ID 查询；不要直接重新生成。" });
+    if (record && (record.model !== model || record.apiModel !== connection.apiModel || !sameApiHost(record.apiUrl, connection.apiUrl))) {
+      return sendJson(res, 409, { error: "当前渠道与任务提交时的渠道不一致，请选择原 Grsai 渠道查询。" });
+    }
+    if (!record) record = { requestId, taskId, model, apiModel: connection.apiModel, apiUrl: connection.apiUrl,
+      format: body.format || "png", mode: body.mode || "create", createdAt: new Date().toISOString(), status: "running" };
+    if (!record.taskId && taskId) record.taskId = taskId;
+    if (record.images?.length) return sendJson(res, 200, grsaiTaskResponse(record));
+    if (["failed", "violation"].includes(record.status)) return sendJson(res, 200, grsaiTaskResponse(record, { error: record.message, retryable: false }));
+    record = await journal.write(record);
+    if (!connection.apiKey) return sendJson(res, 401, grsaiTaskResponse(record, { error: missingKeyMessage(model), retryable: false }));
+    try {
+      if (!record.results?.length) {
+        const upstream = await fetch(grsaiResultUrl(record.apiUrl, record.taskId), {
+          headers: connectionAuthHeaders(connection, ""), signal: AbortSignal.timeout(60000)
+        });
+        const text = await upstream.text();
+        const data = tryParseJson(text);
+        if (["failed", "violation"].includes(data?.status)) {
+          record = await journal.write({ ...record, status: data.status, message: readUpstreamError(data, data.error) });
+          return sendJson(res, 200, grsaiTaskResponse(record, { error: record.message, retryable: false }));
+        }
+        if (!upstream.ok) {
+          record = await journal.write({ ...record, status: "query_error", message: readUpstreamError(data, text) });
+          return sendJson(res, 200, grsaiTaskResponse(record, { error: record.message, retryable: [408, 429].includes(upstream.status) || upstream.status >= 500 }));
+        }
+        if (!data || !["running", "succeeded"].includes(data.status)) throw new Error("查询响应无效，请稍后继续查询原任务。");
+        record = await journal.write({ ...record, status: data.status, progress: data.progress, message: "",
+          results: Array.isArray(data.results) ? data.results.map((item) => ({ url: item?.url })).filter(({ url }) => /^https?:\/\//iu.test(url || "")) : undefined });
+      }
+      if (record.status === "succeeded" || record.results?.length) {
+        const images = await normalizeAndPersistImages({ results: record.results || [] }, record.format, projectId);
+        if (!images.length || images.some((image) => image.type !== "file")) throw new Error("后台已生成，图片下载尚未完成，正在继续取回结果。");
+        record = await journal.write({ ...record, status: "succeeded", message: "", images });
+      }
+      return sendJson(res, 200, grsaiTaskResponse(record, { retryable: true }));
+    } catch (error) {
+      record = await journal.write({ ...record, status: "query_error", message: error.message || "查询连接中断，稍后继续查询原任务。" });
+      return sendJson(res, 200, grsaiTaskResponse(record, { error: record.message, retryable: true }));
+    }
   });
 }
 
@@ -6538,12 +6743,20 @@ async function handleMediaGenerateImage(res, body, prompt, imageFiles = [], supp
   const seedreamMode = seedreamProModeForRequest(body, connection);
   const layerDecomposition = seedreamMode === seedreamProModes.LAYERS;
   const ttImage25 = isTtImage25Request(modelName, connection);
+  const banana21 = isBanana21Model(connection.apiModel);
+  const bananaSizing = banana21 ? normalizeBanana21ImageParameters(body.size, body.quality) : null;
   const ttCustomSize = ttImage25 ? normalizeGptImage25Size(body.size) : "auto";
   const ttSizing = ttImage25 ? normalizeTtImage25Sizing(body.ttImageAspectRatio, body.ttImageResolution) : null;
   const sizing = layerDecomposition
     ? { size: normalizeSeedreamLayerSize(body.size), aspectRatio: "" }
     : normalizeMediaGenerateSizing(body.size);
-  const references = imageFiles.slice(0, layerDecomposition ? 1 : ttImage25 ? 16 : 10).map(fileToDataUrl);
+  if (banana21 && imageFiles.length > 14) {
+    return sendJson(res, 400, { error: "Banana 2.1 最多支持 14 张参考图片，请减少参考图后重试。" });
+  }
+  if (isTtImage26Model(connection.apiModel) && imageFiles.length > 16) {
+    return sendJson(res, 400, { error: "TT Image 2.6 最多支持 16 张参考图片。" });
+  }
+  const references = imageFiles.slice(0, layerDecomposition ? 1 : ttImage25 ? 16 : banana21 ? 14 : 10).map(fileToDataUrl);
   const background = proModel && !layerDecomposition ? normalizeSeedreamProBackground(body.background) : "";
   if (background === "transparent" && references.length > 1) {
     return sendJson(res, 400, { error: "Seedream 5.0 Pro 透明背景编辑仅支持 1 张参考图片。" });
@@ -6554,14 +6767,23 @@ async function handleMediaGenerateImage(res, body, prompt, imageFiles = [], supp
   const optimizeMode = proModel && !layerDecomposition
     ? normalizeArkOptimizeMode(body.quality, seedreamProfile)
     : "";
-  const modelParams = ttImage25
+  const modelParams = banana21
+    ? {
+        aspectRatio: bananaSizing.aspectRatio,
+        imageSize: bananaSizing.imageSize,
+        thinkingLevel: normalizeBanana21ThinkingLevel(body.bananaThinkingLevel ?? nestedParams.thinkingLevel),
+        web_search: normalizeBanana21WebSearch(body.bananaWebSearch ?? nestedParams.web_search),
+        n: 1,
+        images: references.length ? references : undefined
+      }
+    : ttImage25
     ? {
         version: normalizeTtImage25Version(body.ttImageVersion),
         size: ttCustomSize !== "auto" ? ttCustomSize : undefined,
         aspect_ratio: ttCustomSize === "auto" ? ttSizing.aspectRatio : undefined,
         resolution: ttCustomSize === "auto" ? ttSizing.resolution : undefined,
         quality: normalizeGptImage25Quality(body.quality),
-        background: normalizeTtImage25Background(body.background),
+        background: normalizeTtImage25Background(body.background, isTtImage26Model(connection.apiModel) ? "auto" : "opaque"),
         images: references.length ? references : undefined
       }
     : proModel
@@ -6582,10 +6804,12 @@ async function handleMediaGenerateImage(res, body, prompt, imageFiles = [], supp
     ...topLevelParams,
     model: connection.apiModel,
     prompt,
-    params: pruneEmpty(proModel
+    params: pruneEmpty(proModel || banana21
       ? { ...nestedParams, ...modelParams }
       : { ...modelParams, ...nestedParams })
   });
+  try { applyImage26RequestOptions(payload.params, body, connection, imageFiles.length ? "edit" : "create"); }
+  catch (error) { return sendJson(res, 400, { error: error.message }); }
   if (layerDecomposition) {
     payload.params.images = references;
     payload.params.layer_decomposition = true;
@@ -6664,7 +6888,10 @@ async function resolveMediaGenerateResult(submitData, connection, signal) {
     );
   }
 
-  const deadline = Date.now() + mediaGeneratePollTimeoutMs;
+  const timeoutMs = gptImage26Profile(connection.apiModel) && !process.env.CC_CANVAS_MEDIA_POLL_TIMEOUT_MS
+    ? Math.max(mediaGeneratePollTimeoutMs, gptImage25RequestTimeoutMs)
+    : mediaGeneratePollTimeoutMs;
+  const deadline = Date.now() + timeoutMs;
   const statusEndpoint = String(connection.endpointPath || mediaGenerateImageEndpoint).replace(/\/generate\/?$/iu, "/status");
   const statusUrl = new URL(buildApiUrl(connection.baseUrl, statusEndpoint));
   statusUrl.searchParams.set("task_id", taskId);
@@ -7054,8 +7281,10 @@ function closestArkImageSize(width, height, model) {
 async function handleGeminiNativeGenerate(res, body, prompt, imageFiles = [], suppliedConnection = null) {
   const projectId = normalizeProjectId(body.projectId || "default");
   const extraParams = parseExtraParamsValue(body.extraParams);
-  const payload = buildGeminiNativePayload(prompt, imageFiles, extraParams, body);
   const connection = suppliedConnection || resolvedConnection(body.model || geminiBananaImageModel, body, imageFiles.length ? "edit" : "create");
+  const googleBanana21 = isGoogleBanana21Connection(connection);
+  if (googleBanana21 && imageFiles.length > 14) return sendJson(res, 400, { error: "Google Nano Banana 2.1 最多支持 14 张参考图片。" });
+  const payload = buildGeminiNativePayload(prompt, imageFiles, extraParams, body, connection);
   const apiUrl = connection.apiUrl;
   if (!connection.apiKey) {
     return sendJson(res, 500, { error: missingKeyMessage(body.model) });
@@ -7065,7 +7294,11 @@ async function handleGeminiNativeGenerate(res, body, prompt, imageFiles = [], su
   const upstream = await fetch(apiUrl, {
     method: "POST",
     headers: connectionAuthHeaders(connection),
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    ...(isOpenLuxBanana21Connection(connection) || googleBanana21 ? {
+      dispatcher: gptImage25Dispatcher,
+      signal: AbortSignal.timeout(gptImage25RequestTimeoutMs)
+    } : {})
   });
 
   const responseText = await upstream.text();
@@ -7079,7 +7312,13 @@ async function handleGeminiNativeGenerate(res, body, prompt, imageFiles = [], su
     });
   }
 
-  const images = await normalizeAndPersistImages(upstreamData, body.format || "png", projectId);
+  // Search grounding URLs and intermediate thought images are not generated outputs.
+  const imageData = googleBanana21 ? {
+    images: (Array.isArray(upstreamData?.candidates) ? upstreamData.candidates : [])
+      .flatMap((candidate) => Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [])
+      .filter((part) => !part?.thought && (part?.inlineData || part?.inline_data || part?.fileData || part?.file_data))
+  } : upstreamData;
+  const images = await normalizeAndPersistImages(imageData, body.format || "png", projectId);
   if (!images.length) {
     return sendJson(res, 502, {
       error: "Gemini native response did not include an image.",
@@ -7098,7 +7337,7 @@ async function handleGeminiNativeGenerate(res, body, prompt, imageFiles = [], su
   });
 }
 
-function buildGeminiNativePayload(prompt, imageFiles = [], extraParams = {}, body = {}) {
+function buildGeminiNativePayload(prompt, imageFiles = [], extraParams = {}, body = {}, connection = {}) {
   const extra = isPlainObject(extraParams) ? { ...extraParams } : {};
   const customContents = Array.isArray(extra.contents) ? extra.contents : null;
   delete extra.contents;
@@ -7109,9 +7348,14 @@ function buildGeminiNativePayload(prompt, imageFiles = [], extraParams = {}, bod
       .map(fileToGeminiInlinePart)
   ];
 
-  const imageConfig = parseGeminiNativeImageConfig(body);
+  const banana21 = isBanana21Model(connection.apiModel || body.model);
+  const openLuxBanana21 = isOpenLuxBanana21Connection(connection);
+  const googleBanana21 = isGoogleBanana21Connection(connection);
+  const imageConfig = banana21
+    ? normalizeBanana21ImageParameters(body.size, body.quality, openLuxBanana21 || googleBanana21 ? { imageSize: "1K" } : {})
+    : parseGeminiNativeImageConfig(body);
   const defaultGenerationConfig = {
-    response_modalities: ["IMAGE", "TEXT"],
+    ...(banana21 ? { responseModalities: ["IMAGE", "TEXT"] } : { response_modalities: ["IMAGE", "TEXT"] }),
     imageConfig
   };
   const userGenerationConfig = isPlainObject(extra.generationConfig) ? extra.generationConfig : {};
@@ -7124,6 +7368,34 @@ function buildGeminiNativePayload(prompt, imageFiles = [], extraParams = {}, bod
       ...(isPlainObject(userGenerationConfig.imageConfig) ? userGenerationConfig.imageConfig : {})
     }
   };
+
+  if (banana21) {
+    const thinking = isPlainObject(userGenerationConfig.thinkingConfig) ? userGenerationConfig.thinkingConfig : {};
+    mergedGenerationConfig.thinkingConfig = {
+      ...thinking,
+      thinkingLevel: normalizeBanana21ThinkingLevel(body.bananaThinkingLevel ?? thinking.thinkingLevel ?? extra.params?.thinkingLevel
+        ?? (/-thinking$/iu.test(connection.apiModel || body.model || "") ? "high" : googleBanana21 ? "medium" : "minimal"), { google: googleBanana21 })
+    };
+    delete mergedGenerationConfig.thinkingConfig.thinkingBudget;
+    delete extra.params;
+  }
+  if (openLuxBanana21) {
+    const responseFormat = body.responseFormat || extra.response_format;
+    extra.response_format = responseFormat === "url" ? "url" : "base64";
+    delete extra.stream;
+    delete extra.model;
+  }
+  if (googleBanana21) {
+    if (body.bananaWebSearch !== undefined) {
+      const tools = (Array.isArray(extra.tools) ? extra.tools : []).filter((tool) => !tool?.googleSearch && !tool?.google_search);
+      if (normalizeBanana21WebSearch(body.bananaWebSearch)) tools.push({ googleSearch: {} });
+      extra.tools = tools.length ? tools : undefined;
+    }
+    delete extra.response_format;
+    delete extra.replyType;
+    delete extra.stream;
+    delete extra.model;
+  }
 
   return pruneEmpty({
     contents: customContents || [{ role: "user", parts }],
@@ -7196,7 +7468,7 @@ async function handleEdit(res, body) {
   let requestImages = images;
   if (seedreamMode === seedreamProModes.LAYERS) requestImages = images.slice(0, 1);
   else if (seedreamProModel) requestImages = images.slice(0, 10);
-  else if (isTtImage25Request(modelName, connection)) requestImages = images.slice(0, 16);
+  else if (isTtImage25Request(modelName, connection) && !isTtImage26Model(connection.apiModel)) requestImages = images.slice(0, 16);
   else if (isGrokImagineJsonImageModel(connection.apiModel)) requestImages = images.slice(0, grokImagineReferenceLimit);
   else if ((isGrokImageModel(modelName) || isGrokImageModel(connection.apiModel)) && !isGrokBuildImageModel(modelName)) requestImages = images.slice(0, 1);
   const mask = uploadedMask || cachedMask;
@@ -7225,7 +7497,10 @@ async function handleEdit(res, body) {
   if (connection.protocol === "media-generate") return await handleMediaGenerateImage(res, body, body.prompt, requestImages, connection);
   if (connection.protocol === "ark-images") return await handleArkImageGenerate(res, body, body.prompt, requestImages, connection);
   if (connection.protocol === "gemini-native") return await handleGeminiNativeGenerate(res, body, body.prompt, requestImages, connection);
-  if (connection.protocol === "grsai") return await handleGrsaiGenerate(res, body, body.prompt, requestImages, connection);
+  if (connection.protocol === "grsai") {
+    if (isGrsaiImage26Connection(connection) && mask?.data?.length) return sendJson(res, 400, { error: "Grsai 2.6 文档未提供独立蒙版参数，请移除蒙版并在提示词中描述编辑。" });
+    return await handleGrsaiGenerate(res, body, body.prompt, requestImages, connection);
+  }
   if (connection.protocol !== "openai-images") {
     return sendJson(res, 400, { error: `模型 ${modelName} 当前连接协议 ${connection.protocol} 不支持图片编辑。` });
   }
@@ -7241,7 +7516,28 @@ async function handleEdit(res, body) {
     form.append("image", new Blob([image.data], { type: image.contentType }), image.filename);
   }
 
-  if (mask?.data?.length && !seedreamProModel) {
+  const markupMode = Boolean(gptImage26Profile(connection.apiModel)) && isOpenLuxImageConnection(connection) && body.imageGuideMode === "markup";
+  const uploadedMarkup = files.find((file) => file.name === "markup");
+  const markup = uploadedMarkup || (markupMode ? mask : null);
+  if (markup && (!gptImage26Profile(connection.apiModel) || !isOpenLuxImageConnection(connection))) {
+    return sendJson(res, 400, { error: "当前渠道未声明支持 markup 标注层。" });
+  }
+  if (markup && uploadedMarkup && mask) return sendJson(res, 400, { error: "markup 和 mask 不能同时使用。" });
+  if (markup?.data?.length) {
+    const png = Buffer.from(markup.data);
+    if (png.length < 33 || !Buffer.from(png).subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) || png.length > 50 * 1024 * 1024) {
+      return sendJson(res, 400, { error: "markup 标注层必须为不超过 50MB 的透明 PNG。" });
+    }
+    if (png.readUInt32BE(16) * png.readUInt32BE(20) > 16777216) return sendJson(res, 400, { error: "markup 标注层不能超过 16,777,216 像素。" });
+    const main = Buffer.from(requestImages[0].data);
+    const mainSize = main.length > 24 && main.subarray(0, 8).equals(png.subarray(0, 8))
+      ? { width: main.readUInt32BE(16), height: main.readUInt32BE(20) }
+      : imageDimensionsFromBytes(main);
+    if (mainSize.width && (png.readUInt32BE(16) !== mainSize.width || png.readUInt32BE(20) !== mainSize.height)) {
+      return sendJson(res, 400, { error: "markup 标注层必须与第一张参考图尺寸相同。" });
+    }
+    form.append("markup", new Blob([markup.data], { type: "image/png" }), markup.filename);
+  } else if (mask?.data?.length && !seedreamProModel) {
     form.append("mask", new Blob([mask.data], { type: mask.contentType }), mask.filename);
   }
 
@@ -7267,7 +7563,7 @@ async function handleEdit(res, body) {
         : seedreamProModel ? normalizeArkImageSize(body.size, seedreamProfile) : body.size,
     quality: seedreamProModel ? undefined : body.quality,
     version: ttImage25 ? normalizeTtImage25Version(body.ttImageVersion) : undefined,
-    format: gptImage25Profile(modelName, connection.apiModel, connectionDefinition(modelName)?.label)
+    format: gptImageProfile(modelName, connection.apiModel, connectionDefinition(modelName)?.label)
       ? ttImage25 && ttBackground === "transparent" ? "png" : body.format || body.outputFormat
       : undefined,
     output_format: seedreamFormat,
@@ -7292,9 +7588,12 @@ async function handleEdit(res, body) {
     connectionDefinition(modelName)?.label
   );
   applyOpenLuxGptImage25Defaults(fields, connection, "edit");
+  try { applyImage26RequestOptions(fields, body, connection, "edit", Boolean(mask?.data?.length && !markup)); }
+  catch (error) { return sendJson(res, 400, { error: error.message }); }
+  if (markup && fields.prompt_rewriter != null) return sendJson(res, 400, { error: "markup 不能与 prompt_rewriter 同时使用。" });
 
   for (const [key, value] of Object.entries(fields)) {
-    form.append(key, String(value));
+    form.append(key, typeof value === "object" ? JSON.stringify(value) : String(value));
   }
 
   const apiUrl = connection.apiUrl;
@@ -7328,7 +7627,8 @@ async function handleEdit(res, body) {
       payload: {
         ...fields,
         image: requestImages.map((image) => image.filename),
-        mask: mask?.filename
+        mask: markup ? undefined : mask?.filename,
+        markup: markup?.filename
       }
     },
     images: resultImages,
@@ -8379,18 +8679,22 @@ function fileToDataUrl(file) {
   return `data:${contentType};base64,${Buffer.from(file.data || []).toString("base64")}`;
 }
 
-async function resolveGrsaiResult(initialData, apiUrl, apiKey) {
+async function resolveGrsaiResult(initialData, apiUrl, apiKey, options = {}) {
   let current = initialData;
-  for (let attempt = 0; attempt <= 30; attempt++) {
+  const deadline = Date.now() + (options.timeoutMs || 60000);
+  const intervalMs = options.intervalMs || 2000;
+  for (;;) {
     const status = normalizeModelName(current?.status);
     if (status === "failed" || status === "violation") {
       throw new Error(readUpstreamError(current, current?.error) || `Grsai task ${status}.`);
     }
     if (status === "succeeded" || hasImageCandidates(current)) return current;
     if (!current?.id || status !== "running") return current;
+    if (Date.now() + intervalMs >= deadline) throw new Error(`Grsai 任务等待超时（任务 ID：${current.id}）；任务可能仍在生成，请先核对平台记录，避免重复提交扣费。`);
 
-    await delay(2000);
+    await delay(intervalMs);
     const response = await fetch(grsaiResultUrl(apiUrl, current.id), {
+      signal: AbortSignal.timeout(Math.max(1, Math.min(60000, deadline - Date.now()))),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         Accept: "application/json"
@@ -8404,7 +8708,6 @@ async function resolveGrsaiResult(initialData, apiUrl, apiKey) {
     current = data;
   }
 
-  throw new Error("Grsai task is still running after waiting 60 seconds.");
 }
 
 function hasImageCandidates(data) {
@@ -9379,7 +9682,7 @@ function collectImageCandidates(value, candidates, seen = new Set()) {
   if (!value || typeof value !== "object" || seen.has(value)) return;
   seen.add(value);
 
-  const urlKeys = ["url", "image_url", "imageUrl", "uri", "result", "result_url", "resultUrl", "output_url", "outputUrl"];
+  const urlKeys = ["url", "image_url", "imageUrl", "uri", "fileUri", "file_uri", "result", "result_url", "resultUrl", "output_url", "outputUrl"];
   const b64Keys = ["b64_json", "base64", "image_base64", "imageBase64", "image"];
   const inlineData = value.inlineData || value.inline_data;
 
@@ -9413,9 +9716,13 @@ function collectImageCandidates(value, candidates, seen = new Set()) {
 }
 
 function collectStringImageCandidates(value, candidates) {
+  if (/^\s*(?:<\?xml[^>]*>\s*)?<svg[\s>][\s\S]*<\/svg>\s*$/iu.test(value)) {
+    candidates.push({ type: "base64", value: `data:image/svg+xml;base64,${Buffer.from(value, "utf8").toString("base64")}` });
+    return;
+  }
   const urlMatches = value.match(/https?:\/\/[^\s"'<>）)]+/gi) || [];
   for (const url of urlMatches) {
-    if (/\.(png|jpe?g|webp|gif)(\?|$)/i.test(url) || url.includes("image")) {
+    if (/\.(png|jpe?g|webp|gif|svg)(\?|$)/i.test(url) || url.includes("image")) {
       candidates.push({ type: "url", value: url });
     }
   }
@@ -9436,13 +9743,14 @@ function looksLikeImageBase64(value) {
     return false;
   }
 
-  const header = Buffer.from(clean.replace(/-/g, "+").replace(/_/g, "/").slice(0, 64), "base64");
+  const header = Buffer.from(clean.replace(/-/g, "+").replace(/_/g, "/").slice(0, 512), "base64");
   const isPng = header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
   const isJpeg = header[0] === 0xff && header[1] === 0xd8;
   const isGif = header.subarray(0, 3).toString("ascii") === "GIF";
   const isWebp = header.subarray(0, 4).toString("ascii") === "RIFF" && header.subarray(8, 12).toString("ascii") === "WEBP";
 
-  return isPng || isJpeg || isGif || isWebp;
+  const isSvg = /^\s*(?:<\?xml[^>]*>\s*)?<svg[\s>]/iu.test(header.toString("utf8"));
+  return isPng || isJpeg || isGif || isWebp || isSvg;
 }
 
 async function saveBase64Image(value, preferredFormat, projectId = "default") {
@@ -9516,6 +9824,8 @@ function createOutputFilename(extension) {
 function mimeFromFormat(format) {
   if (format === "jpeg" || format === "jpg") return "image/jpeg";
   if (format === "webp") return "image/webp";
+  if (format === "gif") return "image/gif";
+  if (format === "svg") return "image/svg+xml";
   return "image/png";
 }
 

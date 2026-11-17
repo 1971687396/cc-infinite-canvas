@@ -61,6 +61,17 @@ assert.equal(migrateYunwuNodeConnections(migratedNode), migratedNode);
 const keyMap = encode({ "gpt-2.5": "dedicated-test-key", other: "other-test-key" });
 const untouchedConnection = { ...legacyConnection, apiModel: "other-model", baseUrl: "https://ai.t8star.org", imageEndpoint: "/custom/generate" };
 const connectionMap = encode({ "gpt-2.5": legacyConnection, other: untouchedConnection });
+const bananaEnv = `CC_CANVAS_MODEL_CONNECTIONS_B64=${encode({
+  yunb21: { capability: "image", apiModel: "gemini-nano-banana-2.1", baseUrl: "https://api.apiplus.org", protocol: "media-generate", imageEndpoint: "/v1/images/generations", editEndpoint: "/v1/images/edits" },
+  other: untouchedConnection
+})}\nCC_CANVAS_MODEL_KEYS_B64=${keyMap}\n`;
+const migratedBananaEnv = migrateYunwuEnvText(bananaEnv);
+const bananaMap = JSON.parse(Buffer.from(migratedBananaEnv.split("\n")[0].split("=")[1], "base64url").toString("utf8"));
+assert.equal(bananaMap.yunb21.protocol, "gemini-native");
+assert.equal(bananaMap.yunb21.imageEndpoint, "/v1beta/models/{model}:generateContent");
+assert.deepEqual(bananaMap.other, untouchedConnection);
+assert.ok(migratedBananaEnv.includes(`CC_CANVAS_MODEL_KEYS_B64=${keyMap}`));
+assert.equal(migrateYunwuEnvText(migratedBananaEnv), migratedBananaEnv);
 const legacyEnv = [
   "# Preserve comments and all credentials",
   'YUNWU_BASE_URL="https://yunwu.ai"',
@@ -82,7 +93,7 @@ assert.equal(migrateYunwuEnvText("CC_CANVAS_MODEL_CONNECTIONS_B64=bad-json\n"), 
 await mkdir(path.join(root, "cache"), { recursive: true });
 const fixtureRoot = await mkdtemp(path.join(root, "cache", "connection-migration-test-"));
 try {
-  for (const file of ["server.js", "package.json", "midjourney-api.js", "grok-build-bridge.js", "agent-control-runtime.js", "agent-control-client.js"]) {
+  for (const file of ["server.js", "package.json", "midjourney-api.js", "grok-build-bridge.js", "agent-control-runtime.js", "agent-control-client.js", "grsai-task-runtime.js"]) {
     await cp(path.join(source, file), path.join(fixtureRoot, file));
   }
   await cp(path.join(source, "public"), path.join(fixtureRoot, "public"), { recursive: true });
@@ -140,6 +151,21 @@ try {
     assert.equal(cfg.baseUrl, defaultYunwuBaseUrl);
     assertOpenLuxOptionsAvailable(cfg, "gpt-2.5");
   }, { YUNWU_BASE_URL: "https://yunwu.ai", CC_CANVAS_MODEL_CONNECTIONS_B64: connectionMap });
+  await withServer("preset-key-reuse", async (base) => {
+    const cfg = await getJson(`${base}/api/config`);
+    assert.equal(cfg.modelConnections["openlux-banana-2.1"].hasKey, true);
+    assert.equal(cfg.modelConnections["lingke-banana-2.1"].hasKey, true);
+    assert.equal(cfg.modelConnections["lingke-banana-2.1-token"].hasKey, false);
+    assert.equal(cfg.modelConnections["google-nano-banana-2.1"].hasKey, false);
+  }, {
+    CC_CANVAS_MODEL_CONNECTIONS_B64: encode({
+      oldopenlux: { capability: "image", protocol: "gemini-native", apiModel: "gemini-nano-banana-2.1", baseUrl: "https://api.openlux.ai" },
+      oldlingke: { capability: "image", protocol: "media-generate", apiModel: "banana-2.1", baseUrl: "https://api.lk888.ai" },
+      unrelated: { capability: "image", protocol: "gemini-native", apiModel: "gemini-nano-banana-2.1", baseUrl: "https://unrelated.example" }
+    }),
+    CC_CANVAS_MODEL_KEYS_B64: encode({ oldopenlux: "same-platform-openlux-test", oldlingke: "same-platform-lingke-test", unrelated: "never-share-with-google-test" }),
+    YUNWU_API_KEY: "global-only-openlux-test"
+  });
   await writeFile(envFile, "YUNWU_BASE_URL=https://other-relay.example\n", "utf8");
   await withServer("custom", async (base) => {
     const cfg = await getJson(`${base}/api/config`);
@@ -155,6 +181,32 @@ function assertOpenLuxOptionsAvailable(cfg, model = "gpt-image-2.5-sunburst") {
   const connection = cfg.modelConnections[model];
   assert.equal(new URL(connection.baseUrl).hostname, "api.openlux.ai");
   assert.ok(gptImage25Profile(model, connection.apiModel));
+  const google = cfg.modelConnections["google-nano-banana-2.1"];
+  assert.equal(google.baseUrl, "https://generativelanguage.googleapis.com");
+  assert.equal(google.apiModel, "gemini-nano-banana-2.1");
+  assert.equal(google.authType, "x-goog-api-key");
+  assert.equal(google.protocol, "gemini-native");
+  for (const [id, apiModel, host, protocol, endpoint] of [
+    ["openlux-banana-2.1", "gemini-nano-banana-2.1", "api.openlux.ai", "gemini-native", "/v1beta/models/{model}:generateContent"],
+    ["lingke-banana-2.1", "banana-2.1", "api.lk888.ai", "media-generate", "/v1/media/generate"],
+    ["lingke-banana-2.1-token", "banana-2.1-token", "api.lk888.ai", "media-generate", "/v1/media/generate"]
+  ]) {
+    const preset = cfg.modelConnections[id];
+    assert.equal(new URL(preset.baseUrl).hostname, host);
+    assert.equal(preset.apiModel, apiModel);
+    assert.equal(preset.protocol, protocol);
+    assert.equal(preset.imageEndpoint, endpoint);
+    assert.equal(preset.editEndpoint, endpoint);
+    assert.ok(cfg.connectionModels.some((item) => item.model === id && item.capability === "image"));
+  }
+  for (const apiModel of ["gpt-image-2.6", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst"]) {
+    const grsai = cfg.modelConnections[`grsai-${apiModel}`];
+    assert.equal(grsai.baseUrl, "https://grsaiapi.com");
+    assert.equal(grsai.apiModel, apiModel);
+    assert.equal(grsai.protocol, "grsai");
+    assert.equal(grsai.imageEndpoint, "/v1/api/generate");
+    assert.equal(grsai.editEndpoint, "/v1/api/generate");
+  }
 }
 
 async function getJson(url) {

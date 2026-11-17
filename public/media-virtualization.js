@@ -21,6 +21,8 @@ export function mediaUrlForTier(source, tier, baseUrl) {
   try {
     const base = new URL(baseUrl);
     const target = new URL(rawSource, base);
+    // Static thumbnails would freeze GIFs and rasterize vector output.
+    if (/\.(?:gif|svg)$/iu.test(target.pathname)) return rawSource;
     if (target.origin !== base.origin) return rawSource;
     if (!/^\/(?:project-cache|outputs|cache\/assets)\//u.test(target.pathname)) return rawSource;
     target.searchParams.set("thumbnail", normalizedTier);

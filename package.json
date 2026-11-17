@@ -1,6 +1,6 @@
 {
   "name": "yunwu-image-canvas",
-  "version": "1.1.13",
+  "version": "1.1.14",
   "private": true,
   "type": "module",
   "main": "electron-main.cjs",
@@ -13,6 +13,10 @@
     "test:canvas-runtime": "node tools/test-canvas-runtime.mjs",
     "test:media-virtualization": "node tools/test-media-virtualization.mjs",
     "test:model-profiles": "node tools/test-model-profiles.mjs",
+    "test:banana21-node": "node tools/test-banana21-node.mjs",
+    "test:grsai-image26": "node tools/test-grsai-image26.mjs && node tools/test-banana21-node.mjs && node tools/test-ark-integration.mjs",
+    "test:grsai-recovery": "node tools/test-grsai-recovery.mjs",
+    "test:image26": "node tools/test-model-profiles.mjs && node tools/test-banana21-node.mjs && node tools/test-ark-integration.mjs",
     "test:connection-migrations": "node tools/test-connection-migrations.mjs",
     "test:desktop-downloads": "node tools/test-desktop-downloads.mjs",
     "test:story-runtime": "node tools/test-story-runtime.mjs",

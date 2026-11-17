@@ -19,6 +19,8 @@ assert.equal(imageMediaTierRank("original"), 3);
 assert.equal(imageMediaTierRank("unloaded"), -1);
 
 const baseUrl = "http://127.0.0.1:32000/";
+assert.equal(mediaUrlForTier("/project-cache/demo/outputs/animation.gif", "64", baseUrl), "/project-cache/demo/outputs/animation.gif");
+assert.equal(mediaUrlForTier("/project-cache/demo/outputs/vector.svg", "256", baseUrl), "/project-cache/demo/outputs/vector.svg");
 assert.equal(
   mediaUrlForTier("/project-cache/demo/outputs/image.png", "256", baseUrl),
   "http://127.0.0.1:32000/project-cache/demo/outputs/image.png?thumbnail=256"
